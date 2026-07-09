@@ -1,0 +1,1769 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>섬 디펜스 - 고양이와 대포 (디펜스 장르, 1단계)</title>
+<style>
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: #222;
+    color: white;
+    font-family: sans-serif;
+  }
+  canvas {
+    background: #1a4a6b;
+    border: 4px solid white;
+    margin-top: 16px;
+    cursor: crosshair;
+  }
+  #info {
+    margin-top: 10px;
+    font-size: 17px;
+  }
+  #info span { font-weight: bold; }
+  #wrap { position: relative; }
+  #intro {
+    position: absolute;
+    left: 4px; top: 4px; right: 4px; bottom: 4px;
+    background: rgba(10, 20, 30, 0.92);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 20px;
+    box-sizing: border-box;
+  }
+  #intro p { max-width: 520px; line-height: 1.6; font-size: 16px; }
+  #intro button {
+    margin-top: 16px;
+    font-size: 18px;
+    padding: 10px 24px;
+    cursor: pointer;
+  }
+  #upgradeHint { color: #9cf; }
+  #upgradeHint.urgent { color: #ff6b5c; font-weight: bold; }
+  a { color: #9cf; margin-top: 12px; }
+</style>
+</head>
+<body>
+  <h1>섬 디펜스 (디펜스 장르 · 1단계: 핵심 전투만)</h1>
+  <div id="info">
+    석탄: <span id="coalText">0</span> ·
+    섬 체력: <span id="healthText">8</span>/<span id="maxHealthText">8</span> ·
+    공격력: <span id="dmgText">1</span> ·
+    사격속도: <span id="fireRateText">Lv.1</span> ·
+    물리친 괴물: <span id="scoreText">0</span><br>
+    <span id="upgradeHint"><span style="color:#ffd35c">[E] 업그레이드 메뉴</span> · <span style="color:#7df">[D] 도감</span> · <span style="color:#aef">[M] 광산</span></span>
+  </div>
+  <div id="wrap">
+    <canvas id="game" width="760" height="640"></canvas>
+    <div id="intro">
+      <p>
+        폭풍에 휩쓸려 외딴 섬에 불시착한 고양이.<br>
+        섬에는 낡은 대포 한 대뿐, 쏠 화약(석탄)이 없어 밀려오는 바다괴물을 막을 수가 없었다...<br>
+        그런데 갑자기 게들이 북쪽 동굴에서 석탄을 캐내 줄지어 날라주기 시작했다!<br>
+        마우스로 대포를 조준하고, 클릭(누르고 있기)으로 발사하자.<br>
+        석탄을 모으면 <b>U(공격력) / F(사격속도) / H(체력)</b> 키로 대포를 업그레이드할 수도 있다.
+      </p>
+      <button id="startBtn">시작하기</button>
+    </div>
+  </div>
+  <a href="../index.html">← 게임 목록으로 돌아가기</a>
+
+  <script src="pixel-art.js"></script>
+  <script>
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+    const coalText = document.getElementById("coalText");
+    const healthText = document.getElementById("healthText");
+    const maxHealthText = document.getElementById("maxHealthText");
+    const dmgText = document.getElementById("dmgText");
+    const fireRateText = document.getElementById("fireRateText");
+    const scoreText = document.getElementById("scoreText");
+    const introEl = document.getElementById("intro");
+    const upgradeHintEl = document.getElementById("upgradeHint");
+
+    // 화면 구성(위에서 아래로): 석탄 동굴(맨 위) -> 섬(풀밭) -> 모래사장(물결 해안선) -> 바다(맨 아래)
+    const ROCK_BAND_BOTTOM = 130;     // 바위 지대(동굴 포함) 아래 경계
+    const CAVE = { x: 380, y: 35, halfWidth: 70, depth: 95 }; // 동굴 입구
+    const CRAB_SOURCE = { x: 380, y: 118 }; // 게가 석탄을 들고 나오는 지점(동굴 바로 앞)
+    const COAST_BASE_Y = 380;          // 해안선(모래<->바다) 기준 높이
+    const COAST_WAVE = 10;             // 해안선이 좌우로 출렁이는 정도
+    const SAND_WIDTH = 26;             // 모래사장 폭
+    const CANNON = { x: 380, y: 320 }; // 대포(=고양이) 위치
+    const CANNON_HIT_R = 24;           // 괴물의 원거리 공격이 대포/고양이에 맞았다고 판정하는 거리
+
+    const STARTING_HEALTH = 8;         // 보스가 일정 간격으로 무조건 한 번씩 때리기 때문에, 5보다 여유를 더 줌
+    const BASE_FIRE_COOLDOWN = 18;
+    const FIRE_COOLDOWN_MIN = 7;       // 사격속도를 아무리 올려도 이 밑으로는 안 빨라짐(완전 자동사격 방지)
+    const FIRE_COOLDOWN_STEP = 3;      // 사격속도 업그레이드 1회당 줄어드는 재발사 대기 프레임
+    const MAX_CONCURRENT_MONSTERS = 1;
+    const MONSTER_SPAWN_CHECK = 70;
+    // score가 오를수록 괴물 체력 배율 증가: score 10마다 +20%
+    function monsterHpScale() { return 1 + Math.floor(score / 10) * 0.2; }
+    const FIRST_MONSTER_DELAY = 220;
+    const BOSS_BOLT_SPEED = 4;         // 괴물이 쏘는 원거리 공격(잉크볼)의 속도
+
+    // 괴물 종류별 스탯 — 도감(Tab 키)에 전부 표시되며, 등장 시 무작위로 한 종이 선택됨.
+    const MONSTER_TYPES = {
+      tentacle: { // 기본형: 균형 잡힌 체력으로 멈춰서 한 발씩 쏨
+        label: "문어괴물", desc: "멈춰서 한 발씩 쏜다",
+        hp: 8, rMin: 26, rMax: 34, speedMin: 0.3, speedMax: 0.5,
+        stopR: 220, attackInterval: 140, boltCount: 1, spread: 0,
+        bodyColor: "#3f5e8c", tipColor: "#33486b", tentacles: 5, spiky: false,
+      },
+      spitter: { // 포자형: 체력이 많고 멀리서 3발을 부채꼴로 쏘는 화력형
+        label: "포자괴물", desc: "3발 부채꼴로 퍼뜨려 쏜다",
+        hp: 11, rMin: 30, rMax: 36, speedMin: 0.25, speedMax: 0.4,
+        stopR: 260, attackInterval: 170, boltCount: 3, spread: 0.35,
+        bodyColor: "#5a7d2f", tipColor: "#3d5a1f", tentacles: 7, spiky: false,
+      },
+      rusher: { // 돌격형: 빠르게 직접 들이박는 위협형
+        label: "돌격괴물", desc: "직접 들이박아 체력 2 감소",
+        hp: 4, rMin: 16, rMax: 20, speedMin: 0.9, speedMax: 1.3,
+        rusher: true, contactR: 46, contactDamage: 2,
+        bodyColor: "#8c2f2f", tipColor: "#5c1d1d", tentacles: 5, spiky: true,
+      },
+      jellyfish: { // 해파리형: 느리지만 5발을 넓게 퍼뜨려 피하기 어렵게 만드는 견제형
+        label: "해파리괴물", desc: "5발 넓게 퍼뜨려. 느리나 위험",
+        hp: 6, rMin: 20, rMax: 26, speedMin: 0.18, speedMax: 0.28,
+        stopR: 300, attackInterval: 80, boltCount: 5, spread: 0.55,
+        bodyColor: "#9b59b6", tipColor: "#7d3c98", tentacles: 8, spiky: false,
+      },
+      armored: { // 갑각형: 두꺼운 갑옷 덕분에 체력이 가장 높은 철벽형
+        label: "갑각괴물", desc: "초고체력. 느리지만 강한 일격",
+        hp: 18, rMin: 34, rMax: 42, speedMin: 0.13, speedMax: 0.18,
+        stopR: 200, attackInterval: 220, boltCount: 1, spread: 0,
+        bodyColor: "#7a6a1a", tipColor: "#5a4a0a", tentacles: 6, spiky: true,
+      },
+      phantom: { // 유령형: 반투명한 빠른 돌격형. 눈에 잘 안 띄어 갑자기 들이박음
+        label: "유령괴물", desc: "반투명. 매우 빠르게 돌진",
+        hp: 3, rMin: 10, rMax: 14, speedMin: 1.8, speedMax: 2.5,
+        rusher: true, contactR: 36, contactDamage: 1,
+        bodyColor: "#a8d8f0", tipColor: "#7ab0d0", tentacles: 4, spiky: false,
+        phantom: true,
+      },
+      zigzag: { // 지그재그형: 좌우로 흔들며 접근해 맞추기 어려운 돌격형
+        label: "지그재그괴물", desc: "좌우로 흔들며 달려든다. 조준이 어렵다",
+        hp: 5, rMin: 14, rMax: 19, speedMin: 0.75, speedMax: 1.1,
+        rusher: true, contactR: 42, contactDamage: 1,
+        bodyColor: "#e07820", tipColor: "#a04c08", tentacles: 5, spiky: true,
+        zigzag: true,
+      },
+      splitter: { // 분열형: 처치하면 미니 돌격 괴물 2마리로 분열
+        label: "분열괴물", desc: "처치하면 2마리로 분열!",
+        hp: 10, rMin: 24, rMax: 30, speedMin: 0.22, speedMax: 0.36,
+        stopR: 240, attackInterval: 150, boltCount: 1, spread: 0,
+        bodyColor: "#c040a0", tipColor: "#802060", tentacles: 6, spiky: false,
+        splitter: true,
+      },
+      electric: { // 전기형: 체력은 낮지만 매우 빠른 연사로 위협
+        label: "전기괴물", desc: "연사가 매우 빠르다. 체력은 약하다",
+        hp: 4, rMin: 16, rMax: 22, speedMin: 0.32, speedMax: 0.48,
+        stopR: 290, attackInterval: 38, boltCount: 1, spread: 0,
+        bodyColor: "#d8d820", tipColor: "#989808", tentacles: 7, spiky: false,
+      },
+      leviathan: { // 심해형: 전설급 보스. 크고 강하며 2발 동시 발사
+        label: "심해괴물", desc: "전설의 보스. 크고 극도로 강함",
+        hp: 24, rMin: 42, rMax: 52, speedMin: 0.1, speedMax: 0.15,
+        stopR: 160, attackInterval: 110, boltCount: 2, spread: 0.15,
+        bodyColor: "#1c2f4a", tipColor: "#0d1622", tentacles: 10, spiky: false,
+        isBoss: true,
+      },
+      storm: { // 폭풍형: 전방위 8발 동시 발사. 피하기 매우 어려움
+        label: "폭풍괴물", desc: "전방위로 8발을 동시에 쏜다!",
+        hp: 20, rMin: 38, rMax: 46, speedMin: 0.13, speedMax: 0.18,
+        stopR: 220, attackInterval: 95, boltCount: 8, spread: 0,
+        bodyColor: "#4a1580", tipColor: "#2a0850", tentacles: 9, spiky: true,
+        isBoss: true, omnidirectional: true,
+      },
+      overlord: { // 군주형: 부하를 소환하며 버티는 장기전형 보스
+        label: "군주괴물", desc: "부하를 소환한다. 체력이 매우 높다",
+        hp: 30, rMin: 40, rMax: 50, speedMin: 0.08, speedMax: 0.12,
+        stopR: 280, attackInterval: 175, boltCount: 2, spread: 0.4,
+        bodyColor: "#8c1a1a", tipColor: "#5c0808", tentacles: 8, spiky: true,
+        isBoss: true, summonInterval: 210,
+      },
+    };
+    const MONSTER_KINDS = Object.keys(MONSTER_TYPES);
+    // 도감: 처음엔 모두 미발견. 괴물이 등장하면 seen=true, 처치하면 kills++
+    const monsterLog = Object.fromEntries(MONSTER_KINDS.map(k => [k, { seen: false, kills: 0 }]));
+    // 보스는 일반 랜덤 풀에서 제외 — 킬 수마다 순서대로 등장
+    const BOSS_KINDS = ['leviathan', 'storm', 'overlord'];
+    const REGULAR_KINDS = MONSTER_KINDS.filter(k => !BOSS_KINDS.includes(k));
+
+    // 괴물 처치 시 드롭되는 임시 파워업 아이템 종류
+    const ITEM_TYPES = {
+      pierce:    { label: "관통탄",  color: "#4ad8ff", desc: "5발이 적을 관통" },
+      explosive: { label: "폭발탄",  color: "#ff8844", desc: "3발 범위 폭발" },
+      rapidfire: { label: "속사",    color: "#66dd66", desc: "8초 발사속도 2배" },
+      powershot: { label: "강화탄",  color: "#ffd35c", desc: "8초 공격력 2배" },
+      crabs:     { label: "게 증원", color: "#ff6644", desc: "게 3마리 즉시 출동" },
+    };
+    const ITEM_KINDS = Object.keys(ITEM_TYPES);
+    const ITEM_DROP_CHANCE = 0.4;   // 일반 괴물 처치 시 드롭 확률
+    const ITEM_DURATION = 420;      // 아이템이 사라지기까지 남은 프레임
+    const ITEM_DRIFT_SPEED = 0.85;  // 아이템이 대포 쪽으로 떠내려오는 속도
+    const ITEM_EFFECT_DURATION = 480; // 8초(60fps 기준)
+
+    const CRAB_SPAWN_INTERVAL = 150;   // 게 출현 간격. 220이었다가 석탄이 너무 늦게 와서 줄임
+    const CRAB_FIRST_DELAY = 90;
+    const CRAB_SPEED = 1.6;
+    const COAL_PER_CRAB = 4;           // 게 한 마리가 나르는 석탄량. 3이었다가 화력이 너무 부족해서 늘림
+
+    // 업그레이드 비용: 살수록 누진으로 비싸짐. 공격력/속도는 레벨×15씩, 체력은 횟수×10씩 가산
+    function damageCost() { return 20 + (cannonDamage - 1) * 15; }
+    function fireRateCost() { return 20 + (fireRateLevel - 1) * 15; }
+    function healthCost() { return 15 + healthUpgradeCount * 10; }
+    // 업그레이드 비용은 drawUpgradeMenu()에서 직접 표시하므로 HUD span 불필요
+    // 광산 맵 - 드워프 머지 시스템
+    const MINE_COLS = 3, MINE_ROWS = 3;
+    const MINE_CELL = 110, MINE_GAP = 8;
+    const MINE_GRID_X = 28, MINE_GRID_Y = 80;
+    const DWARF_COST = 12;
+    const DWARF_LEVELS = 4;
+    const DWARF_MINE_INTERVAL = [0, 420, 300, 200, 140]; // level→프레임
+    const DWARF_MINE_COAL    = [0, 1,   2,   3,   5];
+    const DWARF_COLORS = ['','#a06030','#3060e0','#c8a820','#a020c0'];
+    const DWARF_LABELS = ['','Lv.1 광부','Lv.2 장인','Lv.3 달인','Lv.4 전설'];
+    const ORE_MAX = 4, ORE_LIFETIME = 800, ORE_SPAWN_INTERVAL = 340;
+    const ORE_COAL_REWARD = [3, 5, 9];
+    const ORE_COLORS = ['#66ccff','#ffcc44','#ff55cc'];
+    // 자동 대포 (광산 모드일 때): 수동보다 살짝 빗나감
+    const AUTO_FIRE_INTERVAL = 14; // 14프레임마다 발사 (≒60fps 기준 약 0.23초)
+    const AUTO_AIM_WOBBLE = 0.09; // ±5° — 맞긴 하되 수동보다 살짝 빗나감
+
+    const DEFEAT_BANNER_DURATION = 100; // 섬 체력이 0이 됐을 때, 멈추지 않고 잠깐 배너만 띄운 뒤 바로 이어서 진행
+    const BOSS_SCORE_INTERVAL = 8;     // 이 킬 수마다 심해괴물 보스 등장
+    const LEVIATHAN_COAL_DROP = 25;    // 심해괴물 처치 시 석탄 보상
+    const BOSS_WARNING_DURATION = 140; // 보스 등장 예고 표시 시간(프레임)
+    const BOSS_KILL_BANNER_DURATION = 160;
+
+    let started = false;
+    let defeatBannerTimer = 0;
+    let frame = 0;
+    let aimAngle = Math.PI / 2; // 시작 시 남쪽(바다 방향)을 보고 있음
+    let firing = false;
+    let fireCooldown = 0;
+    let fireCooldownCur = BASE_FIRE_COOLDOWN; // F 업그레이드로 점점 줄어드는 재발사 대기시간
+    let fireRateLevel = 1;
+    let muzzleFlashTimer = 0;
+    let breachFlashTimer = 0;
+    let upgradeGlowTimer = 0;
+    let upgradeGlowColor = "255, 211, 92";
+    let upgradeGlowLabel = "";
+    const UPGRADE_GLOW_DURATION = 28;
+
+    let coal = 0;
+    let maxHealth = STARTING_HEALTH; // H 업그레이드로 점점 늘어나는 최대 체력
+    let health = STARTING_HEALTH;
+    let score = 0;
+    let cannonDamage = 1;       // U키 업그레이드로 올라가는 포탄 한 발의 공격력
+    let healthUpgradeCount = 0; // H 업그레이드 횟수 (비용 누진 계산용)
+
+    let dokgamOpen = false;
+    let monsters = [];
+    let crabs = [];
+    let balls = [];
+    let monsterBolts = [];
+    let particles = [];
+    let nextMonsterSpawn = FIRST_MONSTER_DELAY;
+    let nextCrabSpawn = CRAB_FIRST_DELAY;
+
+    let bossIsPending = false;      // 경고 중(아직 소환 전)
+    let bossWarningTimer = 0;       // 경고 남은 프레임
+    let lastBossScore = 0;          // 마지막으로 보스를 트리거한 킬 수
+    let bossKillBannerTimer = 0;    // 보스 처치 배너 표시 시간
+    let bossIndex = 0;              // 다음에 등장할 보스 인덱스 (순환)
+    let pendingBossKind = 'leviathan'; // 현재 예고 중인 보스 종류
+    let lastKilledBossKind = 'leviathan'; // 처치 배너 표시용
+
+    let items = [];          // 바닥에 떠 있는 드롭 아이템
+    let upgradeMenuOpen = false;
+
+    // 광산 시스템
+    let mineOpen = false;
+    let dwarves = new Array(MINE_COLS * MINE_ROWS).fill(null); // 9슬롯
+    let selectedDwarfSlot = -1;
+    let oreNodes = [];
+    let oreSpawnTimer = ORE_SPAWN_INTERVAL;
+    let autoFireCooldown = 0;
+
+    // ── 채굴 미니게임 ────────────────────────────────────────────────────────
+    const MG_KILL_INTERVAL = 5;   // 5킬마다 발동
+    const MG_DURATION      = 720; // 12초 (60fps)
+    const MG_FADEIN_DUR    = 35;
+    const MG_RESULT_DUR    = 120;
+    const MG_FADEOUT_DUR   = 35;
+    const MG_GRAVITY = 0.44, MG_JUMP = -10.8, MG_SPEED = 4.6;
+    const MG_PW = 10, MG_PH = 32;
+
+    const MG_PLATS = [
+      {x:0,   y:500, w:760},   // 바닥
+      {x:55,  y:375, w:175},   // 중단 왼쪽
+      {x:293, y:375, w:175},   // 중단 가운데
+      {x:533, y:375, w:175},   // 중단 오른쪽
+      {x:98,  y:248, w:140},   // 상단 왼쪽
+      {x:312, y:248, w:140},   // 상단 가운데
+      {x:528, y:248, w:140},   // 상단 오른쪽
+    ];
+
+    // 석탄 블록 목록 생성 (y = 해당 발판 y값)
+    function mgMakeBlocks() {
+      return [
+        // 바닥 — 석탄 1개
+        {x:100,y:500,c:1},{x:245,y:500,c:1},{x:385,y:500,c:1},
+        {x:525,y:500,c:1},{x:665,y:500,c:1},
+        // 중단 — 석탄 2개
+        {x:112,y:375,c:2},{x:178,y:375,c:2},
+        {x:340,y:375,c:2},{x:420,y:375,c:2},
+        {x:581,y:375,c:2},{x:657,y:375,c:2},
+        // 상단 — 석탄 4개
+        {x:133,y:248,c:4},{x:205,y:248,c:4},
+        {x:350,y:248,c:4},{x:420,y:248,c:4},
+        {x:564,y:248,c:4},{x:636,y:248,c:4},
+      ].map(b => ({...b, got:false}));
+    }
+
+    let mgPhase      = 'idle'; // idle|fadein|play|result|fadeout
+    let mgPhaseTimer = 0;
+    let mgGameTimer  = 0;
+    let mgCoal       = 0;
+    let mgAlpha      = 0;
+    let mgPending    = false;
+    let mgPendingTimer = 0;
+    const mgP = {x:380, y:468, vx:0, vy:0, grounded:false, dir:'right'};
+    let mgBlocks = [];
+    const mgK = {};
+
+    let pierceShots = 0;     // 관통탄 남은 발 수
+    let explosiveShots = 0;  // 폭발탄 남은 발 수
+    let rapidFireTimer = 0;  // 속사 남은 프레임
+    let powerShotTimer = 0;  // 강화탄 남은 프레임
+
+    function coastY(x) {
+      return COAST_BASE_Y + Math.sin(x * 0.025) * COAST_WAVE;
+    }
+
+    // 정적인 배경(바위/동굴/풀밭/모래/바다 텍스처)은 매 프레임 다시 그리면 무거우므로 한 번만 캐싱.
+    const islandLayer = document.createElement("canvas");
+    islandLayer.width = canvas.width;
+    islandLayer.height = canvas.height;
+    function buildIslandLayer() {
+      const ic = islandLayer.getContext("2d");
+
+      // 바다 (가장 아래층)
+      ic.fillStyle = "#1a4a6b";
+      ic.fillRect(0, 0, canvas.width, canvas.height);
+      for (let i = 0; i < 240; i++) {
+        const wx = Math.random() * canvas.width;
+        const wy = COAST_BASE_Y + 10 + Math.random() * (canvas.height - COAST_BASE_Y - 10);
+        ic.fillStyle = Math.random() < 0.5 ? "#2c648f" : "#143a56";
+        ic.fillRect(wx, wy, 3, 3);
+      }
+
+      // 모래사장 + 풀밭: 출렁이는 해안선을 따라 한 칸(PX)씩 세로로 채움
+      for (let x = 0; x < canvas.width; x += PX) {
+        const cy = coastY(x);
+        ic.fillStyle = "#d9c27e";
+        ic.fillRect(x, cy - SAND_WIDTH, PX, SAND_WIDTH + 4);
+        ic.fillStyle = "#4a8c3c";
+        ic.fillRect(x, ROCK_BAND_BOTTOM, PX, cy - SAND_WIDTH - ROCK_BAND_BOTTOM);
+      }
+      ic.save();
+      ic.beginPath();
+      ic.rect(0, ROCK_BAND_BOTTOM, canvas.width, COAST_BASE_Y - SAND_WIDTH - ROCK_BAND_BOTTOM + COAST_WAVE + 2);
+      ic.clip();
+      ditherGround(ic, 0, ROCK_BAND_BOTTOM, canvas.width, COAST_BASE_Y - ROCK_BAND_BOTTOM + COAST_WAVE + 2, "#4a8c3c", "#5da047", 10);
+      ic.restore();
+
+      // 바위 지대 + 동굴(맨 위)
+      ic.fillStyle = "#5a5048";
+      ic.fillRect(0, 0, canvas.width, ROCK_BAND_BOTTOM);
+      ditherGround(ic, 0, 0, canvas.width, ROCK_BAND_BOTTOM, "#5a5048", "#6b6058", 14);
+      drawCaveMouth(ic, CAVE.x, CAVE.y, CAVE.halfWidth, CAVE.depth);
+    }
+    buildIslandLayer();
+
+    function rand(min, max) { return min + Math.random() * (max - min); }
+
+    function spawnMonster() {
+      const kind = REGULAR_KINDS[Math.floor(Math.random() * REGULAR_KINDS.length)];
+      const type = MONSTER_TYPES[kind];
+      const scale = monsterHpScale();
+      const hp = Math.ceil(type.hp * scale);
+      monsterLog[kind].seen = true;
+      monsters.push({
+        kind,
+        x: rand(60, canvas.width - 60),
+        y: canvas.height + 40,
+        r: rand(type.rMin, type.rMax),
+        speed: rand(type.speedMin, type.speedMax),
+        hp,
+        maxHp: hp,
+        stopped: false,
+        attackTimer: type.rusher ? 0 : rand(30, type.attackInterval),
+        zigzagPhase: type.zigzag ? rand(0, Math.PI * 2) : 0,
+      });
+    }
+
+    // 보스는 킬 수 기반으로 순서대로 등장. 화면 중앙 쪽에서 나타남.
+    function spawnBoss(kind) {
+      const type = MONSTER_TYPES[kind];
+      monsterLog[kind].seen = true;
+      monsters.push({
+        kind,
+        x: rand(120, canvas.width - 120),
+        y: canvas.height + 80,
+        r: rand(type.rMin, type.rMax),
+        speed: rand(type.speedMin, type.speedMax),
+        hp: type.hp,
+        maxHp: type.hp,
+        stopped: false,
+        attackTimer: rand(40, type.attackInterval),
+        summonTimer: type.summonInterval || 0,
+      });
+    }
+
+    // 심해괴물 처치 시 화려한 대폭발 파티클 (일반 hitBurst보다 훨씬 크고 많음)
+    function spawnLeviathanKillFx(x, y) {
+      const colors = ["#ffd35c", "#7ab0ff", "#ffffff", "#1c2f4a", "#ff8844"];
+      for (let i = 0; i < 48; i++) {
+        const a = rand(0, Math.PI * 2);
+        const speed = rand(2, 10);
+        particles.push({
+          x, y,
+          vx: Math.cos(a) * speed,
+          vy: Math.sin(a) * speed - 1,
+          life: 60, life0: 60,
+          color: colors[i % colors.length],
+          size: 4 + (i % 4),
+        });
+      }
+    }
+
+    // 한 번에 여러 발(부채꼴 또는 전방위)을 쏘는 종류도 있어서 각도를 계산해서 발사함
+    function spawnMonsterBolts(m, type) {
+      const dx = CANNON.x - m.x, dy = CANNON.y - m.y;
+      const baseAngle = Math.atan2(dy, dx);
+      const count = type.boltCount;
+      for (let i = 0; i < count; i++) {
+        // omnidirectional: 전방위 360°로 균등하게, 아니면 부채꼴로 대포 향해 발사
+        const angle = type.omnidirectional
+          ? (Math.PI * 2 / count) * i
+          : baseAngle + (i - (count - 1) / 2) * type.spread;
+        monsterBolts.push({
+          x: m.x, y: m.y,
+          vx: Math.cos(angle) * BOSS_BOLT_SPEED,
+          vy: Math.sin(angle) * BOSS_BOLT_SPEED,
+        });
+      }
+    }
+
+    // 괴물 처치 공통 처리 — score, kills, 보스 보상, 아이템 드롭
+    function killMonster(m) {
+      m.dead = true;
+      score++;
+      monsterLog[m.kind].kills++;
+      spawnHitBurst(m.x, m.y);
+      if (MONSTER_TYPES[m.kind]?.isBoss) {
+        coal += LEVIATHAN_COAL_DROP;
+        lastKilledBossKind = m.kind;
+        spawnLeviathanKillFx(m.x, m.y);
+        bossKillBannerTimer = BOSS_KILL_BANNER_DURATION;
+        dropItem(m.x, m.y, true); // 보스는 무조건 드롭
+      } else {
+        // 분열괴물: 처치하면 미니 돌격형 2마리로 분열 (미니는 재분열 안 함)
+        if (m.kind === 'splitter' && !m.isMini) {
+          for (let i = 0; i < 2; i++) {
+            const side = i === 0 ? -1 : 1;
+            const type = MONSTER_TYPES['splitter'];
+            const miniHp = 2;
+            monsterLog['splitter'].seen = true;
+            monsters.push({
+              kind: 'splitter', isMini: true,
+              x: m.x + side * 22, y: m.y,
+              r: 10, speed: 1.2,
+              hp: miniHp, maxHp: miniHp,
+              stopped: false, attackTimer: 0,
+              zigzagPhase: 0,
+            });
+          }
+        }
+        dropItem(m.x, m.y, false);
+        // 5킬마다 채굴 미니게임 예약 (보스 킬 제외)
+        if (score % MG_KILL_INTERVAL === 0 && mgPhase === 'idle' && !mgPending) {
+          mgPending = true; mgPendingTimer = 90;
+        }
+      }
+    }
+
+    // 아이템 드롭: 확률 체크 후 무작위 종류 생성
+    function dropItem(x, y, guaranteed) {
+      if (!guaranteed && Math.random() > ITEM_DROP_CHANCE) return;
+      const kind = ITEM_KINDS[Math.floor(Math.random() * ITEM_KINDS.length)];
+      items.push({ x, y, kind, life: ITEM_DURATION, bobPhase: rand(0, Math.PI * 2) });
+    }
+
+    // 아이템 수집 시 효과 적용
+    function applyItem(kind) {
+      switch (kind) {
+        case 'pierce':    pierceShots += 5; break;
+        case 'explosive': explosiveShots += 3; break;
+        case 'rapidfire': rapidFireTimer += ITEM_EFFECT_DURATION; break;
+        case 'powershot': powerShotTimer += ITEM_EFFECT_DURATION; break;
+        case 'crabs':     for (let i = 0; i < 3; i++) spawnCrab(); break;
+      }
+      triggerUpgradeFx("200, 200, 255", `${ITEM_TYPES[kind].label} 획득!`);
+    }
+
+    // 폭발탄 폭발 파티클 (일반 hitBurst보다 크고 범위가 넓음)
+    function spawnExplosionFx(x, y) {
+      for (let i = 0; i < 22; i++) {
+        const a = rand(0, Math.PI * 2);
+        const speed = rand(2, 8);
+        particles.push({
+          x, y, vx: Math.cos(a) * speed, vy: Math.sin(a) * speed,
+          life: 28, life0: 28,
+          color: i % 2 === 0 ? "#ff8844" : "#ffd35c", size: 5,
+        });
+      }
+    }
+
+    // 게는 동굴(석탄 출처) <-> 대포 사이를 왕복함: 내려올 때는 석탄을 지고, 돌아갈 때는 빈손으로 걸어감
+    function spawnCrab() {
+      crabs.push({ x: CRAB_SOURCE.x, y: CRAB_SOURCE.y, state: "going", bobPhase: rand(0, Math.PI * 2) });
+    }
+
+    function spawnHitBurst(x, y) {
+      for (let i = 0; i < 7; i++) {
+        const a = rand(0, Math.PI * 2);
+        const speed = rand(1.5, 3.5);
+        particles.push({ x, y, vx: Math.cos(a) * speed, vy: Math.sin(a) * speed, life: 14, life0: 14, color: "#ffd35c", size: 3 });
+      }
+    }
+
+    // 업그레이드했을 때만 쓰는 더 크고 화려한 반짝이 파편(업그레이드 종류별로 색이 다름, 더 오래 남음)
+    function spawnUpgradeBurst(x, y, rgb) {
+      for (let i = 0; i < 18; i++) {
+        const a = rand(0, Math.PI * 2);
+        const speed = rand(1.5, 4.5);
+        particles.push({
+          x, y,
+          vx: Math.cos(a) * speed, vy: Math.sin(a) * speed - 1,
+          life: 32, life0: 32,
+          color: i % 2 === 0 ? `rgb(${rgb})` : "#ffffff",
+          size: 4,
+        });
+      }
+    }
+
+    function fire() {
+      if (coal <= 0 || fireCooldown > 0) return;
+      coal--;
+      // 속사 중엔 재발사 대기를 절반으로
+      fireCooldown = rapidFireTimer > 0 ? Math.max(3, Math.floor(fireCooldownCur / 2)) : fireCooldownCur;
+      muzzleFlashTimer = 5;
+      const speed = 9;
+      const isPierce = pierceShots > 0;
+      const isExplosive = explosiveShots > 0;
+      if (isPierce) pierceShots--;
+      if (isExplosive) explosiveShots--;
+      balls.push({
+        x: CANNON.x + Math.cos(aimAngle) * 34,
+        y: CANNON.y + Math.sin(aimAngle) * 34,
+        vx: Math.cos(aimAngle) * speed,
+        vy: Math.sin(aimAngle) * speed,
+        dmg: powerShotTimer > 0 ? cannonDamage * 2 : cannonDamage,
+        pierce: isPierce,
+        explosive: isExplosive,
+      });
+    }
+
+    function triggerUpgradeFx(color, label) {
+      upgradeGlowTimer = UPGRADE_GLOW_DURATION;
+      upgradeGlowColor = color;
+      upgradeGlowLabel = label;
+      spawnUpgradeBurst(CANNON.x, CANNON.y - 10, color);
+    }
+
+    function tryDamageUpgrade() {
+      const cost = damageCost();
+      if (coal < cost) return;
+      coal -= cost;
+      cannonDamage++;
+      dmgText.textContent = cannonDamage;
+      triggerUpgradeFx("255, 211, 92", "공격력 업그레이드!"); // 금색
+    }
+
+    function tryFireRateUpgrade() {
+      const cost = fireRateCost();
+      if (coal < cost || fireCooldownCur <= FIRE_COOLDOWN_MIN) return;
+      coal -= cost;
+      fireCooldownCur = Math.max(FIRE_COOLDOWN_MIN, fireCooldownCur - FIRE_COOLDOWN_STEP);
+      fireRateLevel++;
+      fireRateText.textContent = "Lv." + fireRateLevel;
+      triggerUpgradeFx("120, 220, 255", "사격속도 업그레이드!"); // 청록색
+    }
+
+    function tryHealthUpgrade() {
+      const cost = healthCost();
+      if (coal < cost) return;
+      coal -= cost;
+      healthUpgradeCount++;
+      maxHealth++;
+      health = Math.min(maxHealth, health + 1);
+      maxHealthText.textContent = maxHealth;
+      triggerUpgradeFx("120, 220, 120", "체력 보강!"); // 초록색
+    }
+
+    function updateAim(e) {
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      aimAngle = Math.atan2(my - CANNON.y, mx - CANNON.x);
+    }
+
+    canvas.addEventListener("mousemove", (e) => { if (!upgradeMenuOpen && !mineOpen) updateAim(e); });
+    canvas.addEventListener("mousedown", (e) => {
+      if (mineOpen) { handleMineClick(e); return; }
+      if (upgradeMenuOpen) { handleUpgradeMenuClick(e); return; }
+      updateAim(e);
+      firing = true;
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+      items = items.filter(item => {
+        if (Math.hypot(mx - item.x, my - item.y) < 30) { applyItem(item.kind); return false; }
+        return true;
+      });
+    });
+    canvas.addEventListener("mouseup", () => { if (!mineOpen) firing = false; });
+    canvas.addEventListener("mouseleave", () => { firing = false; });
+
+    document.addEventListener("keyup", (e) => { delete mgK[e.code]; });
+
+    document.addEventListener("keydown", (e) => {
+      // 채굴 미니게임 중 — 전용 키 처리
+      if (mgPhase === 'play') {
+        mgK[e.code] = true;
+        if ((e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW') && mgP.grounded) {
+          mgP.vy = MG_JUMP; mgP.grounded = false;
+        }
+        e.preventDefault(); return;
+      }
+      if (e.code === "KeyM") {
+        mineOpen = !mineOpen;
+        if (mineOpen) { firing = false; upgradeMenuOpen = false; dokgamOpen = false; }
+      }
+      else if (!mineOpen) {
+        if (e.code === "KeyE") { upgradeMenuOpen = !upgradeMenuOpen; dokgamOpen = false; }
+        else if (e.code === "KeyD") { dokgamOpen = !dokgamOpen; upgradeMenuOpen = false; }
+        else if (!upgradeMenuOpen) {
+          if (e.code === "KeyU") tryDamageUpgrade();
+          else if (e.code === "KeyF") tryFireRateUpgrade();
+          else if (e.code === "KeyH") tryHealthUpgrade();
+        }
+      }
+    });
+
+    document.getElementById("startBtn").addEventListener("click", () => {
+      started = true;
+      introEl.style.display = "none";
+    });
+
+    // 섬이 함락돼도 화면을 멈추고 재시작 클릭을 기다리지 않음 — 점수/석탄/업그레이드는 그대로 두고
+    // 위협(괴물·잉크볼)만 정리해서 바로 다음 싸움으로 이어지게 함("죽고 다시 시작"이 아니라 "계속 진행").
+    function recoverFromDefeat() {
+      health = maxHealth;
+      monsters = [];
+      monsterBolts = [];
+      nextMonsterSpawn = FIRST_MONSTER_DELAY;
+      defeatBannerTimer = DEFEAT_BANNER_DURATION;
+    }
+
+    function update() {
+      frame++;
+
+      // 채굴 미니게임 대기 카운트다운
+      if (mgPending && mgPhase === 'idle') {
+        mgPendingTimer--;
+        if (mgPendingTimer <= 0) { mgPending = false; triggerMineGame(); }
+      }
+      // 미니게임 활성 중 — 메인게임 완전 정지, 미니게임만 업데이트
+      if (mgPhase !== 'idle') { updateMineGame(); return; }
+
+      if (fireCooldown > 0) fireCooldown--;
+      if (muzzleFlashTimer > 0) muzzleFlashTimer--;
+      if (breachFlashTimer > 0) breachFlashTimer--;
+      if (upgradeGlowTimer > 0) upgradeGlowTimer--;
+      if (rapidFireTimer > 0) rapidFireTimer--;
+      if (powerShotTimer > 0) powerShotTimer--;
+
+      // 광산 모드: 자동 대포 + 드워프 채굴 + 광석 스폰
+      if (mineOpen) {
+        // 자동 대포 — 가장 가까운 괴물을 향해 약간 빗나가며 자동 발사
+        if (autoFireCooldown > 0) autoFireCooldown--;
+        const target = monsters.reduce((best, m) => {
+          const d = Math.hypot(m.x - CANNON.x, m.y - CANNON.y);
+          return (!best || d < best.d) ? { m, d } : best;
+        }, null);
+        if (target && autoFireCooldown <= 0 && coal > 0) {
+          const m = target.m, d = target.d;
+          // 이동 중인 괴물은 포탄 도달 시간만큼 선조준
+          const travelT = d / 9;
+          const mvx = m.stopped ? 0 : (CANNON.x - m.x) / d * m.speed;
+          const mvy = m.stopped ? 0 : (CANNON.y - m.y) / d * m.speed;
+          const predX = m.x + mvx * travelT;
+          const predY = m.y + mvy * travelT;
+          const ldx = predX - CANNON.x, ldy = predY - CANNON.y;
+          aimAngle = Math.atan2(ldy, ldx) + (Math.random() - 0.5) * AUTO_AIM_WOBBLE * 2;
+          // fireCooldown 우회 — 자동대포 전용 발사 (수동 재발사 대기와 무관하게 동작)
+          coal--;
+          muzzleFlashTimer = 5;
+          const autoSpd = 9;
+          balls.push({
+            x: CANNON.x + Math.cos(aimAngle) * 34,
+            y: CANNON.y + Math.sin(aimAngle) * 34,
+            vx: Math.cos(aimAngle) * autoSpd,
+            vy: Math.sin(aimAngle) * autoSpd,
+            dmg: cannonDamage, pierce: false, explosive: false,
+          });
+          autoFireCooldown = AUTO_FIRE_INTERVAL;
+        }
+        // 광석 스폰
+        oreSpawnTimer--;
+        if (oreSpawnTimer <= 0 && oreNodes.length < ORE_MAX) {
+          oreSpawnTimer = ORE_SPAWN_INTERVAL;
+          const tier = Math.random() < 0.6 ? 0 : Math.random() < 0.7 ? 1 : 2;
+          oreNodes.push({ x: rand(410, 710), y: rand(75, 660), tier, life: ORE_LIFETIME, bobPhase: rand(0, Math.PI*2) });
+        }
+        oreNodes.forEach(o => o.life--);
+        oreNodes = oreNodes.filter(o => o.life > 0);
+      }
+      // 드워프 채굴은 광산 밖에서도 지속 (패시브 수입)
+      dwarves.forEach(d => {
+        if (!d) return;
+        d.timer--;
+        if (d.timer <= 0) {
+          d.timer = DWARF_MINE_INTERVAL[d.level];
+          coal += DWARF_MINE_COAL[d.level];
+          coalText.textContent = coal;
+        }
+      });
+
+      if (!mineOpen && firing) fire();
+
+      // 보스 등장 예고 중이거나 보스가 살아있는 동안은 일반 괴물 소환을 멈춤
+      const bossAlive = monsters.some(m => MONSTER_TYPES[m.kind]?.isBoss);
+      if (!bossIsPending && !bossAlive) {
+        nextMonsterSpawn--;
+        if (nextMonsterSpawn <= 0) {
+          nextMonsterSpawn = MONSTER_SPAWN_CHECK;
+          if (monsters.length < MAX_CONCURRENT_MONSTERS) spawnMonster();
+        }
+      }
+
+      // 킬 수가 BOSS_SCORE_INTERVAL 배수를 넘을 때마다 다음 보스를 순서대로 소환
+      if (!bossAlive && !bossIsPending && score > 0) {
+        const nextBossAt = Math.floor(score / BOSS_SCORE_INTERVAL) * BOSS_SCORE_INTERVAL;
+        if (nextBossAt > lastBossScore) {
+          pendingBossKind = BOSS_KINDS[bossIndex % BOSS_KINDS.length];
+          bossIndex++;
+          bossIsPending = true;
+          bossWarningTimer = BOSS_WARNING_DURATION;
+          lastBossScore = nextBossAt;
+        }
+      }
+      if (bossIsPending) {
+        if (bossWarningTimer > 0) bossWarningTimer--;
+        // 경고가 끝나고 필드가 비면 즉시 소환
+        if (bossWarningTimer <= 0 && monsters.length === 0) {
+          spawnBoss(pendingBossKind);
+          bossIsPending = false;
+        }
+      }
+      if (bossKillBannerTimer > 0) bossKillBannerTimer--;
+
+      nextCrabSpawn--;
+      if (nextCrabSpawn <= 0) {
+        spawnCrab();
+        nextCrabSpawn = CRAB_SPAWN_INTERVAL;
+      }
+
+      for (const m of monsters) {
+        const type = MONSTER_TYPES[m.kind];
+        const dx = CANNON.x - m.x, dy = CANNON.y - m.y;
+        const dist = Math.hypot(dx, dy) || 1;
+        m.dist = dist;
+        const isRusher = type.rusher || m.isMini;
+        if (isRusher) {
+          // 돌격형: 멈추지 않고 계속 다가오다가, 닿을 정도로 가까워지면 직접 들이받고 사라짐(처치 점수 없음)
+          const contactR = m.isMini ? 36 : type.contactR;
+          if (dist <= contactR) {
+            health -= m.isMini ? 1 : type.contactDamage;
+            breachFlashTimer = 10;
+            spawnHitBurst(m.x, m.y);
+            m.dead = true;
+          } else {
+            m.x += (dx / dist) * m.speed;
+            m.y += (dy / dist) * m.speed;
+            if (type.zigzag) {
+              // 수직 방향으로 사인파 흔들기
+              m.zigzagPhase += 0.12;
+              const amp = Math.sin(m.zigzagPhase) * 2.8;
+              m.x += (-dy / dist) * amp;
+              m.y += (dx / dist) * amp;
+            }
+          }
+        } else if (dist <= type.stopR) {
+          // 적당한 거리까지 오면 멈추고, 그 자리에서 원거리 공격(잉크볼)을 날림
+          m.stopped = true;
+          m.attackTimer--;
+          if (m.attackTimer <= 0) {
+            m.attackTimer = type.attackInterval;
+            spawnMonsterBolts(m, type);
+          }
+          // 군주괴물: 주기적으로 부하 소환
+          if (type.summonInterval) {
+            m.summonTimer--;
+            if (m.summonTimer <= 0) {
+              m.summonTimer = type.summonInterval;
+              const minionCount = monsters.filter(x => !MONSTER_TYPES[x.kind]?.isBoss).length;
+              if (minionCount < 2) spawnMonster();
+            }
+          }
+        } else {
+          m.stopped = false;
+          m.x += (dx / dist) * m.speed;
+          m.y += (dy / dist) * m.speed;
+        }
+      }
+      monsters = monsters.filter(m => !m.dead);
+      if (health <= 0) recoverFromDefeat();
+
+      for (const bolt of monsterBolts) {
+        bolt.x += bolt.vx;
+        bolt.y += bolt.vy;
+        if (!bolt.dead && Math.hypot(bolt.x - CANNON.x, bolt.y - CANNON.y) < CANNON_HIT_R) {
+          bolt.dead = true;
+          health--;
+          breachFlashTimer = 10;
+          spawnHitBurst(bolt.x, bolt.y);
+        }
+      }
+      monsterBolts = monsterBolts.filter(bolt =>
+        !bolt.dead && bolt.x > -20 && bolt.x < canvas.width + 20 && bolt.y > -20 && bolt.y < canvas.height + 20
+      );
+      if (health <= 0) recoverFromDefeat();
+      if (defeatBannerTimer > 0) defeatBannerTimer--;
+
+      // 게는 동굴에서 내려와 석탄을 전달하고, 다시 동굴로 돌아가는 왕복 이동을 함
+      for (const c of crabs) {
+        const target = c.state === "going" ? CANNON : CRAB_SOURCE;
+        const dx = target.x - c.x, dy = target.y - c.y;
+        const dist = Math.hypot(dx, dy) || 1;
+        if (dist < 14) {
+          if (c.state === "going") {
+            coal += COAL_PER_CRAB;
+            c.state = "returning";
+          } else {
+            c.dead = true;
+          }
+          continue;
+        }
+        c.x += (dx / dist) * CRAB_SPEED;
+        c.y += (dy / dist) * CRAB_SPEED;
+      }
+      crabs = crabs.filter(c => !c.dead);
+
+      for (const b of balls) {
+        b.x += b.vx;
+        b.y += b.vy;
+        if (b.explosive) {
+          // 폭발탄: 범위 내 모든 괴물에 피해
+          for (const m of monsters) {
+            if (!b.dead && Math.hypot(b.x - m.x, b.y - m.y) < m.r + 60) {
+              m.hp -= b.dmg;
+              spawnHitBurst(m.x, m.y);
+              if (m.hp <= 0) killMonster(m);
+              b.dead = true;
+              spawnExplosionFx(b.x, b.y);
+            }
+          }
+        } else {
+          for (const m of monsters) {
+            if (Math.hypot(b.x - m.x, b.y - m.y) < m.r) {
+              m.hp -= b.dmg;
+              spawnHitBurst(b.x, b.y);
+              if (m.hp <= 0) killMonster(m);
+              if (!b.pierce) b.dead = true; // 관통탄은 계속 진행
+            }
+          }
+        }
+      }
+      monsters = monsters.filter(m => !m.dead);
+      balls = balls.filter(b =>
+        !b.dead && b.x > -20 && b.x < canvas.width + 20 && b.y > -20 && b.y < canvas.height + 20
+      );
+
+      // 아이템: 대포 쪽으로 천천히 떠내려 오다가 가까워지면 자동 수집
+      for (const item of items) {
+        item.life--;
+        const idx = CANNON.x - item.x, idy = CANNON.y - item.y;
+        const idist = Math.hypot(idx, idy) || 1;
+        item.x += (idx / idist) * ITEM_DRIFT_SPEED;
+        item.y += (idy / idist) * ITEM_DRIFT_SPEED;
+        if (idist < 22) { applyItem(item.kind); item.collected = true; }
+      }
+      items = items.filter(i => !i.collected && i.life > 0);
+
+      for (const p of particles) {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life--;
+      }
+      particles = particles.filter(p => p.life > 0);
+
+      coalText.textContent = coal;
+      healthText.textContent = health;
+      scoreText.textContent = score;
+    }
+
+    function drawWaveFoam() {
+      // 해안선 바로 아래 바다에 살짝 흘러가는 거품 줄무늬를 그려 파도가 치는 느낌을 줌
+      ctx.fillStyle = "rgba(220, 240, 255, 0.35)";
+      for (let line = 0; line < 3; line++) {
+        const baseOffset = 18 + line * 38;
+        const phase = (frame * 0.6 + line * 70) % 220;
+        for (let x = 0; x < canvas.width; x += 6) {
+          const cy = coastY(x) + baseOffset + Math.sin(x * 0.05 + frame * 0.04) * 3;
+          if (Math.abs(((x + phase) % 60) - 30) < 10) {
+            ctx.fillRect(x, cy, 5, 2);
+          }
+        }
+      }
+    }
+
+    // 보스별 체력바 색상·서브타이틀 설정
+    const BOSS_BAR_STYLE = {
+      leviathan: { barColor: "140, 60, 220", bgColor: "#2a004a", subtext: "전설의 심해 거인이 나타났다..." },
+      storm:     { barColor: "120, 40, 200", bgColor: "#1a002a", subtext: "전방위 폭풍이 몰아친다!" },
+      overlord:  { barColor: "180, 40, 40",  bgColor: "#3a0a0a", subtext: "부하들이 우르르 몰려온다..." },
+    };
+
+    function drawBossBars() {
+      monsters.forEach((m, i) => {
+        const isBoss = MONSTER_TYPES[m.kind]?.isBoss;
+        const barW = isBoss ? 520 : 360;
+        const barH = isBoss ? 26 : 20;
+        const x = (canvas.width - barW) / 2;
+        const y = 16 + i * (barH + 10);
+
+        ctx.fillStyle = isBoss ? "#1a0030" : "#1a1a1a";
+        ctx.fillRect(x - 3, y - 3, barW + 6, barH + 6);
+        ctx.fillStyle = isBoss ? (BOSS_BAR_STYLE[m.kind]?.bgColor || "#2a004a") : "#4a1010";
+        ctx.fillRect(x, y, barW, barH);
+        if (isBoss) {
+          const pulse = 0.75 + Math.sin(frame * 0.1) * 0.25;
+          const rgb = BOSS_BAR_STYLE[m.kind]?.barColor || "140,60,220";
+          ctx.fillStyle = `rgba(${rgb}, ${pulse})`;
+        } else {
+          ctx.fillStyle = "#d9342b";
+        }
+        ctx.fillRect(x, y, barW * Math.max(0, m.hp / m.maxHp), barH);
+        ctx.fillStyle = "white";
+        ctx.font = isBoss ? "bold 14px sans-serif" : "13px sans-serif";
+        ctx.textAlign = "center";
+        const label = isBoss ? `★  ${MONSTER_TYPES[m.kind].label}  ★` : MONSTER_TYPES[m.kind].label;
+        ctx.fillText(label, canvas.width / 2, y + barH - 5);
+        ctx.textAlign = "left";
+      });
+    }
+
+    // 보스 등장 예고 연출 — 보스 종류에 따라 이름이 다름
+    function drawBossWarning() {
+      if (!bossIsPending) return;
+      const pulse = 0.5 + Math.sin(frame * 0.25) * 0.5;
+      const bossType = MONSTER_TYPES[pendingBossKind];
+      const style = BOSS_BAR_STYLE[pendingBossKind] || BOSS_BAR_STYLE.leviathan;
+
+      ctx.strokeStyle = `rgba(180, 30, 30, ${0.5 * pulse})`;
+      ctx.lineWidth = 14;
+      ctx.strokeRect(7, 7, canvas.width - 14, canvas.height - 14);
+      ctx.lineWidth = 1;
+
+      ctx.textAlign = "center";
+      ctx.fillStyle = `rgba(255, 80, 50, ${0.7 + pulse * 0.3})`;
+      ctx.font = "bold 30px sans-serif";
+      ctx.fillText(`⚠  ${bossType.label} 출현!`, canvas.width / 2, canvas.height / 2 - 18);
+      ctx.font = "15px sans-serif";
+      ctx.fillStyle = `rgba(220, 150, 100, ${0.5 + pulse * 0.4})`;
+      ctx.fillText(style.subtext, canvas.width / 2, canvas.height / 2 + 14);
+      ctx.textAlign = "left";
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(islandLayer, 0, 0);
+      drawWaveFoam();
+
+      for (const c of crabs) topDownShadow(ctx, c.x, c.y + 8, 9, 4);
+      for (const c of crabs) {
+        const bob = Math.sin(frame * 0.3 + c.bobPhase) * 2; // 걸을 때 살짝 위아래로 흔들리는 걸음걸이
+        drawCrab(ctx, c.x, c.y + bob, c.state === "going");
+      }
+
+      for (const m of monsters) {
+        const mType = MONSTER_TYPES[m.kind];
+        if (mType.phantom) ctx.globalAlpha = 0.25 + Math.sin(frame * 0.12) * 0.2;
+        topDownShadow(ctx, m.x, m.y + m.r * 0.6, m.r * 0.9, m.r * 0.4);
+        drawSeaMonster(ctx, m.x, m.y, m.r, frame, mType);
+        ctx.globalAlpha = 1;
+      }
+
+      drawItems();
+      for (const b of balls) drawCannonball(ctx, b.x, b.y);
+      for (const bolt of monsterBolts) pixelCircle(ctx, bolt.x, bolt.y, 6, "#5a2d6b", { outline: false });
+
+      topDownShadow(ctx, CANNON.x, CANNON.y + 18, 20, 8);
+      drawCannon(ctx, CANNON.x, CANNON.y, aimAngle, muzzleFlashTimer > 0, cannonDamage);
+      drawCatOperator(ctx, CANNON.x, CANNON.y - 26);
+
+      for (const p of particles) {
+        ctx.globalAlpha = Math.max(0, p.life / p.life0);
+        ctx.fillStyle = p.color;
+        ctx.fillRect(p.x, p.y, p.size, p.size);
+      }
+      ctx.globalAlpha = 1;
+
+      if (upgradeGlowTimer > 0) {
+        // 업그레이드 순간, 대포에서 고리가 한 번 퍼져나가는 효과 + 문구. 업그레이드 종류별로 색이 다름.
+        const t = 1 - upgradeGlowTimer / UPGRADE_GLOW_DURATION;
+        ctx.strokeStyle = `rgba(${upgradeGlowColor}, ${1 - t})`;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(CANNON.x, CANNON.y, 24 + t * 40, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = `rgba(${upgradeGlowColor}, ${1 - t})`;
+        ctx.font = "bold 18px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText(upgradeGlowLabel, CANNON.x, CANNON.y - 50 - t * 10);
+        ctx.textAlign = "left";
+      }
+
+      if (breachFlashTimer > 0) {
+        ctx.fillStyle = `rgba(255,60,60,${breachFlashTimer / 10 * 0.35})`;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+
+      drawBossBars();
+      drawBossWarning();
+      drawActiveEffects();
+
+      // 보스 처치 배너 (석탄 보상 + 처치 메시지)
+      if (bossKillBannerTimer > 0) {
+        const t = bossKillBannerTimer / BOSS_KILL_BANNER_DURATION;
+        const alpha = Math.min(1, t * 3);
+        const killedBossLabel = MONSTER_TYPES[lastKilledBossKind]?.label || "보스";
+        ctx.textAlign = "center";
+        ctx.fillStyle = `rgba(255, 211, 92, ${alpha})`;
+        ctx.font = "bold 26px sans-serif";
+        ctx.fillText(`★ ${killedBossLabel} 격퇴! ★`, canvas.width / 2, canvas.height / 2 - 22);
+        ctx.font = "17px sans-serif";
+        ctx.fillStyle = `rgba(120, 220, 120, ${alpha})`;
+        ctx.fillText(`석탄 +${LEVIATHAN_COAL_DROP} 획득!`, canvas.width / 2, canvas.height / 2 + 10);
+        ctx.textAlign = "left";
+      }
+
+      if (coal <= 0 && firing) {
+        ctx.fillStyle = "#ffd35c";
+        ctx.font = "16px sans-serif";
+        ctx.fillText("석탄이 없다!", CANNON.x - 40, CANNON.y - 60);
+      }
+
+      upgradeHintEl.classList.toggle("urgent", started && health <= 2);
+
+      if (defeatBannerTimer > 0) {
+        // 화면을 멈추지 않고(괴물도 이미 정리된 상태로) 잠깐 알림만 띄움 — 클릭해서 재시작할 필요 없음
+        ctx.globalAlpha = Math.min(1, defeatBannerTimer / 20);
+        ctx.fillStyle = "white";
+        ctx.font = "24px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("섬이 함락될 뻔했다... 다시 막아내자!", canvas.width / 2, 200);
+        ctx.textAlign = "left";
+        ctx.globalAlpha = 1;
+      }
+
+      drawUpgradeMenu();
+      drawDokgam();
+      drawMine();
+
+      // 채굴 미니게임 예약 배너 (카운트다운 중)
+      if (mgPending) {
+        const t = mgPendingTimer / 90;
+        const alpha = t < 0.3 ? t / 0.3 : t > 0.7 ? (1 - t) / 0.3 : 1;
+        ctx.save();
+        ctx.globalAlpha = alpha * 0.92;
+        ctx.fillStyle = 'rgba(10,8,4,0.85)';
+        ctx.fillRect(160, 188, 440, 64);
+        ctx.strokeStyle = '#ffd35c'; ctx.lineWidth = 2;
+        ctx.strokeRect(162, 190, 436, 60);
+        ctx.fillStyle = '#ffd35c'; ctx.font = 'bold 18px sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText(`⛏ ${MG_KILL_INTERVAL}마리 격퇴! 채굴 미니게임 시작...`, 380, 218);
+        ctx.fillStyle = '#aaa'; ctx.font = '13px sans-serif';
+        ctx.fillText('A/D 이동  ·  Space 점프  ·  석탄에 올라서면 채굴', 380, 240);
+        ctx.textAlign = 'left';
+        ctx.restore();
+      }
+
+      drawMineGame();
+    }
+
+    // 바닥에 떠 있는 드롭 아이템을 마름모 + 이름 라벨로 그림
+    function drawItems() {
+      for (const item of items) {
+        const type = ITEM_TYPES[item.kind];
+        const lifeRatio = item.life / ITEM_DURATION;
+        const bob = Math.sin(frame * 0.18 + item.bobPhase) * 3;
+        const alpha = lifeRatio < 0.25 ? lifeRatio / 0.25 : 1;
+        const ix = item.x, iy = item.y + bob;
+
+        ctx.globalAlpha = alpha * 0.35;
+        ctx.fillStyle = type.color;
+        ctx.beginPath(); ctx.arc(ix, iy, 20, 0, Math.PI * 2); ctx.fill();
+
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = type.color;
+        ctx.beginPath();
+        ctx.moveTo(ix, iy - 13); ctx.lineTo(ix + 10, iy);
+        ctx.lineTo(ix, iy + 13); ctx.lineTo(ix - 10, iy);
+        ctx.closePath(); ctx.fill();
+        ctx.strokeStyle = "white"; ctx.lineWidth = 1.5; ctx.stroke();
+
+        ctx.fillStyle = "white";
+        ctx.font = "bold 10px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText(type.label, ix, iy + 26);
+        ctx.textAlign = "left";
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    // 활성 아이템 효과 (우상단에 작게 표시)
+    function drawActiveEffects() {
+      const effects = [];
+      if (pierceShots > 0)   effects.push({ label: `관통탄 ×${pierceShots}`, color: "#4ad8ff" });
+      if (explosiveShots > 0) effects.push({ label: `폭발탄 ×${explosiveShots}`, color: "#ff8844" });
+      if (rapidFireTimer > 0) effects.push({ label: `속사 ${Math.ceil(rapidFireTimer/60)}s`, color: "#66dd66" });
+      if (powerShotTimer > 0) effects.push({ label: `강화탄 ${Math.ceil(powerShotTimer/60)}s`, color: "#ffd35c" });
+      effects.forEach((eff, i) => {
+        const ex = canvas.width - 8, ey = 56 + i * 22;
+        ctx.fillStyle = "rgba(0,0,0,0.65)";
+        ctx.fillRect(ex - 112, ey - 14, 112, 18);
+        ctx.fillStyle = eff.color;
+        ctx.font = "bold 12px sans-serif";
+        ctx.textAlign = "right";
+        ctx.fillText(eff.label, ex, ey);
+        ctx.textAlign = "left";
+      });
+    }
+
+    // 업그레이드 메뉴: E키로 열면 3개 카드가 나타남. 카드를 클릭하면 구입.
+    const UPGD_CARDS = [
+      { keyLabel: "U", label: "공격력", color: "255, 211, 92",
+        cost: damageCost, stat: () => `현재: ${cannonDamage}`, canMax: () => false, fn: tryDamageUpgrade },
+      { keyLabel: "F", label: "사격속도", color: "120, 220, 255",
+        cost: fireRateCost, stat: () => `현재: Lv.${fireRateLevel}`,
+        canMax: () => fireCooldownCur <= FIRE_COOLDOWN_MIN, fn: tryFireRateUpgrade },
+      { keyLabel: "H", label: "체력 보강", color: "120, 220, 120",
+        cost: healthCost, stat: () => `최대: ${maxHealth}`, canMax: () => false, fn: tryHealthUpgrade },
+    ];
+    const UPGD_CARD_W = 206, UPGD_CARD_H = 200, UPGD_GAP = 16, UPGD_START_Y = 96;
+
+    function getUpgradeCardX(i) {
+      const totalW = 3 * UPGD_CARD_W + 2 * UPGD_GAP;
+      return (canvas.width - totalW) / 2 + i * (UPGD_CARD_W + UPGD_GAP);
+    }
+
+    function handleUpgradeMenuClick(e) {
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+      UPGD_CARDS.forEach((card, i) => {
+        const cx = getUpgradeCardX(i);
+        if (mx >= cx && mx <= cx + UPGD_CARD_W && my >= UPGD_START_Y && my <= UPGD_START_Y + UPGD_CARD_H) {
+          card.fn();
+        }
+      });
+    }
+
+    function drawUpgradeMenu() {
+      if (!upgradeMenuOpen) return;
+      ctx.fillStyle = "rgba(4, 10, 20, 0.90)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#ffd35c";
+      ctx.font = "bold 22px sans-serif";
+      ctx.fillText("업그레이드", canvas.width / 2, 40);
+      ctx.fillStyle = "#aaa";
+      ctx.font = "13px sans-serif";
+      const hpMult = monsterHpScale();
+      ctx.fillText(`보유 석탄: ${coal}  ·  괴물 체력 ×${hpMult.toFixed(1)}  ·  [E] 닫기`, canvas.width / 2, 62);
+
+      UPGD_CARDS.forEach((card, i) => {
+        const cx = getUpgradeCardX(i);
+        const cy = UPGD_START_Y;
+        const cost = card.cost();
+        const canAfford = coal >= cost && !card.canMax();
+        const isMax = card.canMax();
+
+        ctx.fillStyle = canAfford ? "rgba(18, 38, 62, 0.97)" : "rgba(12, 12, 12, 0.97)";
+        ctx.fillRect(cx, cy, UPGD_CARD_W, UPGD_CARD_H);
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = isMax ? "#888" : canAfford ? `rgb(${card.color})` : "#333";
+        ctx.strokeRect(cx + 1, cy + 1, UPGD_CARD_W - 2, UPGD_CARD_H - 2);
+
+        ctx.textAlign = "center";
+        const midX = cx + UPGD_CARD_W / 2;
+
+        ctx.fillStyle = isMax ? "#666" : `rgb(${card.color})`;
+        ctx.font = "bold 20px sans-serif";
+        ctx.fillText(card.label, midX, cy + 44);
+
+        ctx.fillStyle = "#ccc";
+        ctx.font = "14px sans-serif";
+        ctx.fillText(card.stat(), midX, cy + 74);
+
+        if (isMax) {
+          ctx.fillStyle = "#555";
+          ctx.font = "13px sans-serif";
+          ctx.fillText("최대치 도달", midX, cy + 104);
+        } else {
+          ctx.fillStyle = canAfford ? "#ffd35c" : "#555";
+          ctx.font = "13px sans-serif";
+          ctx.fillText(`석탄 ${cost}개`, midX, cy + 104);
+          ctx.fillStyle = canAfford ? "white" : "#3a3a3a";
+          ctx.font = "bold 15px sans-serif";
+          ctx.fillText(`클릭 또는 [${card.keyLabel}]`, midX, cy + 152);
+          if (!canAfford) {
+            ctx.fillStyle = "#555";
+            ctx.font = "11px sans-serif";
+            ctx.fillText("석탄 부족", midX, cy + 175);
+          }
+        }
+      });
+
+      ctx.textAlign = "left";
+    }
+
+    // ── 광산 클릭 처리 ──────────────────────────────────────────────────
+    function handleMineClick(e) {
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+
+      // 광석 클릭 (즉시 석탄 수확)
+      for (let i = oreNodes.length - 1; i >= 0; i--) {
+        const ore = oreNodes[i];
+        if (Math.hypot(mx - ore.x, my - ore.y) < 24) {
+          coal += ORE_COAL_REWARD[ore.tier];
+          coalText.textContent = coal;
+          triggerUpgradeFx("88, 200, 255", `+${ORE_COAL_REWARD[ore.tier]} 석탄!`);
+          oreNodes.splice(i, 1);
+          return;
+        }
+      }
+
+      // 드워프 슬롯 클릭
+      for (let i = 0; i < MINE_COLS * MINE_ROWS; i++) {
+        const col = i % MINE_COLS, row = Math.floor(i / MINE_COLS);
+        const sx = MINE_GRID_X + col * (MINE_CELL + MINE_GAP);
+        const sy = MINE_GRID_Y + row * (MINE_CELL + MINE_GAP);
+        if (mx >= sx && mx <= sx + MINE_CELL && my >= sy && my <= sy + MINE_CELL) {
+          const d = dwarves[i];
+          if (!d) {
+            // 빈 슬롯 → 고용
+            if (coal >= DWARF_COST) {
+              coal -= DWARF_COST; coalText.textContent = coal;
+              dwarves[i] = { level: 1, timer: DWARF_MINE_INTERVAL[1] };
+              triggerUpgradeFx("160, 96, 48", "드워프 고용!");
+            }
+          } else if (selectedDwarfSlot === -1) {
+            selectedDwarfSlot = i; // 첫 번째 선택
+          } else if (selectedDwarfSlot === i) {
+            selectedDwarfSlot = -1; // 같은 슬롯 재클릭 → 해제
+          } else {
+            const sel = dwarves[selectedDwarfSlot];
+            if (sel && sel.level === d.level && d.level < DWARF_LEVELS) {
+              // 합체! 클릭한 슬롯이 레벨업
+              d.level++;
+              d.timer = DWARF_MINE_INTERVAL[d.level];
+              dwarves[selectedDwarfSlot] = null;
+              triggerUpgradeFx("200, 168, 32", `${DWARF_LABELS[d.level]} 탄생!`);
+            }
+            selectedDwarfSlot = -1;
+          }
+          return;
+        }
+      }
+      selectedDwarfSlot = -1;
+    }
+
+    // ── 드워프 픽셀 그리기 ──────────────────────────────────────────────
+    function drawMineDwarf(cx, cy, level, timer) {
+      const color = DWARF_COLORS[level];
+      const hi = shadeColor(color, 35), lo = shadeColor(color, -30);
+      // 몸통
+      ctx.fillStyle = color;
+      ctx.fillRect(cx-10, cy-2, 20, 20);
+      // 머리
+      ctx.fillStyle = hi;
+      ctx.fillRect(cx-9, cy-20, 18, 18);
+      // 헬멧
+      ctx.fillStyle = lo;
+      ctx.fillRect(cx-11, cy-25, 22, 6);
+      ctx.fillRect(cx-7, cy-32, 14, 8);
+      // 헬멧 램프
+      ctx.fillStyle = '#ffee66';
+      ctx.fillRect(cx-2, cy-28, 5, 4);
+      // 눈
+      ctx.fillStyle = 'white';
+      ctx.fillRect(cx-6, cy-17, 4, 4);
+      ctx.fillRect(cx+2, cy-17, 4, 4);
+      ctx.fillStyle = '#111';
+      ctx.fillRect(cx-5, cy-16, 2, 2);
+      ctx.fillRect(cx+3, cy-16, 2, 2);
+      // 곡괭이
+      const swing = Math.sin((1 - timer / DWARF_MINE_INTERVAL[level]) * Math.PI * 6) * 0.35;
+      ctx.save();
+      ctx.translate(cx+11, cy+5);
+      ctx.rotate(0.7 + swing);
+      ctx.fillStyle = '#6a4a18'; ctx.fillRect(-2,-14,4,16); // 자루
+      ctx.fillStyle = '#aaa';    ctx.fillRect(-7,-16,14,4); // 헤드
+      ctx.restore();
+      // 채굴 진행 바
+      const pct = 1 - timer / DWARF_MINE_INTERVAL[level];
+      const bw = MINE_CELL - 18;
+      ctx.fillStyle = '#111'; ctx.fillRect(cx - bw/2, cy+23, bw, 5);
+      ctx.fillStyle = color;  ctx.fillRect(cx - bw/2, cy+23, bw*pct, 5);
+      // 레벨 라벨
+      ctx.fillStyle = 'white'; ctx.font = 'bold 9px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(DWARF_LABELS[level], cx, cy+36);
+    }
+
+    // ── 광산 맵 전체 렌더링 ─────────────────────────────────────────────
+    function drawMine() {
+      if (!mineOpen) return;
+
+      // 동굴 배경
+      ctx.fillStyle = '#11090a';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      // 돌 질감 (ditherGround 활용)
+      ditherGround(ctx, 0, 0, canvas.width, canvas.height, '#1c140e', '#231a12', 14);
+      // 천장 암석 라인
+      ctx.fillStyle = '#0d0a06';
+      ctx.fillRect(0, 0, canvas.width, 28);
+      for (let x = 0; x < canvas.width; x += 28) {
+        ctx.fillRect(x + Math.sin(x*0.3)*4, 0, 22 + Math.cos(x*0.2)*6, 18 + Math.abs(Math.sin(x*0.15))*14);
+      }
+
+      // 제목
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#ffd35c';
+      ctx.font = 'bold 20px sans-serif';
+      ctx.fillText('⛏ 광산', canvas.width/2, 22);
+
+      // 드워프 그리드 (왼쪽)
+      for (let i = 0; i < MINE_COLS * MINE_ROWS; i++) {
+        const col = i % MINE_COLS, row = Math.floor(i / MINE_COLS);
+        const sx = MINE_GRID_X + col*(MINE_CELL+MINE_GAP);
+        const sy = MINE_GRID_Y + row*(MINE_CELL+MINE_GAP);
+        const isSel = selectedDwarfSlot === i;
+        const d = dwarves[i];
+
+        // 셀 배경
+        ctx.fillStyle = isSel ? '#2a3a4a' : '#1a1208';
+        ctx.fillRect(sx, sy, MINE_CELL, MINE_CELL);
+        ctx.strokeStyle = isSel ? '#ffd35c' : d ? DWARF_COLORS[d.level] : '#3a2a10';
+        ctx.lineWidth = isSel ? 2.5 : 1.5;
+        ctx.strokeRect(sx+1, sy+1, MINE_CELL-2, MINE_CELL-2);
+
+        if (d) {
+          drawMineDwarf(sx + MINE_CELL/2, sy + MINE_CELL/2, d.level, d.timer);
+        } else {
+          const canHire = coal >= DWARF_COST;
+          ctx.fillStyle = canHire ? '#aaa' : '#4a4a4a';
+          ctx.font = '11px sans-serif'; ctx.textAlign = 'center';
+          ctx.fillText('비어있음', sx+MINE_CELL/2, sy+MINE_CELL/2-10);
+          ctx.fillStyle = canHire ? '#ffd35c' : '#555';
+          ctx.font = 'bold 11px sans-serif';
+          ctx.fillText(`고용 ${DWARF_COST}석탄`, sx+MINE_CELL/2, sy+MINE_CELL/2+8);
+        }
+      }
+
+      // 합체 가이드 텍스트
+      ctx.fillStyle = '#8ab';
+      ctx.font = '11px sans-serif'; ctx.textAlign = 'left';
+      ctx.fillText('같은 레벨 드워프를 클릭하면 합체 →', MINE_GRID_X, MINE_GRID_Y + MINE_ROWS*(MINE_CELL+MINE_GAP) + 16);
+
+      // 구분선
+      ctx.strokeStyle = '#3a2a10'; ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(MINE_GRID_X + MINE_COLS*(MINE_CELL+MINE_GAP) + 6, 36);
+      ctx.lineTo(MINE_GRID_X + MINE_COLS*(MINE_CELL+MINE_GAP) + 6, canvas.height - 36);
+      ctx.stroke();
+
+      // 광석 노드 (오른쪽 영역)
+      for (const ore of oreNodes) {
+        const bob = Math.sin(frame*0.07 + ore.bobPhase) * 4;
+        const fade = Math.min(1, ore.life/80);
+        ctx.globalAlpha = fade;
+        // 빛남 효과
+        ctx.shadowColor = ORE_COLORS[ore.tier]; ctx.shadowBlur = 18;
+        ctx.fillStyle = ORE_COLORS[ore.tier];
+        const oy = ore.y + bob;
+        // 결정 모양 (다이아몬드)
+        ctx.beginPath();
+        ctx.moveTo(ore.x, oy-18); ctx.lineTo(ore.x+13, oy-4);
+        ctx.lineTo(ore.x+13, oy+8); ctx.lineTo(ore.x, oy+18);
+        ctx.lineTo(ore.x-13, oy+8); ctx.lineTo(ore.x-13, oy-4);
+        ctx.closePath(); ctx.fill();
+        ctx.shadowBlur = 0;
+        // 라벨
+        ctx.fillStyle = 'white'; ctx.font = 'bold 11px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(`+${ORE_COAL_REWARD[ore.tier]}석탄`, ore.x, oy+32);
+        const oreNames = ['수정','금광','보석'];
+        ctx.fillStyle = ORE_COLORS[ore.tier]; ctx.font = '10px sans-serif';
+        ctx.fillText(oreNames[ore.tier], ore.x, oy-24);
+        ctx.globalAlpha = 1;
+      }
+
+      // 오른쪽 영역 힌트 (광석 없을 때)
+      if (oreNodes.length === 0) {
+        ctx.fillStyle = '#4a3a28'; ctx.font = '13px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('광석이 나타나길 기다리는 중...', 560, 380);
+      }
+
+      // 방어전 상태 오버레이 (우상단)
+      const ox = canvas.width - 10;
+      ctx.fillStyle = 'rgba(0,0,0,0.7)';
+      ctx.fillRect(ox-172, 38, 172, 56);
+      ctx.fillStyle = '#7df'; ctx.font = '12px sans-serif'; ctx.textAlign = 'right';
+      ctx.fillText(`자동 대포 작동 중`, ox-8, 56);
+      ctx.fillStyle = health > 4 ? '#88ff88' : '#ff8866';
+      ctx.fillText(`섬 체력 ${health}/${maxHealth}  ·  킬 ${score}`, ox-8, 76);
+
+      // 하단 힌트
+      ctx.fillStyle = '#7df'; ctx.font = '14px sans-serif'; ctx.textAlign = 'right';
+      ctx.fillText('[M] 방어전으로 돌아가기', canvas.width - 14, canvas.height - 14);
+      ctx.fillStyle = '#ffd35c';
+      ctx.textAlign = 'left';
+      ctx.fillText(`보유 석탄: ${coal}`, 14, canvas.height - 14);
+      ctx.textAlign = 'left';
+    }
+
+    // 도감 UI: Tab 키로 열고 닫음. 괴물이 처음 등장하면 "발견" 상태가 되고, 처치 시 킬 카운트가 오름.
+    // 미발견 괴물은 실루엣+??? 표시. 발견한 괴물은 스프라이트+이름+스탯+처치 수를 보여줌.
+    function drawDokgam() {
+      if (!dokgamOpen) return;
+
+      // 배경 반투명 오버레이
+      ctx.fillStyle = "rgba(4, 10, 20, 0.92)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // 제목
+      const seenCount = MONSTER_KINDS.filter(k => monsterLog[k].seen).length;
+      const totalKills = MONSTER_KINDS.reduce((s, k) => s + monsterLog[k].kills, 0);
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#ffd35c";
+      ctx.font = "bold 22px sans-serif";
+      ctx.fillText("괴물 도감", canvas.width / 2, 36);
+      ctx.fillStyle = "#7df";
+      ctx.font = "13px sans-serif";
+      ctx.fillText(`발견: ${seenCount} / ${MONSTER_KINDS.length}  ·  총 처치: ${totalKills}마리  ·  [D] 닫기`, canvas.width / 2, 57);
+
+      // 카드 크기·간격
+      const cellW = 170, cellH = 138, gapX = 5, gapY = 6;
+      // 12종 → 4+4+4 배치. 각 행별로 가로 중앙 정렬
+      const rows = [[0,1,2,3],[4,5,6,7],[8,9,10,11]];
+
+      rows.forEach((indices, rowIdx) => {
+        const count = indices.length;
+        const rowTotalW = count * cellW + (count - 1) * gapX;
+        const startX = (canvas.width - rowTotalW) / 2;
+        const startY = 68 + rowIdx * (cellH + gapY);
+
+        indices.forEach((kindIdx, col) => {
+          if (kindIdx >= MONSTER_KINDS.length) return;
+          const kind = MONSTER_KINDS[kindIdx];
+          const log = monsterLog[kind];
+          const type = MONSTER_TYPES[kind];
+          const cx = startX + col * (cellW + gapX);
+          const cy = startY;
+
+          // 카드 배경 + 테두리 (처치한 종은 금테, 발견만 된 종은 파란테, 미발견은 어두운 테)
+          ctx.fillStyle = log.seen ? "rgba(18, 38, 62, 0.97)" : "rgba(10, 10, 10, 0.97)";
+          ctx.fillRect(cx, cy, cellW, cellH);
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = !log.seen ? "#222" : log.kills > 0 ? "#ffd35c" : "#3a6a9a";
+          ctx.strokeRect(cx + 1, cy + 1, cellW - 2, cellH - 2);
+
+          if (!log.seen) {
+            // 미발견: 실루엣(어두운 색)으로 모양만 보여주고 ??? 표시
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(cx + 2, cy + 2, cellW - 4, cellH - 4);
+            ctx.clip();
+            ctx.globalAlpha = 0.18;
+            drawSeaMonster(ctx, cx + cellW / 2, cy + cellH / 2 + 8, Math.min(type.rMax, 28) * 0.8, 0, {
+              bodyColor: "#aaa", tipColor: "#888", tentacles: type.tentacles, spiky: type.spiky,
+            });
+            ctx.globalAlpha = 1;
+            ctx.restore();
+            ctx.fillStyle = "#444";
+            ctx.font = "bold 26px sans-serif";
+            ctx.textAlign = "center";
+            ctx.fillText("???", cx + cellW / 2, cy + cellH / 2 + 6);
+            ctx.font = "11px sans-serif";
+            ctx.fillStyle = "#383838";
+            ctx.fillText("미발견", cx + cellW / 2, cy + cellH / 2 + 24);
+          } else {
+            // 발견됨: 왼쪽에 스프라이트, 오른쪽에 텍스트
+            const spriteAreaW = 76;
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(cx + 2, cy + 2, spriteAreaW, cellH - 4);
+            ctx.clip();
+            const spriteR = Math.min(type.rMax, 28) * 0.82;
+            if (type.phantom) ctx.globalAlpha = 0.55;
+            drawSeaMonster(ctx, cx + 2 + spriteAreaW / 2, cy + cellH / 2 + 8, spriteR, frame * 0.3, type);
+            ctx.globalAlpha = 1;
+            ctx.restore();
+
+            // 구분선
+            ctx.fillStyle = "#1e3a58";
+            ctx.fillRect(cx + spriteAreaW + 4, cy + 8, 1, cellH - 16);
+
+            // 텍스트 정보
+            const tx = cx + spriteAreaW + 10;
+            ctx.textAlign = "left";
+
+            // 이름
+            ctx.fillStyle = "#ffd35c";
+            ctx.font = "bold 13px sans-serif";
+            ctx.fillText(type.label, tx, cy + 22);
+
+            // 스탯
+            ctx.fillStyle = "#88b8d8";
+            ctx.font = "11px sans-serif";
+            ctx.fillText(`체력: ${type.hp}`, tx, cy + 39);
+            const attackLabel = type.rusher
+              ? `돌격형 (${type.contactDamage}피해)`
+              : `원거리 ×${type.boltCount}`;
+            ctx.fillText(attackLabel, tx, cy + 54);
+
+            // 설명
+            ctx.fillStyle = "#b0b0b0";
+            ctx.font = "11px sans-serif";
+            const desc = type.desc;
+            // 9글자(한국어 기준) 초과 시 줄 바꿈
+            if (desc.length > 9) {
+              ctx.fillText(desc.slice(0, 9), tx, cy + 71);
+              ctx.fillText(desc.slice(9), tx, cy + 85);
+            } else {
+              ctx.fillText(desc, tx, cy + 71);
+            }
+
+            // 처치 수
+            ctx.fillStyle = log.kills > 0 ? "#5dde7a" : "#555";
+            ctx.font = `bold 12px sans-serif`;
+            ctx.fillText(`처치: ${log.kills}마리`, tx, cy + 108);
+
+            // 보스 배지
+            if (kind === "leviathan") {
+              ctx.fillStyle = "#ff6b5c";
+              ctx.font = "bold 10px sans-serif";
+              ctx.fillText("★ BOSS", tx, cy + 128);
+            }
+          }
+        });
+      });
+
+      ctx.textAlign = "left";
+    }
+
+    // ── 채굴 미니게임 함수들 ──────────────────────────────────────────────────
+    function triggerMineGame() {
+      if (mgPhase !== 'idle') return;
+      upgradeMenuOpen = false; dokgamOpen = false; mineOpen = false; firing = false;
+      mgPhase = 'fadein'; mgPhaseTimer = MG_FADEIN_DUR; mgAlpha = 0;
+      mgGameTimer = MG_DURATION; mgCoal = 0;
+      Object.assign(mgP, {x:380, y:468, vx:0, vy:0, grounded:false, dir:'right'});
+      mgBlocks = mgMakeBlocks();
+    }
+
+    function updateMineGame() {
+      mgPhaseTimer--;
+      if (mgPhase === 'fadein') {
+        mgAlpha = 1 - mgPhaseTimer / MG_FADEIN_DUR;
+        if (mgPhaseTimer <= 0) { mgPhase = 'play'; mgPhaseTimer = MG_DURATION; mgAlpha = 1; }
+        return;
+      }
+      if (mgPhase === 'result') {
+        if (mgPhaseTimer <= 0) {
+          coal += mgCoal; coalText.textContent = coal;
+          mgPhase = 'fadeout'; mgPhaseTimer = MG_FADEOUT_DUR;
+        }
+        return;
+      }
+      if (mgPhase === 'fadeout') {
+        mgAlpha = mgPhaseTimer / MG_FADEOUT_DUR;
+        if (mgPhaseTimer <= 0) { mgPhase = 'idle'; mgAlpha = 0; }
+        return;
+      }
+      // ── play ──────────────────────────────────────────────────────────────
+      mgGameTimer--;
+      if (mgGameTimer <= 0) { mgPhase = 'result'; mgPhaseTimer = MG_RESULT_DUR; return; }
+
+      if (mgK['ArrowLeft'] || mgK['KeyA'])       { mgP.vx = -MG_SPEED; mgP.dir = 'left'; }
+      else if (mgK['ArrowRight'] || mgK['KeyD']) { mgP.vx = MG_SPEED;  mgP.dir = 'right'; }
+      else mgP.vx *= 0.65;
+
+      mgP.vy += MG_GRAVITY;
+      const mgPrevY = mgP.y;
+      mgP.x = Math.max(MG_PW, Math.min(760 - MG_PW, mgP.x + mgP.vx));
+      mgP.y += mgP.vy;
+
+      mgP.grounded = false;
+      for (const p of MG_PLATS) {
+        const inX = mgP.x + MG_PW > p.x && mgP.x - MG_PW < p.x + p.w;
+        if (inX && mgPrevY <= p.y && mgP.y >= p.y) {
+          mgP.y = p.y; mgP.vy = 0; mgP.grounded = true;
+        }
+      }
+      if (mgP.y > 570) { mgP.y = 500; mgP.vy = 0; mgP.grounded = true; }
+
+      // 석탄 자동 수집 — 서면 바로 획득
+      for (const b of mgBlocks) {
+        if (!b.got && Math.abs(mgP.x - b.x) < 26 && Math.abs(mgP.y - b.y) < 26) {
+          b.got = true; mgCoal += b.c;
+          spawnHitBurst(b.x, b.y - 12);
+        }
+      }
+    }
+
+    function drawMineGame() {
+      if (mgPhase === 'idle') return;
+      ctx.save();
+      ctx.globalAlpha = mgAlpha;
+
+      // 동굴 배경
+      ctx.fillStyle = '#0d0a10';
+      ctx.fillRect(0, 0, 760, 640);
+
+      // 종유석 (천장 장식)
+      ctx.fillStyle = '#1c120c';
+      for (let i = 0; i < 20; i++) {
+        const sx = 10 + i * 38, sh = 12 + (i * 41) % 30;
+        ctx.beginPath();
+        ctx.moveTo(sx - 7, 0); ctx.lineTo(sx + 7, 0); ctx.lineTo(sx, sh);
+        ctx.closePath(); ctx.fill();
+      }
+
+      // 발판
+      for (const p of MG_PLATS) {
+        ctx.fillStyle = '#251a0e'; ctx.fillRect(p.x, p.y, p.w, 640 - p.y);
+        ctx.fillStyle = '#3a2818'; ctx.fillRect(p.x, p.y, p.w, 8);
+        ctx.fillStyle = '#4a3420'; ctx.fillRect(p.x, p.y, p.w, 3);
+      }
+
+      // 석탄 블록
+      ctx.shadowColor = '#aaccff'; ctx.shadowBlur = 8;
+      for (const b of mgBlocks) {
+        if (b.got) continue;
+        const by = b.y - 14;
+        ctx.fillStyle = '#1a1520';
+        ctx.beginPath(); ctx.arc(b.x, by, 13, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#2a2035';
+        ctx.beginPath(); ctx.arc(b.x - 3, by - 4, 5, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#6688cc';
+        ctx.beginPath(); ctx.arc(b.x - 4, by - 5, 3, 0, Math.PI * 2); ctx.fill();
+        // 석탄 라벨
+        ctx.fillStyle = b.c === 1 ? '#aabbd8' : b.c === 2 ? '#88ddaa' : '#ffdd66';
+        ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText('+' + b.c, b.x, by - 18);
+      }
+      ctx.shadowBlur = 0;
+      ctx.textAlign = 'left';
+
+      // 플레이어 드워프
+      if (mgPhase === 'play' || mgPhase === 'result') {
+        drawCharacter(ctx, mgP.x, mgP.y, mgP.dir, 0, !mgP.grounded, false);
+      }
+
+      // 파티클 (수집 이펙트)
+      ctx.globalAlpha = mgAlpha;
+      for (const p of particles) {
+        ctx.globalAlpha = mgAlpha * Math.max(0, p.life / p.life0);
+        ctx.fillStyle = p.color;
+        ctx.fillRect(p.x, p.y, p.size, p.size);
+      }
+      ctx.globalAlpha = mgAlpha;
+
+      // 타이머 바
+      if (mgPhase === 'play') {
+        const tr = mgGameTimer / MG_DURATION;
+        const bc = tr > 0.4 ? '#44ee88' : tr > 0.18 ? '#ffcc44' : '#ff5544';
+        ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(22, 16, 716, 20);
+        ctx.fillStyle = bc;                  ctx.fillRect(22, 16, 716 * tr, 20);
+        ctx.strokeStyle = '#443'; ctx.lineWidth = 1; ctx.strokeRect(22, 16, 716, 20);
+
+        ctx.fillStyle = '#ffd35c'; ctx.font = 'bold 13px sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText(
+          `⛏ 채굴 미니게임!  남은 시간: ${Math.ceil(mgGameTimer / 60)}초  현재 석탄: ${mgCoal}개`,
+          380, 50
+        );
+        ctx.fillStyle = '#8ab'; ctx.font = '11px sans-serif'; ctx.textAlign = 'right';
+        ctx.fillText('A/D 이동  ·  Space 점프  ·  석탄 위에 올라서면 자동 채굴', 748, 640 - 12);
+        ctx.textAlign = 'left';
+
+        // 남은 석탄 개수 힌트
+        const remaining = mgBlocks.filter(b => !b.got).length;
+        if (remaining === 0) {
+          ctx.fillStyle = '#44ee88'; ctx.font = 'bold 14px sans-serif'; ctx.textAlign = 'center';
+          ctx.fillText('모두 채굴 완료! 타이머 대기 중...', 380, 75);
+          ctx.textAlign = 'left';
+        }
+      }
+
+      // 결과 화면
+      if (mgPhase === 'result') {
+        ctx.fillStyle = 'rgba(0,0,0,0.78)'; ctx.fillRect(0, 0, 760, 640);
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#ffd35c'; ctx.font = 'bold 38px sans-serif';
+        ctx.fillText('⛏ 채굴 완료!', 380, 268);
+        ctx.fillStyle = '#aaeeff'; ctx.font = '24px sans-serif';
+        ctx.fillText(`석탄 ${mgCoal}개 획득!`, 380, 316);
+        ctx.fillStyle = '#888'; ctx.font = '15px sans-serif';
+        ctx.fillText('방어전으로 돌아갑니다...', 380, 358);
+        ctx.textAlign = 'left';
+      }
+
+      ctx.restore();
+    }
+
+    function loop() {
+      if (started) update();
+      draw();
+      requestAnimationFrame(loop);
+    }
+    draw();
+    loop();
+  </script>
+</body>
+</html>

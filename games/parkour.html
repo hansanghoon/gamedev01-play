@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>파쿠르 게임 - 4단계: 좁은 시야 + 다양한 구조물</title>
+<style>
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: #222;
+    color: white;
+    font-family: sans-serif;
+  }
+  canvas {
+    background: #87ceeb;
+    border: 4px solid white;
+    margin-top: 20px;
+  }
+  #info {
+    margin-top: 10px;
+    font-size: 16px;
+    line-height: 1.5;
+    text-align: center;
+  }
+  a {
+    color: #9cf;
+    margin-top: 12px;
+  }
+</style>
+</head>
+<body>
+  <h1>파쿠르 게임 (만드는 중 - 4단계: 좁은 시야 + 다양한 구조물)</h1>
+  <div id="info">
+    ← → (또는 A / D)로 이동, 스페이스바로 점프<br>
+    벽에 붙은 채 ↑(또는 W)를 누르면 <b>벽타기</b>(올라가기), 벽에 붙은 채 스페이스바를 누르면 <b>벽차기</b>(반대쪽으로 점프)<br>
+    낮은 구조물은 그냥 점프로, 발판은 밟고 올라서서, 높은 벽은 벽타기/벽차기로 넘어보세요
+  </div>
+  <canvas id="game" width="420" height="300"></canvas>
+  <a href="../index.html">← 게임 목록으로 돌아가기</a>
+
+  <script src="pixel-art.js"></script>
+  <script>
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+
+    const groundY = 250;       // 발이 닿는 바닥 높이
+    const WORLD_WIDTH = 1200;  // 화면(420px)보다 넓어서 카메라가 스크롤되지만, 한눈에 다 안 보이는 작은 직사각형 맵
+
+    const GRAVITY = 0.6;
+    const JUMP_POWER = -11;
+
+    // 좌우 이동은 한번에 최고 속도로 가는 게 아니라, 가속/감속이 붙어야 "역동적인" 느낌이 남
+    const ACCEL = 0.7;
+    const MAX_SPEED = 5.5;
+    const FRICTION = 0.5;
+
+    const WALL_CLIMB_SPEED = 3;   // 벽타기로 올라가는 속도
+    const WALL_SLIDE_SPEED = 1;   // 벽에 붙어서 가만히 있을 때 천천히 미끄러지는 속도
+    const WALLKICK_VX = 6.5;      // 벽차기로 옆으로 튕겨나가는 힘
+    const WALLKICK_VY = -10.5;    // 벽차기로 위로 솟는 힘
+
+    const HALF_W = 10;  // 캐릭터 충돌 판정용 절반 너비
+    const PLAYER_H = 44; // 캐릭터 키 (머리+몸통+다리)
+
+    // 벽 장애물들 (땅에 붙어있는 세로 벽). top이 작을수록(=숫자가 작을수록) 더 높은 벽.
+    // 보통 점프(약 100px 높이)로는 못 넘는 높이로 만들어서 벽타기/벽차기가 필요하게 함
+    const walls = [
+      { x: 250, width: 20, top: groundY - 80 },   // 1번: 낮은 벽 - 그냥 점프로도 넘어갈 수 있음
+      { x: 400, width: 20, top: groundY - 150 },  // 2번: 높은 벽 - 벽타기/벽차기 필요
+      { x: 1000, width: 20, top: groundY - 170 }, // 3번: 좁은 틈 - 벽차기를 번갈아 해서 올라가도 되고 벽타기도 가능
+      { x: 1080, width: 20, top: groundY - 170 }  // (3번과 80px 틈을 두고 마주보는 벽)
+    ];
+
+    // 공중에 떠 있는 발판들. 옆에서 막지는 않고(밑으로 지나갈 수 있음), 위에서 떨어지면 그 위에 설 수 있음
+    const platforms = [
+      { x: 520, width: 60, y: groundY - 50 },  // 계단 1
+      { x: 610, width: 60, y: groundY - 95 },  // 계단 2
+      { x: 700, width: 60, y: groundY - 140 }, // 계단 3 (꼭대기)
+      { x: 840, width: 70, y: groundY - 140 }  // 계단3과 같은 높이, 80px 틈을 건너뛰어야 닿음
+    ];
+
+    const player = {
+      x: 150,
+      y: groundY,
+      vx: 0,
+      vy: 0,
+      dir: "right",
+      jumping: false,
+      onWall: false,         // 지금 벽에 붙어서 매달려 있는지
+      touchingWallSide: null, // "left" | "right" | null : 벽이 내 어느 쪽에 붙어있는지
+      moving: false,
+      walkFrame: 0,
+      walkTimer: 0,
+      noClingTimer: 0 // 벽차기 직후 잠깐 동안은 같은 벽에 다시 매달리지 않게 막는 시간
+    };
+
+    const camera = { x: 0 };
+    let shakeTimer = 0; // 벽차기처럼 강한 동작 후 화면을 살짝 흔들어 역동감을 줌
+
+    const keys = {};
+    document.addEventListener("keydown", (e) => { keys[e.code] = true; });
+    document.addEventListener("keyup", (e) => { keys[e.code] = false; });
+
+    function jump() {
+      // 벽에 붙어 있는 상태에서 점프 버튼 = 벽차기 (반대 방향으로 튕겨나감)
+      if (player.touchingWallSide && player.y < groundY) {
+        const kickDir = player.touchingWallSide === "right" ? -1 : 1; // 벽이 오른쪽에 있으면 왼쪽으로 튕김
+        player.vx = WALLKICK_VX * kickDir;
+        player.vy = WALLKICK_VY;
+        player.dir = kickDir === 1 ? "right" : "left";
+        player.x += kickDir * 6; // 같은 벽에 바로 다시 붙지 않도록 살짝 밀어줌
+        player.onWall = false;
+        player.touchingWallSide = null;
+        player.jumping = true;
+        player.noClingTimer = 14; // 방향키를 계속 누르고 있어도 잠깐은 벽에 다시 안 붙고 제대로 튕겨나가게 함
+        shakeTimer = 8;
+      } else if (!player.jumping) {
+        player.vy = JUMP_POWER;
+        player.jumping = true;
+      }
+    }
+    document.addEventListener("keydown", (e) => { if (e.code === "Space") { e.preventDefault(); jump(); } });
+    canvas.addEventListener("mousedown", jump);
+
+    // 좌우 벽과의 충돌 처리. player.y가 벽의 top보다 큰(=벽보다 낮은) 동안에만 옆을 막음
+    function resolveWallCollisions() {
+      player.touchingWallSide = null;
+      if (player.noClingTimer > 0) return; // 벽차기로 튕겨나가는 중엔 잠깐 벽 충돌을 무시해서 진짜로 떠나갈 수 있게 함
+      for (const w of walls) {
+        if (player.y <= w.top) continue; // 이미 벽 높이보다 위로 올라갔으면 옆에서 막지 않음
+        const left = w.x, right = w.x + w.width;
+        const playerLeft = player.x - HALF_W;
+        const playerRight = player.x + HALF_W;
+        if (playerRight > left && playerLeft < right) {
+          const wallCenter = (left + right) / 2;
+          if (player.x < wallCenter) {
+            player.x = left - HALF_W;
+            player.vx = 0;
+            player.touchingWallSide = "right";
+          } else {
+            player.x = right + HALF_W;
+            player.vx = 0;
+            player.touchingWallSide = "left";
+          }
+        }
+      }
+    }
+
+    function update() {
+      // 좌우 입력 -> 가속/감속이 있는 속도(vx)로 이동
+      const pressingLeft = keys["ArrowLeft"] || keys["KeyA"];
+      const pressingRight = keys["ArrowRight"] || keys["KeyD"];
+      player.moving = false;
+      if (pressingLeft) {
+        player.vx -= ACCEL;
+        player.dir = "left";
+        player.moving = true;
+      } else if (pressingRight) {
+        player.vx += ACCEL;
+        player.dir = "right";
+        player.moving = true;
+      } else {
+        // 키를 안누르면 마찰로 서서히 멈춤
+        if (player.vx > 0) player.vx = Math.max(0, player.vx - FRICTION);
+        else if (player.vx < 0) player.vx = Math.min(0, player.vx + FRICTION);
+      }
+      player.vx = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, player.vx));
+
+      player.x += player.vx;
+      if (player.x < 20) { player.x = 20; player.vx = 0; }
+      if (player.x > WORLD_WIDTH - 20) { player.x = WORLD_WIDTH - 20; player.vx = 0; }
+
+      const prevY = player.y; // 이번 프레임에서 위아래로 움직이기 전 위치 (벽 꼭대기에 올라서는 순간을 잡아내는 데 씀)
+
+      resolveWallCollisions();
+
+      // 벽타기 판정: 벽 쪽으로 붙어있고, (이미 공중이거나 위쪽 키를 누르고 있으면) 벽에 매달림
+      const pressingUp = keys["ArrowUp"] || keys["KeyW"];
+      const pressingDown = keys["ArrowDown"] || keys["KeyS"];
+      const towardWall =
+        (player.touchingWallSide === "right" && pressingRight) ||
+        (player.touchingWallSide === "left" && pressingLeft);
+
+      if (player.noClingTimer > 0) player.noClingTimer--;
+
+      if (player.touchingWallSide && towardWall && player.noClingTimer <= 0 && (player.y < groundY || pressingUp)) {
+        player.onWall = true;
+        player.jumping = true;
+        player.vy = 0;
+        if (pressingUp) player.y -= WALL_CLIMB_SPEED;
+        else if (pressingDown) player.y += WALL_CLIMB_SPEED;
+        else player.y += WALL_SLIDE_SPEED;
+        if (player.y >= groundY) {
+          player.y = groundY;
+          player.jumping = false;
+          player.onWall = false;
+        }
+      } else {
+        player.onWall = false;
+        player.vy += GRAVITY;
+        player.y += player.vy;
+        if (player.y >= groundY) {
+          player.y = groundY;
+          player.vy = 0;
+          player.jumping = false;
+        }
+      }
+
+      // 벽 꼭대기에 올라서기: 벽타기로 끝까지 오르거나 점프로 넘어가다가 떨어지는 중에
+      // 벽의 윗면(top)을 위에서 아래로 지나치면, 그 위에 발판처럼 멈춰 설 수 있게 함.
+      // (이게 없으면 벽을 다 타고 올라가도 손을 떼는 순간 다시 같은 자리로 떨어져서 절대 못 넘어감)
+      for (const w of walls) {
+        const withinX = player.x + HALF_W > w.x && player.x - HALF_W < w.x + w.width;
+        if (withinX && prevY <= w.top + 0.01 && player.y >= w.top) {
+          player.y = w.top;
+          player.vy = 0;
+          player.jumping = false;
+          player.onWall = false;
+        }
+      }
+
+      // 공중 발판에 올라서기: 발판은 옆을 막지 않으므로(아래로 지나갈 수 있음) 위에서 떨어질 때만 착지 판정
+      for (const p of platforms) {
+        const withinX = player.x + HALF_W > p.x && player.x - HALF_W < p.x + p.width;
+        if (withinX && prevY <= p.y + 0.01 && player.y >= p.y) {
+          player.y = p.y;
+          player.vy = 0;
+          player.jumping = false;
+        }
+      }
+
+      // 걷는 다리 모양은 땅 위에서 움직일 때만 번갈아 바뀜
+      if (player.moving && !player.jumping && !player.onWall) {
+        player.walkTimer++;
+        if (player.walkTimer % 8 === 0) {
+          player.walkFrame = player.walkFrame === 0 ? 1 : 0;
+        }
+      } else {
+        player.walkTimer = 0;
+      }
+
+      // 카메라: 캐릭터를 화면 중앙에 두되, 움직이는 속도만큼 앞쪽을 더 보여줘서(룩어헤드) 역동적인 느낌을 줌
+      const lookahead = Math.max(-60, Math.min(60, player.vx * 9));
+      const targetCameraX = player.x - canvas.width / 2 + lookahead;
+      camera.x += (targetCameraX - camera.x) * 0.12;
+      camera.x = Math.max(0, Math.min(WORLD_WIDTH - canvas.width, camera.x));
+
+      if (shakeTimer > 0) shakeTimer--;
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.save();
+      if (shakeTimer > 0) {
+        ctx.translate((Math.random() - 0.5) * 6, (Math.random() - 0.5) * 4);
+      }
+
+      // 바닥 (세상 전체가 같은 색이라 카메라 이동과 무관하게 화면 전체를 채우면 됨)
+      ctx.fillStyle = "#3a7d44";
+      ctx.fillRect(0, groundY, canvas.width, canvas.height - groundY);
+
+      // 벽들: 화면에 보이는 것만 그림
+      for (const w of walls) {
+        const screenX = w.x - camera.x;
+        if (screenX + w.width < 0 || screenX > canvas.width) continue;
+        pixelBlock(ctx, screenX, w.top, w.width, groundY - w.top, "#8a7a5e");
+      }
+
+      // 발판들: 두꺼운 판자처럼 얇게 그려서 벽과 구분되게 함
+      const PLATFORM_THICKNESS = 14;
+      for (const p of platforms) {
+        const screenX = p.x - camera.x;
+        if (screenX + p.width < 0 || screenX > canvas.width) continue;
+        pixelBlock(ctx, screenX, p.y, p.width, PLATFORM_THICKNESS, "#b89968");
+      }
+
+      // 캐릭터
+      const screenPlayerX = player.x - camera.x;
+      drawCharacter(ctx, screenPlayerX, player.y, player.dir, player.walkFrame, player.jumping || player.onWall);
+
+      ctx.restore();
+    }
+
+    function loop() {
+      update();
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    loop();
+  </script>
+</body>
+</html>

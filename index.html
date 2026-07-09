@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>게임 목록</title>
+<style>
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: #222;
+    color: white;
+    font-family: sans-serif;
+    padding-top: 40px;
+  }
+  ul {
+    list-style: none;
+    padding: 0;
+  }
+  li {
+    margin: 10px 0;
+  }
+  a {
+    color: #9cf;
+    font-size: 18px;
+    text-decoration: none;
+  }
+  a:hover {
+    text-decoration: underline;
+  }
+  .genre {
+    color: #999;
+    font-size: 14px;
+  }
+</style>
+</head>
+<body>
+  <h1>내가 만든 게임들</h1>
+  <ul>
+    <li>
+      <a href="games/action-jump.html">점프해서 장애물 피하기</a>
+      <div class="genre">장르: 액션</div>
+    </li>
+    <li>
+      <a href="games/world-map.html">🌍 세계 탐험 (나라별 미션)</a>
+      <div class="genre">장르: 액션 앤솔로지 — 나라마다 다른 게임 방식 (만드는 중)</div>
+    </li>
+    <li style="opacity:0.55">
+      <a href="games/web-swing.html">스파이더 액션 (도시 스윙)</a>
+      <div class="genre">장르: 액션 (세계 탐험 미국 스테이지로 통합됨)</div>
+    </li>
+    <li style="opacity:0.6">
+      <a href="games/parkour.html">파쿠르 (보류)</a>
+      <div class="genre">장르: 액션 (벽타기 프로토타입 - 보류됨)</div>
+    </li>
+    <li>
+      <a href="games/island-defense.html">섬 디펜스 (고양이와 대포)</a>
+      <div class="genre">장르: 디펜스 (만드는 중 - 1단계: 핵심 전투만)</div>
+    </li>
+    <li>
+      <a href="games/dream-card.html">꿈속 탐험가 (카드 로그라이크)</a>
+      <div class="genre">장르: 덱빌딩 로그라이크 — 슬레이 더 스파이어 스타일 (만드는 중)</div>
+      <div class="genre">🎨 <a href="games/pixel-gallery.html" style="font-size: 14px;">도트 갤러리 (픽셀아트 모아보기)</a></div>
+    </li>
+    <li>
+      <a href="games/family-yard.html">Faded Memory (빛바랜 기억)</a>
+      <div class="genre">장르: 감성 탐험 (제작 중)</div>
+      <div class="genre">(테스트용) <a href="games/ending.html" style="font-size: 14px;">엔딩 컷신 바로 보기</a></div>
+    </li>
+  </ul>
+</body>
+</html>

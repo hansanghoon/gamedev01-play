@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>Faded Memory (빛바랜 기억)</title>
+<style>
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: #222;
+    color: white;
+    font-family: sans-serif;
+  }
+  h1 {
+    margin-bottom: 4px;
+  }
+  h1 .subtitle {
+    font-size: 0.6em;
+    color: #aaa;
+    font-weight: normal;
+  }
+  #gameWrap {
+    position: relative;
+    display: inline-block;
+    margin-top: 10px;
+  }
+  canvas {
+    background: #b89a4a;
+    border: 4px solid white;
+    display: block;
+  }
+  #hud {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    right: 8px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: rgba(0,0,0,0.4);
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 13px;
+  }
+  #caption {
+    margin-top: 10px;
+    font-size: 13px;
+    color: #aaa;
+    text-align: center;
+  }
+  a {
+    color: #9cf;
+    margin-top: 12px;
+  }
+  #muteBtn, #menuBtn {
+    background: transparent;
+    color: white;
+    border: none;
+    cursor: pointer;
+    font-size: 14px;
+    padding: 0 4px;
+  }
+  .hudBtns {
+    display: flex;
+    gap: 6px;
+  }
+  #menuOverlay {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.6);
+    display: none;
+    align-items: center;
+    justify-content: center;
+  }
+  #menuCard {
+    background: #f5ecd7;
+    color: #3a2c1a;
+    border: 3px solid #8a6a3a;
+    border-radius: 8px;
+    padding: 10px 12px;
+    width: 60%;
+    max-height: 75%;
+    overflow-y: auto;
+    font-size: 12px;
+  }
+  #menuTabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 8px;
+  }
+  .tabBtn {
+    flex: 1;
+    padding: 4px 0;
+    background: #e3d3ad;
+    border: 1px solid #8a6a3a;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .tabBtn.active {
+    background: #8a6a3a;
+    color: white;
+  }
+  .dexRow {
+    border-bottom: 1px solid #d8c6a0;
+    padding: 5px 0;
+    font-size: 11px;
+  }
+  .dexRow .dexName {
+    font-weight: bold;
+  }
+  .dexRow .dexLoc {
+    color: #7a6a50;
+    font-size: 11px;
+  }
+  .dexRow .dexMemory {
+    margin-top: 4px;
+    line-height: 1.4;
+  }
+  .mapRow {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    border-bottom: 1px solid #d8c6a0;
+    padding: 6px 2px;
+    font-size: 11px;
+  }
+  .mapStatus {
+    color: #7a6a50;
+    white-space: nowrap;
+  }
+  .mapClickable {
+    cursor: pointer;
+  }
+  .mapClickable:hover {
+    background: #e9dcbb;
+  }
+  #settingsPanel label {
+    font-size: 12px;
+    display: block;
+    margin-bottom: 10px;
+  }
+  #resetBtn, #closeMenuBtn {
+    background: #8a6a3a;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    padding: 4px 10px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  #closeMenuBtn {
+    margin-top: 10px;
+    width: 100%;
+  }
+  #popup {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.5);
+    display: none;
+    align-items: center;
+    justify-content: center;
+  }
+  #popupCard {
+    background: #f5ecd7;
+    color: #3a2c1a;
+    border: 4px solid #8a6a3a;
+    border-radius: 8px;
+    padding: 18px 22px;
+    max-width: 80%;
+    text-align: center;
+  }
+  #popupCard h2 {
+    margin: 0 0 10px;
+    font-size: 18px;
+  }
+  #popupCard p {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  #popupCard .hint {
+    margin-top: 14px;
+    font-size: 12px;
+    color: #7a6a50;
+  }
+</style>
+</head>
+<body>
+  <h1>Faded Memory <span class="subtitle">빛바랜 기억</span></h1>
+
+  <div id="gameWrap">
+    <canvas id="game" width="480" height="320"></canvas>
+
+    <div id="hud">
+      <span>허수아비 선 논두렁 · 추억 <span id="count">0</span>/1</span>
+      <div class="hudBtns">
+        <button id="muteBtn" title="음악 켜기/끄기">🔈</button>
+        <button id="menuBtn" title="도감 / 설정">☰</button>
+      </div>
+    </div>
+
+    <div id="popup">
+      <div id="popupCard">
+        <h2 id="popupName"></h2>
+        <p id="popupMemory"></p>
+        <div class="hint" id="popupHint">스페이스바를 누르면 닫혀요</div>
+      </div>
+    </div>
+
+    <div id="menuOverlay">
+      <div id="menuCard">
+        <div id="menuTabs">
+          <button class="tabBtn active" data-tab="dex">도감</button>
+          <button class="tabBtn" data-tab="map">지도</button>
+          <button class="tabBtn" data-tab="settings">설정</button>
+        </div>
+        <div id="dexPanel"></div>
+        <div id="mapPanel" style="display:none;"></div>
+        <div id="settingsPanel" style="display:none;">
+          <label>음악 크기: <input type="range" id="volumeSlider" min="0" max="100" value="50"></label>
+          <button id="resetBtn">진행 상황 초기화</button>
+        </div>
+        <button id="closeMenuBtn">닫기</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="caption">방향키로 이동 · 가까이 가면 뜨는 표시를 보고 스페이스바로 줍기 · 왼쪽은 시냇가, 오른쪽은 돌다리로 이어져요</div>
+  <a href="../index.html">← 게임 목록으로 돌아가기</a>
+
+  <audio id="bgm" src="audio/Home - Toby Fox.mp3" loop preload="auto"></audio>
+
+  <script src="data.js"></script>
+  <script src="pixel-art.js"></script>
+  <script>
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+    const countEl = document.getElementById("count");
+    const popup = document.getElementById("popup");
+    const popupName = document.getElementById("popupName");
+    const popupMemory = document.getElementById("popupMemory");
+    const popupHint = document.getElementById("popupHint");
+    const muteBtn = document.getElementById("muteBtn");
+
+    // === 배경음악 (실제 노래 파일을 반복 재생) ===
+    const bgm = document.getElementById("bgm");
+    bgm.volume = 0.5;
+    let musicStarted = false;
+    const bgmState = restoreBgmState(bgm);
+    if (bgmState) {
+      muteBtn.textContent = bgm.muted ? "🔇" : "🔈";
+      if (bgmState.playing) {
+        // 자동재생이 막혀있으면 이 play()는 조용히 실패하고, musicStarted는 그대로 false로 남아서
+        // 첫 키 입력 때 startMusic()이 다시 시도함
+        bgm.play().then(() => { musicStarted = true; }).catch(() => {});
+      }
+    }
+    function startMusic() {
+      if (musicStarted) return;
+      musicStarted = true;
+      bgm.play().catch(() => {});
+    }
+    document.addEventListener("keydown", () => startMusic(), { once: true });
+    muteBtn.addEventListener("click", () => {
+      startMusic();
+      bgm.muted = !bgm.muted;
+      muteBtn.textContent = bgm.muted ? "🔇" : "🔈";
+    });
+    // 다음 맵으로 넘어가기 직전에 현재 재생 위치를 저장해서, 다음 페이지에서 이어서 재생되게 함
+    window.addEventListener("pagehide", () => saveBgmState(bgm));
+
+    // === 메뉴 (도감 / 지도 / 설정) ===
+    const menuBtn = document.getElementById("menuBtn");
+    const menuOverlay = document.getElementById("menuOverlay");
+    const dexPanel = document.getElementById("dexPanel");
+    const mapPanel = document.getElementById("mapPanel");
+    const settingsPanel = document.getElementById("settingsPanel");
+    const volumeSlider = document.getElementById("volumeSlider");
+    const resetBtn = document.getElementById("resetBtn");
+    const closeMenuBtn = document.getElementById("closeMenuBtn");
+    const tabBtns = document.querySelectorAll(".tabBtn");
+
+    function openMenu() {
+      if (popupOpen) return;
+      menuOpen = true;
+      renderDex(dexPanel);
+      renderLocationList(mapPanel, "ricefield");
+      menuOverlay.style.display = "flex";
+    }
+
+    function closeMenu() {
+      menuOpen = false;
+      menuOverlay.style.display = "none";
+    }
+
+    menuBtn.addEventListener("click", openMenu);
+    closeMenuBtn.addEventListener("click", closeMenu);
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { menuOpen ? closeMenu() : openMenu(); }
+    });
+    menuOverlay.addEventListener("click", (e) => {
+      if (e.target === menuOverlay) closeMenu();
+    });
+
+    tabBtns.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        tabBtns.forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        const tab = btn.dataset.tab;
+        dexPanel.style.display = tab === "dex" ? "block" : "none";
+        mapPanel.style.display = tab === "map" ? "block" : "none";
+        settingsPanel.style.display = tab === "settings" ? "block" : "none";
+      });
+    });
+
+    volumeSlider.addEventListener("input", () => {
+      bgm.volume = volumeSlider.value / 100;
+    });
+
+    resetBtn.addEventListener("click", () => {
+      if (confirm("정말 처음부터 다시 시작할까? 모은 추억이 모두 사라져!")) {
+        saveCollected([]);
+        items.forEach((i) => (i.collected = false));
+        countEl.textContent = "0";
+        renderDex(dexPanel);
+      }
+    });
+
+    // 도트 그리기 도구는 games/pixel-art.js 에서 가져옴 (마당/우물과 같은 스타일을 공유)
+
+    const player = {
+      x: 240,
+      y: 165,
+      speed: 2,
+      direction: "down",
+      moving: false,
+      crouching: false,
+      crouchTimer: 0,
+      walkFrame: 0,
+      walkTimer: 0
+    };
+
+    let popupOpen = false;
+    let menuOpen = false;
+
+    // 시냇가와 논두렁을 잇는 길 오른쪽 끝으로 걸어나와 이 맵(논두렁)으로 넘어온 경우,
+    // 저장해둔 y 위치에 맞춰 왼쪽 끝에서 다시 시작하게 해줌
+    const arriving = popMapTransition();
+    if (arriving && arriving.dir === "right") {
+      player.x = 21;
+      player.y = Math.max(40, Math.min(canvas.height - 10, arriving.pos));
+      player.direction = "right";
+    } else if (arriving && arriving.dir === "left") {
+      player.x = canvas.width - 21;
+      player.y = Math.max(40, Math.min(canvas.height - 10, arriving.pos));
+      player.direction = "left";
+    }
+
+    // 처음 와본 곳이면 짧은 설명을 한 번 보여줌(추억 팝업 카드를 재사용)
+    if (markVisitedIfNew("ricefield")) {
+      popupName.textContent = "";
+      popupMemory.textContent = "허수아비가 외로이 서 있는 논두렁에 다다랐다. 바람이 불 때마다 벼 이삭이 황금빛으로 일렁인다.";
+      popupHint.textContent = "스페이스바를 누르면 닫혀요";
+      popup.style.display = "flex";
+      popupOpen = true;
+    }
+
+    // 부딪히면 막히는 것들(논, 허수아비). 가운데 논두렁 흙길은 평평한 바닥이라 안 넣음
+    const OBSTACLES = [
+      { x: 0, y: 0, w: 480, h: 110 }, // 위쪽 논
+      { x: 0, y: 230, w: 480, h: 90 }, // 아래쪽 논
+      { x: 290, y: 150, w: 16, h: 60 } // 허수아비
+    ];
+
+    // 이 맵(논두렁)에 숨겨진 아이템들의 위치. 내용(이름/추억)은 data.js의 ALL_ITEMS에서 가져옴
+    // 허수아비와 떨어진 논두렁 빈터에 그대로 놓여있어서 어느 방향에서 다가가도 주울 수 있음
+    const RICEFIELD_POSITIONS = {
+      rice: { x: 140, y: 170, radius: 32 }
+    };
+
+    const collectedIds = loadCollected();
+    const items = ALL_ITEMS
+      .filter(i => RICEFIELD_POSITIONS[i.id])
+      .map(i => ({ ...i, ...RICEFIELD_POSITIONS[i.id], collected: collectedIds.includes(i.id) }));
+    countEl.textContent = items.filter(i => i.collected).length;
+
+    let nearItem = null;
+    let approachItem = null;
+
+    const keys = {};
+    document.addEventListener("keydown", (e) => {
+      keys[e.key] = true;
+      if (e.key === " ") {
+        e.preventDefault();
+        if (popupOpen) {
+          closePopup();
+        } else if (!player.crouching) {
+          player.crouching = true;
+          player.crouchTimer = 0;
+          // 아이템 근처에서 웅크리면 줍는 동작(길게), 그냥 웅크리면 짧게 끝남
+          player.crouchDuration = nearItem ? 70 : 28;
+        }
+      }
+    });
+    document.addEventListener("keyup", (e) => { keys[e.key] = false; });
+
+    function closePopup() {
+      popup.style.display = "none";
+      popupOpen = false;
+    }
+
+    function collectNearItem() {
+      if (!nearItem) return;
+      nearItem.collected = true;
+      markCollected(nearItem.id);
+      playPickupChime();
+      countEl.textContent = items.filter(i => i.collected).length;
+      popupName.textContent = nearItem.name;
+      popupMemory.textContent = nearItem.memory;
+      popup.style.display = "flex";
+      popupOpen = true;
+      nearItem = null;
+    }
+
+    function update() {
+      if (popupOpen || menuOpen) return; // 팝업/메뉴가 떠있는 동안은 움직임 정지
+
+      if (player.crouching) {
+        player.crouchTimer++;
+        if (player.crouchTimer === 35) collectNearItem(); // 웅크리는 동작 중간에 줍기 처리
+        if (player.crouchTimer > player.crouchDuration) player.crouching = false;
+        return;
+      }
+
+      let dx = 0, dy = 0;
+      if (keys["ArrowUp"]) { dy = -1; player.direction = "up"; }
+      else if (keys["ArrowDown"]) { dy = 1; player.direction = "down"; }
+      else if (keys["ArrowLeft"]) { dx = -1; player.direction = "left"; }
+      else if (keys["ArrowRight"]) { dx = 1; player.direction = "right"; }
+
+      player.moving = dx !== 0 || dy !== 0;
+
+      if (player.moving) {
+        moveWithObstacles(player, dx * player.speed, dy * player.speed, OBSTACLES);
+
+        player.walkTimer++;
+        if (player.walkTimer >= 8) {
+          player.walkTimer = 0;
+          player.walkFrame = player.walkFrame === 0 ? 1 : 0;
+        }
+      } else {
+        player.walkTimer = 0;
+        player.walkFrame = 0;
+      }
+
+      player.x = Math.max(20, Math.min(canvas.width - 20, player.x));
+      player.y = Math.max(40, Math.min(canvas.height - 10, player.y));
+
+      // 왼쪽 끝까지 걸어가면 시냇가와 논두렁을 잇는 길로 돌아감
+      if (player.moving && player.direction === "left" && player.x <= 20) {
+        setMapTransition(player.y, "left");
+        location.href = "path-stream-ricefield.html";
+        return;
+      }
+      // 오른쪽 끝까지 걸어가면 논두렁과 돌다리를 잇는 길로 넘어감
+      if (player.moving && player.direction === "right" && player.x >= canvas.width - 20) {
+        setMapTransition(player.y, "right");
+        location.href = "path-ricefield-bridge.html";
+        return;
+      }
+
+      // 가까운 미발견 아이템 찾기 (숨겨진 아이템은 가까이 가야만 보임)
+      nearItem = null;
+      approachItem = null;
+      let approachDist = Infinity;
+      for (const item of items) {
+        if (item.collected) continue;
+        const dist = Math.hypot(player.x - item.x, player.y - item.y);
+        const outerRadius = item.radius * 2.5;
+        if (dist < item.radius) { nearItem = item; }
+        else if (dist < outerRadius && dist < approachDist) {
+          approachItem = item;
+          approachDist = dist;
+        }
+      }
+    }
+
+    // === 배경 그리기 (전부 작은 도트로 이루어짐) ===
+    function drawRicefield(ctx) {
+      // 위/아래 논(황금빛으로 익은 벼)
+      ditherGround(ctx, 0, 0, canvas.width, 110, "#c9a83a", "#a8862c", 16);
+      ditherGround(ctx, 0, 230, canvas.width, 90, "#c9a83a", "#a8862c", 16);
+
+      // 벼 이삭(작은 줄기 다발을 격자로 그려서 논처럼 보이게 함)
+      ctx.strokeStyle = "#8a6a1f";
+      ctx.lineWidth = 2;
+      [20, 250].forEach((bandY) => {
+        for (let gx = 16; gx < canvas.width; gx += 28) {
+          for (let gy = 0; gy < 70; gy += 22) {
+            const x = gx + (gy % 44 === 0 ? 0 : 12);
+            const y = bandY + gy;
+            ctx.beginPath();
+            ctx.moveTo(x, y + 10);
+            ctx.lineTo(x - 3, y);
+            ctx.moveTo(x, y + 10);
+            ctx.lineTo(x + 3, y);
+            ctx.stroke();
+          }
+        }
+      });
+
+      // 논두렁(가운데 흙길)
+      ditherGround(ctx, 0, 110, canvas.width, 120, "#a99a7a", "#8a7d62", 20);
+
+      // 허수아비
+      pixelBlock(ctx, 295, 150, 6, 60, "#6b4423"); // 기둥
+      pixelBlock(ctx, 278, 168, 40, 5, "#6b4423"); // 가로대(팔)
+      pixelBlock(ctx, 285, 178, 26, 22, "#caa873"); // 낡은 옷
+      pixelCircle(ctx, 298, 158, 10, "#d9c98a"); // 밀짚 머리
+      pixelBlock(ctx, 288, 152, 22, 6, "#8a6a3a"); // 모자
+
+      // 왼쪽 끝 흙길: 여기로 걸어나가면 시냇가와 논두렁을 잇는 길로 이어짐
+      ditherGround(ctx, 0, 110, 20, 120, "#a99a7a", "#8a7d62", 20);
+      // 오른쪽 끝 흙길: 여기로 걸어나가면 논두렁과 돌다리를 잇는 길로 이어짐
+      ditherGround(ctx, 460, 110, 20, 120, "#a99a7a", "#8a7d62", 20);
+    }
+
+    const bgCanvas = document.createElement("canvas");
+    bgCanvas.width = canvas.width;
+    bgCanvas.height = canvas.height;
+    drawRicefield(bgCanvas.getContext("2d"));
+
+    function drawItemHint() {
+      if (!nearItem && approachItem) {
+        const t = (Date.now() % 1400) / 1400;
+        const alpha = 0.15 + Math.sin(t * Math.PI * 2) * 0.1;
+        ctx.globalAlpha = Math.max(0.05, alpha);
+        pixelCircle(ctx, approachItem.x, approachItem.y - 20, 5, "#fff7c2");
+        ctx.globalAlpha = 1;
+      }
+
+      if (!nearItem) return;
+      ctx.fillStyle = "#fff7c2";
+      ctx.font = "bold 13px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("스페이스바로 줍기", nearItem.x, nearItem.y - 40);
+      const t = (Date.now() % 600) / 600;
+      const r = 5 + Math.sin(t * Math.PI * 2) * 2.5;
+      pixelCircle(ctx, nearItem.x, nearItem.y - 25, r, "#fff04d");
+    }
+
+    function draw() {
+      ctx.drawImage(bgCanvas, 0, 0);
+      drawItemHint();
+      drawCharacter(ctx, player.x, player.y, player.direction, player.walkFrame, player.crouching);
+
+      if (items.every(i => i.collected)) {
+        ctx.fillStyle = "rgba(0,0,0,0.55)";
+        ctx.fillRect(0, canvas.height - 40, canvas.width, 40);
+        ctx.fillStyle = "white";
+        ctx.font = "14px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("이 곳의 추억을 모두 모았어! 오른쪽 길로 더 가보자", canvas.width / 2, canvas.height - 16);
+      }
+    }
+
+    function loop() {
+      update();
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    loop();
+  </script>
+</body>
+</html>

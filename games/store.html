@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>Faded Memory (빛바랜 기억)</title>
+<style>
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: #222;
+    color: white;
+    font-family: sans-serif;
+  }
+  h1 {
+    margin-bottom: 4px;
+  }
+  h1 .subtitle {
+    font-size: 0.6em;
+    color: #aaa;
+    font-weight: normal;
+  }
+  #gameWrap {
+    position: relative;
+    display: inline-block;
+    margin-top: 10px;
+  }
+  canvas {
+    background: #8fc36b;
+    border: 4px solid white;
+    display: block;
+  }
+  #hud {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    right: 8px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: rgba(0,0,0,0.4);
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 13px;
+  }
+  #caption {
+    margin-top: 10px;
+    font-size: 13px;
+    color: #aaa;
+    text-align: center;
+  }
+  a {
+    color: #9cf;
+    margin-top: 12px;
+  }
+  #muteBtn, #menuBtn {
+    background: transparent;
+    color: white;
+    border: none;
+    cursor: pointer;
+    font-size: 14px;
+    padding: 0 4px;
+  }
+  .hudBtns {
+    display: flex;
+    gap: 6px;
+  }
+  #menuOverlay {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.6);
+    display: none;
+    align-items: center;
+    justify-content: center;
+  }
+  #menuCard {
+    background: #f5ecd7;
+    color: #3a2c1a;
+    border: 3px solid #8a6a3a;
+    border-radius: 8px;
+    padding: 10px 12px;
+    width: 60%;
+    max-height: 75%;
+    overflow-y: auto;
+    font-size: 12px;
+  }
+  #menuTabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 8px;
+  }
+  .tabBtn {
+    flex: 1;
+    padding: 4px 0;
+    background: #e3d3ad;
+    border: 1px solid #8a6a3a;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .tabBtn.active {
+    background: #8a6a3a;
+    color: white;
+  }
+  .dexRow {
+    border-bottom: 1px solid #d8c6a0;
+    padding: 5px 0;
+    font-size: 11px;
+  }
+  .dexRow .dexName {
+    font-weight: bold;
+  }
+  .dexRow .dexLoc {
+    color: #7a6a50;
+    font-size: 11px;
+  }
+  .dexRow .dexMemory {
+    margin-top: 4px;
+    line-height: 1.4;
+  }
+  .mapRow {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    border-bottom: 1px solid #d8c6a0;
+    padding: 6px 2px;
+    font-size: 11px;
+  }
+  .mapStatus {
+    color: #7a6a50;
+    white-space: nowrap;
+  }
+  .mapClickable {
+    cursor: pointer;
+  }
+  .mapClickable:hover {
+    background: #e9dcbb;
+  }
+  #settingsPanel label {
+    font-size: 12px;
+    display: block;
+    margin-bottom: 10px;
+  }
+  #resetBtn, #closeMenuBtn {
+    background: #8a6a3a;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    padding: 4px 10px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  #closeMenuBtn {
+    margin-top: 10px;
+    width: 100%;
+  }
+  #popup {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.5);
+    display: none;
+    align-items: center;
+    justify-content: center;
+  }
+  #popupCard {
+    background: #f5ecd7;
+    color: #3a2c1a;
+    border: 4px solid #8a6a3a;
+    border-radius: 8px;
+    padding: 18px 22px;
+    max-width: 80%;
+    text-align: center;
+  }
+  #popupCard h2 {
+    margin: 0 0 10px;
+    font-size: 18px;
+  }
+  #popupCard p {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  #popupCard .hint {
+    margin-top: 14px;
+    font-size: 12px;
+    color: #7a6a50;
+  }
+</style>
+</head>
+<body>
+  <h1>Faded Memory <span class="subtitle">빛바랜 기억</span></h1>
+
+  <div id="gameWrap">
+    <canvas id="game" width="480" height="320"></canvas>
+
+    <div id="hud">
+      <span>색 바랜 슈퍼 · 추억 <span id="count">0</span>/1</span>
+      <div class="hudBtns">
+        <button id="muteBtn" title="음악 켜기/끄기">🔈</button>
+        <button id="menuBtn" title="도감 / 설정">☰</button>
+      </div>
+    </div>
+
+    <div id="popup">
+      <div id="popupCard">
+        <h2 id="popupName"></h2>
+        <p id="popupMemory"></p>
+        <div class="hint" id="popupHint">스페이스바를 누르면 닫혀요</div>
+      </div>
+    </div>
+
+    <div id="menuOverlay">
+      <div id="menuCard">
+        <div id="menuTabs">
+          <button class="tabBtn active" data-tab="dex">도감</button>
+          <button class="tabBtn" data-tab="map">지도</button>
+          <button class="tabBtn" data-tab="settings">설정</button>
+        </div>
+        <div id="dexPanel"></div>
+        <div id="mapPanel" style="display:none;"></div>
+        <div id="settingsPanel" style="display:none;">
+          <label>음악 크기: <input type="range" id="volumeSlider" min="0" max="100" value="50"></label>
+          <button id="resetBtn">진행 상황 초기화</button>
+        </div>
+        <button id="closeMenuBtn">닫기</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="caption">방향키로 이동 · 가까이 가면 뜨는 표시를 보고 스페이스바로 줍기 · 아래쪽은 정자, 오른쪽은 뒷산으로 이어져요</div>
+  <a href="../index.html">← 게임 목록으로 돌아가기</a>
+
+  <audio id="bgm" src="audio/Home - Toby Fox.mp3" loop preload="auto"></audio>
+
+  <script src="data.js"></script>
+  <script src="pixel-art.js"></script>
+  <script>
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+    const countEl = document.getElementById("count");
+    const popup = document.getElementById("popup");
+    const popupName = document.getElementById("popupName");
+    const popupMemory = document.getElementById("popupMemory");
+    const popupHint = document.getElementById("popupHint");
+    const muteBtn = document.getElementById("muteBtn");
+
+    // === 배경음악 (실제 노래 파일을 반복 재생) ===
+    const bgm = document.getElementById("bgm");
+    bgm.volume = 0.5;
+    let musicStarted = false;
+    const bgmState = restoreBgmState(bgm);
+    if (bgmState) {
+      muteBtn.textContent = bgm.muted ? "🔇" : "🔈";
+      if (bgmState.playing) {
+        // 자동재생이 막혀있으면 이 play()는 조용히 실패하고, musicStarted는 그대로 false로 남아서
+        // 첫 키 입력 때 startMusic()이 다시 시도함
+        bgm.play().then(() => { musicStarted = true; }).catch(() => {});
+      }
+    }
+    function startMusic() {
+      if (musicStarted) return;
+      musicStarted = true;
+      bgm.play().catch(() => {});
+    }
+    document.addEventListener("keydown", () => startMusic(), { once: true });
+    muteBtn.addEventListener("click", () => {
+      startMusic();
+      bgm.muted = !bgm.muted;
+      muteBtn.textContent = bgm.muted ? "🔇" : "🔈";
+    });
+    // 다음 맵으로 넘어가기 직전에 현재 재생 위치를 저장해서, 다음 페이지에서 이어서 재생되게 함
+    window.addEventListener("pagehide", () => saveBgmState(bgm));
+
+    // === 메뉴 (도감 / 지도 / 설정) ===
+    const menuBtn = document.getElementById("menuBtn");
+    const menuOverlay = document.getElementById("menuOverlay");
+    const dexPanel = document.getElementById("dexPanel");
+    const mapPanel = document.getElementById("mapPanel");
+    const settingsPanel = document.getElementById("settingsPanel");
+    const volumeSlider = document.getElementById("volumeSlider");
+    const resetBtn = document.getElementById("resetBtn");
+    const closeMenuBtn = document.getElementById("closeMenuBtn");
+    const tabBtns = document.querySelectorAll(".tabBtn");
+
+    function openMenu() {
+      if (popupOpen) return;
+      menuOpen = true;
+      renderDex(dexPanel);
+      renderLocationList(mapPanel, "store");
+      menuOverlay.style.display = "flex";
+    }
+
+    function closeMenu() {
+      menuOpen = false;
+      menuOverlay.style.display = "none";
+    }
+
+    menuBtn.addEventListener("click", openMenu);
+    closeMenuBtn.addEventListener("click", closeMenu);
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { menuOpen ? closeMenu() : openMenu(); }
+    });
+    menuOverlay.addEventListener("click", (e) => {
+      if (e.target === menuOverlay) closeMenu();
+    });
+
+    tabBtns.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        tabBtns.forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        const tab = btn.dataset.tab;
+        dexPanel.style.display = tab === "dex" ? "block" : "none";
+        mapPanel.style.display = tab === "map" ? "block" : "none";
+        settingsPanel.style.display = tab === "settings" ? "block" : "none";
+      });
+    });
+
+    volumeSlider.addEventListener("input", () => {
+      bgm.volume = volumeSlider.value / 100;
+    });
+
+    resetBtn.addEventListener("click", () => {
+      if (confirm("정말 처음부터 다시 시작할까? 모은 추억이 모두 사라져!")) {
+        saveCollected([]);
+        items.forEach((i) => (i.collected = false));
+        countEl.textContent = "0";
+        renderDex(dexPanel);
+      }
+    });
+
+    // 도트 그리기 도구는 games/pixel-art.js 에서 가져옴 (마당/우물과 같은 스타일을 공유)
+
+    const player = {
+      x: 240,
+      y: 250,
+      speed: 2,
+      direction: "up",
+      moving: false,
+      crouching: false,
+      crouchTimer: 0,
+      walkFrame: 0,
+      walkTimer: 0
+    };
+
+    let popupOpen = false;
+    let menuOpen = false;
+
+    // 정자와 슈퍼를 잇는 길 위쪽 끝으로 걸어나와 이 맵(슈퍼)으로 넘어온 경우,
+    // 저장해둔 x 위치에 맞춰 아래쪽 끝에서 다시 시작하게 해줌
+    const arriving = popMapTransition();
+    if (arriving && arriving.dir === "up") {
+      player.x = Math.max(20, Math.min(canvas.width - 20, arriving.pos));
+      player.y = canvas.height - 21;
+      player.direction = "up";
+    }
+
+    // 처음 와본 곳이면 짧은 설명을 한 번 보여줌(추억 팝업 카드를 재사용)
+    if (markVisitedIfNew("store")) {
+      popupName.textContent = "";
+      popupMemory.textContent = "색이 다 바랜 간판이 걸린 작은 슈퍼에 다다랐다. 가게 앞 낡은 의자만이, 더운 날 부채질을 하며 손님을 기다리던 사장님의 자리를 기억하고 있다.";
+      popupHint.textContent = "스페이스바를 누르면 닫혀요";
+      popup.style.display = "flex";
+      popupOpen = true;
+    }
+
+    // 부딪히면 막히는 것들(슈퍼 건물, 과일 상자들). 가게 앞 타일 바닥은 그대로 지나갈 수 있게 안 넣음
+    const OBSTACLES = [
+      { x: 140, y: 90, w: 200, h: 80 }, // 슈퍼 건물
+      { x: 70, y: 212, w: 28, h: 22 }, // 사과 상자
+      { x: 105, y: 212, w: 28, h: 22 }, // 오렌지 상자
+      { x: 140, y: 212, w: 28, h: 22 }, // 배추 상자
+      { x: 175, y: 212, w: 28, h: 22 } // 바나나 상자
+    ];
+
+    // 이 맵(슈퍼)에 숨겨진 아이템들의 위치. 내용(이름/추억)은 data.js의 ALL_ITEMS에서 가져옴
+    // 사장님이 부채질하던 의자 옆 빈 마당에 그대로 놓여있어서 어느 방향에서 다가가도 주울 수 있음
+    const STORE_POSITIONS = {
+      fan: { x: 390, y: 250, radius: 32 }
+    };
+
+    const collectedIds = loadCollected();
+    const items = ALL_ITEMS
+      .filter(i => STORE_POSITIONS[i.id])
+      .map(i => ({ ...i, ...STORE_POSITIONS[i.id], collected: collectedIds.includes(i.id) }));
+    countEl.textContent = items.filter(i => i.collected).length;
+
+    let nearItem = null;
+    let approachItem = null;
+
+    const keys = {};
+    document.addEventListener("keydown", (e) => {
+      keys[e.key] = true;
+      if (e.key === " ") {
+        e.preventDefault();
+        if (popupOpen) {
+          closePopup();
+        } else if (!player.crouching) {
+          player.crouching = true;
+          player.crouchTimer = 0;
+          // 아이템 근처에서 웅크리면 줍는 동작(길게), 그냥 웅크리면 짧게 끝남
+          player.crouchDuration = nearItem ? 70 : 28;
+        }
+      }
+    });
+    document.addEventListener("keyup", (e) => { keys[e.key] = false; });
+
+    function closePopup() {
+      popup.style.display = "none";
+      popupOpen = false;
+    }
+
+    function collectNearItem() {
+      if (!nearItem) return;
+      nearItem.collected = true;
+      markCollected(nearItem.id);
+      playPickupChime();
+      countEl.textContent = items.filter(i => i.collected).length;
+      popupName.textContent = nearItem.name;
+      popupMemory.textContent = nearItem.memory;
+      popup.style.display = "flex";
+      popupOpen = true;
+      nearItem = null;
+    }
+
+    function update() {
+      if (popupOpen || menuOpen) return; // 팝업/메뉴가 떠있는 동안은 움직임 정지
+
+      if (player.crouching) {
+        player.crouchTimer++;
+        if (player.crouchTimer === 35) collectNearItem(); // 웅크리는 동작 중간에 줍기 처리
+        if (player.crouchTimer > player.crouchDuration) player.crouching = false;
+        return;
+      }
+
+      let dx = 0, dy = 0;
+      if (keys["ArrowUp"]) { dy = -1; player.direction = "up"; }
+      else if (keys["ArrowDown"]) { dy = 1; player.direction = "down"; }
+      else if (keys["ArrowLeft"]) { dx = -1; player.direction = "left"; }
+      else if (keys["ArrowRight"]) { dx = 1; player.direction = "right"; }
+
+      player.moving = dx !== 0 || dy !== 0;
+
+      if (player.moving) {
+        moveWithObstacles(player, dx * player.speed, dy * player.speed, OBSTACLES);
+
+        player.walkTimer++;
+        if (player.walkTimer >= 8) {
+          player.walkTimer = 0;
+          player.walkFrame = player.walkFrame === 0 ? 1 : 0;
+        }
+      } else {
+        player.walkTimer = 0;
+        player.walkFrame = 0;
+      }
+
+      player.x = Math.max(20, Math.min(canvas.width - 20, player.x));
+      player.y = Math.max(40, Math.min(canvas.height - 10, player.y));
+
+      // 아래쪽 끝까지 걸어가면 정자와 슈퍼를 잇는 길로 돌아감
+      if (player.moving && player.direction === "down" && player.y >= canvas.height - 10) {
+        setMapTransition(player.x, "down");
+        location.href = "path-pavilion-store.html";
+        return;
+      }
+
+      // 오른쪽 끝까지 걸어가면 슈퍼와 뒷산을 잇는 길로 넘어감
+      if (player.moving && player.direction === "right" && player.x >= canvas.width - 20) {
+        setMapTransition(player.y, "right");
+        location.href = "path-store-mountain.html";
+        return;
+      }
+
+      // 가까운 미발견 아이템 찾기 (숨겨진 아이템은 가까이 가야만 보임)
+      nearItem = null;
+      approachItem = null;
+      let approachDist = Infinity;
+      for (const item of items) {
+        if (item.collected) continue;
+        const dist = Math.hypot(player.x - item.x, player.y - item.y);
+        const outerRadius = item.radius * 2.5;
+        if (dist < item.radius) { nearItem = item; }
+        else if (dist < outerRadius && dist < approachDist) {
+          approachItem = item;
+          approachDist = dist;
+        }
+      }
+    }
+
+    // === 배경 그리기 (전부 작은 도트로 이루어짐) ===
+    function drawStore(ctx) {
+      // 가게 앞 보도블록 바닥(정자의 흙/잔디와는 다른 타일 느낌)
+      ctx.fillStyle = "#c7c0ad";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.strokeStyle = "rgba(0,0,0,0.08)";
+      for (let x = 0; x <= canvas.width; x += 24) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
+      }
+      for (let y = 0; y <= canvas.height; y += 24) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+      }
+
+      // 슈퍼 건물 벽(벽돌 무늬) — 정자의 나무 기둥/팔작지붕과 다르게 도시 상점 느낌을 줌
+      pixelBlock(ctx, 140, 90, 200, 80, "#9c5b4a");
+      ctx.fillStyle = shadeColor("#9c5b4a", -25);
+      for (let row = 0; row < 8; row++) {
+        const y = 92 + row * 10;
+        const offset = row % 2 === 0 ? 0 : 10;
+        for (let x = 142 + offset; x < 338; x += 20) {
+          ctx.fillRect(x, y, 18, PX);
+        }
+      }
+
+      pixelBlock(ctx, 220, 120, 40, 50, "#bcd4dc"); // 유리 출입문
+      pixelBlock(ctx, 160, 110, 32, 40, "#e8e3d0"); // 진열창(왼쪽)
+      pixelBlock(ctx, 288, 110, 32, 40, "#e8e3d0"); // 진열창(오른쪽)
+      // 진열창 안에 색이 바랜 채로 줄지어 놓인 상품들
+      const goodsColors = ["#c97b6a", "#c9b25a", "#7a9c6a", "#9a8ab0"];
+      for (let row = 0; row < 3; row++) {
+        for (let col = 0; col < 3; col++) {
+          const c = goodsColors[(row + col) % goodsColors.length];
+          pixelBlock(ctx, 164 + col * 9, 114 + row * 12, 7, 8, c, { outline: false });
+          pixelBlock(ctx, 292 + col * 9, 114 + row * 12, 7, 8, c, { outline: false });
+        }
+      }
+
+      // 색이 바랜 파란 줄무늬 차양(어닝) — 정자 지붕과 전혀 다른 형태
+      pixelBlock(ctx, 128, 76, 224, 16, "#4a6f8a");
+      ctx.fillStyle = shadeColor("#4a6f8a", 30);
+      for (let x = 132; x < 348; x += 24) {
+        ctx.fillRect(x, 76, 12, 16);
+      }
+
+      // 빛바랜 간판
+      pixelBlock(ctx, 150, 50, 180, 22, "#c9704a");
+      pixelBlock(ctx, 162, 58, 156, 6, "#e8c9a8", { outline: false }); // 글자 자리(빛바래서 잘 안 보임)
+
+      // 가게 앞에 늘어놓은 과일/채소 상자들
+      pixelBlock(ctx, 70, 212, 28, 22, "#8a6a3a");
+      pixelBlock(ctx, 105, 212, 28, 22, "#8a6a3a");
+      pixelBlock(ctx, 140, 212, 28, 22, "#8a6a3a");
+      pixelBlock(ctx, 175, 212, 28, 22, "#8a6a3a");
+      // 사과
+      pixelCircle(ctx, 78, 206, 5, "#c9453f", { outline: false });
+      pixelCircle(ctx, 88, 204, 5, "#c9453f", { outline: false });
+      pixelCircle(ctx, 95, 208, 5, "#c9453f", { outline: false });
+      // 오렌지
+      pixelCircle(ctx, 113, 206, 5, "#d98a3a", { outline: false });
+      pixelCircle(ctx, 123, 204, 5, "#d98a3a", { outline: false });
+      pixelCircle(ctx, 130, 208, 5, "#d98a3a", { outline: false });
+      // 배추
+      pixelCircle(ctx, 150, 205, 7, "#7a9c5a", { outline: false });
+      pixelCircle(ctx, 164, 206, 7, "#7a9c5a", { outline: false });
+      // 바나나
+      pixelCircle(ctx, 183, 206, 5, "#d9b54a", { outline: false });
+      pixelCircle(ctx, 192, 205, 5, "#d9b54a", { outline: false });
+      pixelCircle(ctx, 199, 208, 5, "#d9b54a", { outline: false });
+
+      // 사장님이 부채질하며 앉아있던 낡은 의자(장식)
+      drawChair(ctx, 390, 250, 24);
+
+      // 가게 옆 가로수
+      pixelCircle(ctx, 445, 190, 22, "#3f7a3a");
+
+      // 아래쪽 끝 인도: 여기로 걸어나가면 정자와 슈퍼를 잇는 길로 이어짐
+      ditherGround(ctx, 0, 300, canvas.width, 20, "#b0aa9c", "#968f80", 16);
+      // 오른쪽 끝: 여기로 걸어나가면 슈퍼와 뒷산을 잇는 길로 이어짐
+      ditherGround(ctx, 460, 0, 20, canvas.height, "#b0aa9c", "#968f80", 16);
+    }
+
+    const bgCanvas = document.createElement("canvas");
+    bgCanvas.width = canvas.width;
+    bgCanvas.height = canvas.height;
+    drawStore(bgCanvas.getContext("2d"));
+
+    function drawItemHint() {
+      if (!nearItem && approachItem) {
+        const t = (Date.now() % 1400) / 1400;
+        const alpha = 0.15 + Math.sin(t * Math.PI * 2) * 0.1;
+        ctx.globalAlpha = Math.max(0.05, alpha);
+        pixelCircle(ctx, approachItem.x, approachItem.y - 20, 5, "#fff7c2");
+        ctx.globalAlpha = 1;
+      }
+
+      if (!nearItem) return;
+      ctx.fillStyle = "#fff7c2";
+      ctx.font = "bold 13px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("스페이스바로 줍기", nearItem.x, nearItem.y - 40);
+      const t = (Date.now() % 600) / 600;
+      const r = 5 + Math.sin(t * Math.PI * 2) * 2.5;
+      pixelCircle(ctx, nearItem.x, nearItem.y - 25, r, "#fff04d");
+    }
+
+    function draw() {
+      ctx.drawImage(bgCanvas, 0, 0);
+      drawItemHint();
+      drawCharacter(ctx, player.x, player.y, player.direction, player.walkFrame, player.crouching);
+
+      if (items.every(i => i.collected)) {
+        ctx.fillStyle = "rgba(0,0,0,0.55)";
+        ctx.fillRect(0, canvas.height - 40, canvas.width, 40);
+        ctx.fillStyle = "white";
+        ctx.font = "14px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("이 곳의 추억을 모두 모았어! 오른쪽 길로 더 가보자", canvas.width / 2, canvas.height - 16);
+      }
+    }
+
+    function loop() {
+      update();
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    loop();
+  </script>
+</body>
+</html>

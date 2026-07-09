@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>이집트 (카이로) — 사막 대쉬</title>
+<style>
+  body { background: #0e0a06; display: flex; flex-direction: column; align-items: center;
+         color: white; font-family: sans-serif; margin: 0; padding: 0; }
+  h2   { margin: 12px 0 0; color: #ffd090; letter-spacing: 2px; }
+  #hint { font-size: 13px; color: #aaa; margin: 6px 0; text-align: center; }
+  canvas { border: 3px solid #3a2808; }
+  a { color: #fca; margin-top: 10px; font-size: 13px; }
+</style>
+</head>
+<body>
+<h2>🏛️ 이집트 — 사막 대쉬</h2>
+<div id="hint">
+  A/D 또는 ←/→: 이동 &nbsp;|&nbsp; Space / ↑: 점프 &nbsp;|&nbsp;
+  <b>Shift: 대쉬!</b> (진행 방향으로 순간이동) &nbsp;|&nbsp; 스핑크스 정상에 도달하라!
+</div>
+<canvas id="game" width="480" height="420"></canvas>
+<a href="world-map.html">← 세계지도로</a>
+
+<script src="pixel-art.js"></script>
+<script>
+const canvas = document.getElementById("game");
+const ctx    = canvas.getContext("2d");
+const W = canvas.width, H = canvas.height;
+
+// ── 세계탐험 저장 ──────────────────────────────────────────────────────────
+const SAVE_KEY = "wdttjw_world_explorer";
+function markCleared() {
+  try {
+    const p = JSON.parse(localStorage.getItem(SAVE_KEY)) || {};
+    p.egypt = true;
+    localStorage.setItem(SAVE_KEY, JSON.stringify(p));
+  } catch {}
+}
+
+// ── 물리 상수 ─────────────────────────────────────────────────────────────
+const GRAVITY      = 0.50;
+const MOVE_ACCEL   = 1.1;
+const MOVE_MAX     = 4.2;
+const AIR_ACCEL    = 0.65;
+const FRICTION     = 0.62;  // 작을수록 더 빨리 멈춤
+const JUMP_VY      = -11.4;
+const DASH_VX      = 13;   // 대쉬 순간 수평 속도
+const DASH_FRAMES  = 9;    // 대쉬 지속 프레임
+const DASH_CD      = 28;   // 대쉬 쿨다운
+const DUST_TRAIL   = 6;    // 대쉬 중 모래 파티클 수
+
+// ── 월드 ─────────────────────────────────────────────────────────────────
+const WORLD_W = 3300;
+const groundY = 368;       // 모래 바닥 y
+const PW = 8, PH = 36;
+
+// 발판 {x, y(상단), w}  — 이동 발판은 baseY, ampY, period 추가
+const PLATFORMS = [
+  // ── 초반 (쉬운 계단) ──────────────────────────────────────────────────
+  { x:180,  y:308, w:110 },
+  { x:350,  y:270, w:100 },
+  { x:510,  y:300, w:80  },
+  { x:650,  y:250, w:90  },
+  { x:800,  y:280, w:75  },
+  // ── 중반 (대쉬 필요) ─────────────────────────────────────────────────
+  { x:970,  y:230, w:80  },
+  { x:1120, y:260, w:70  },
+  { x:1300, y:220, w:65, baseY:220, ampY:22, period:110 }, // 흔들리는 돌판
+  { x:1460, y:250, w:75  },
+  { x:1620, y:210, w:65  },
+  { x:1790, y:240, w:70, baseY:240, ampY:28, period:95  }, // 흔들리는 돌판
+  { x:1960, y:200, w:70  },
+  // ── 후반 (높은 지형) ─────────────────────────────────────────────────
+  { x:2130, y:175, w:75  },
+  { x:2300, y:150, w:65  },
+  { x:2470, y:170, w:60, baseY:170, ampY:20, period:85  }, // 흔들리는 돌판
+  { x:2640, y:135, w:65  },
+  { x:2810, y:115, w:70  },
+  // ── 스핑크스 오르막 ───────────────────────────────────────────────────
+  { x:2980, y:110, w:60  },
+  { x:3100, y:90,  w:60  },
+  { x:3155, y:72,  w:90  }, // 스핑크스 정상 (목표 지점)
+];
+
+const GOAL_X = 3200; // 스핑크스 정상 발판 위
+const GOAL_Y = 72;
+
+// ── 플레이어 ──────────────────────────────────────────────────────────────
+const SPAWN = { x: 60, y: groundY };
+const player = {
+  x: SPAWN.x, y: SPAWN.y,
+  vx: 0, vy: 0,
+  dir: "right",
+  grounded: true,
+  dashTimer: 0,
+  dashCooldown: 0,
+  dashDir: 1,
+  ridingPlatform: null, // 올라탄 이동 발판 (null이면 일반 바닥/공중)
+};
+
+const camera = { x: 0 };
+let frame = 0;
+
+const keys = {};
+document.addEventListener("keydown", e => {
+  const was = keys[e.code];
+  keys[e.code] = true;
+  if (["Space","ArrowUp","ArrowLeft","ArrowRight","KeyA","KeyD","KeyW","ShiftLeft","ShiftRight"].includes(e.code)) e.preventDefault();
+  if (!was) {
+    if (e.code === "Space" || e.code === "ArrowUp" || e.code === "KeyW") handleJump();
+    if (e.code === "ShiftLeft" || e.code === "ShiftRight") handleDash();
+    if (e.code === "Enter" && showReturn) doReturn();
+  }
+});
+document.addEventListener("keyup", e => { keys[e.code] = false; });
+
+// ── 게임 상태 ─────────────────────────────────────────────────────────────
+let cleared    = false;
+let clearTimer = 0;
+let showReturn = false;
+
+// ── 입력 처리 ─────────────────────────────────────────────────────────────
+function handleJump() {
+  if (showReturn) { doReturn(); return; }
+  if (player.grounded) { player.vy = JUMP_VY; player.grounded = false; }
+}
+
+function handleDash() {
+  if (showReturn) return;
+  if (player.dashTimer > 0 || player.dashCooldown > 0) return;
+  const left  = keys["ArrowLeft"]  || keys["KeyA"];
+  const right = keys["ArrowRight"] || keys["KeyD"];
+  const dir   = right ? 1 : left ? -1 : (player.dir === "right" ? 1 : -1);
+  player.vx        = DASH_VX * dir;
+  player.vy        = Math.min(player.vy, -2); // 살짝 위로
+  player.dashTimer = DASH_FRAMES;
+  player.dashDir   = dir;
+  player.dir       = dir === 1 ? "right" : "left";
+  spawnDustBurst(player.x, player.y);
+}
+
+function doReturn() { markCleared(); window.location.href = "world-map.html"; }
+
+// ── 모래 파티클 ────────────────────────────────────────────────────────────
+const particles = [];
+function spawnDustBurst(x, y) {
+  for (let i = 0; i < DUST_TRAIL; i++) {
+    particles.push({
+      x, y: y - PH * Math.random(),
+      vx: (-player.dashDir * (2 + Math.random() * 3)),
+      vy: (-0.5 + Math.random() * 1.5),
+      life: 18 + Math.random() * 12, maxLife: 30,
+    });
+  }
+}
+const ambientDust = Array.from({length:20}, (_,i) => ({
+  x: Math.random() * W, y: 60 + Math.random() * 300,
+  vx: 0.2 + Math.random() * 0.4, vy: 0.1 + Math.random() * 0.2,
+}));
+
+// ── 업데이트 ──────────────────────────────────────────────────────────────
+function update() {
+  if (showReturn) return;
+  frame++;
+
+  const left  = keys["ArrowLeft"]  || keys["KeyA"];
+  const right = keys["ArrowRight"] || keys["KeyD"];
+
+  // 대쉬 타이머
+  if (player.dashTimer > 0) {
+    player.dashTimer--;
+    if (player.dashTimer === 0) player.dashCooldown = DASH_CD;
+  } else {
+    if (player.dashCooldown > 0) player.dashCooldown--;
+    // 일반 이동
+    const accel = player.grounded ? MOVE_ACCEL : AIR_ACCEL;
+    if (left)  { player.dir = "left";  player.vx -= accel; if (player.vx < -MOVE_MAX) player.vx = -MOVE_MAX; }
+    if (right) { player.dir = "right"; player.vx += accel; if (player.vx >  MOVE_MAX) player.vx =  MOVE_MAX; }
+    if (!left && !right && player.grounded) player.vx *= FRICTION;
+  }
+
+  // 이동 발판 y 갱신 (이동 전에 먼저 위치 계산)
+  for (const p of PLATFORMS) {
+    if (p.ampY) {
+      p.prevY = p.y; // 이전 프레임 y 저장
+      p.y = p.baseY + Math.sin(frame / p.period * Math.PI * 2) * p.ampY;
+    }
+  }
+
+  // 올라탄 이동 발판이 움직이면 플레이어도 같이 이동 (점프 중엔 무시)
+  if (player.ridingPlatform && player.ridingPlatform.ampY && player.vy >= 0) {
+    const dy = player.ridingPlatform.y - player.ridingPlatform.prevY;
+    player.y += dy;
+  }
+
+  // 중력
+  player.vy += GRAVITY;
+
+  // 이동
+  const prevY = player.y;
+  player.x += player.vx;
+  player.y += player.vy;
+
+  // 발판 충돌 (위에서 내려올 때만)
+  player.grounded = false;
+  player.ridingPlatform = null;
+  for (const plat of PLATFORMS) {
+    const inX = player.x + PW > plat.x && player.x - PW < plat.x + plat.w;
+    if (inX && prevY <= plat.y && player.y >= plat.y) {
+      player.y = plat.y; player.vy = 0;
+      player.grounded = true;
+      player.ridingPlatform = plat; break;
+    }
+  }
+
+  // 모래 바닥 (낙사 없이 바닥으로 복귀)
+  if (player.y >= groundY) {
+    player.y = groundY; player.vy = 0;
+    player.grounded = true;
+  }
+
+  // 세계 좌우 경계
+  if (player.x < PW) { player.x = PW; player.vx = 0; }
+  if (player.x > WORLD_W - PW) { player.x = WORLD_W - PW; player.vx = 0; }
+
+  // 카메라 (lookahead)
+  const lookahead = Math.max(-70, Math.min(70, player.vx * 7));
+  const targetCamX = player.x - W / 2 + lookahead;
+  camera.x += (targetCamX - camera.x) * 0.1;
+  camera.x = Math.max(0, Math.min(WORLD_W - W, camera.x));
+
+  // 목표 도달
+  if (!cleared && player.grounded && player.y <= GOAL_Y + 4 && player.x > GOAL_X - 50) {
+    cleared = true; clearTimer = 160;
+  }
+  if (cleared) { clearTimer--; if (clearTimer <= 0) showReturn = true; }
+
+  // 파티클
+  for (const p of particles) { p.x += p.vx; p.y += p.vy; p.life--; }
+  particles.splice(0, particles.length, ...particles.filter(p => p.life > 0));
+
+  for (const d of ambientDust) {
+    d.x += d.vx; d.y += d.vy;
+    if (d.x > W + 5) d.x = -5;
+    if (d.y > H) d.y = 0;
+  }
+}
+
+// ── 배경 미리 렌더링 ───────────────────────────────────────────────────────
+const bgLayer = (() => {
+  const c = document.createElement("canvas");
+  c.width = WORLD_W; c.height = H;
+  const bx = c.getContext("2d");
+
+  // 하늘 그라데이션 (새벽 사막)
+  const sky = bx.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0,   "#0a0614");
+  sky.addColorStop(0.5, "#1e1030");
+  sky.addColorStop(1,   "#5a2e10");
+  bx.fillStyle = sky; bx.fillRect(0, 0, WORLD_W, H);
+
+  // 별
+  bx.fillStyle = "rgba(255,255,220,0.8)";
+  for (let i = 0; i < 120; i++) bx.fillRect((i*157)%WORLD_W, (i*89)%200 + 5, 1.5, 1.5);
+
+  // 달 (오렌지빛)
+  bx.fillStyle = "#ffcc70";
+  bx.beginPath(); bx.arc(WORLD_W * 0.85, 55, 34, 0, Math.PI*2); bx.fill();
+  bx.fillStyle = "rgba(255,180,60,0.22)";
+  bx.beginPath(); bx.arc(WORLD_W * 0.85, 55, 52, 0, Math.PI*2); bx.fill();
+
+  // 먼 모래 언덕 (실루엣)
+  const dune = (bx, sx, sy, w) => {
+    bx.beginPath(); bx.ellipse(sx, sy, w, 48, 0, Math.PI, 0); bx.fill();
+  };
+  bx.fillStyle = "#1c1008";
+  [[-80,groundY+8,260],[250,groundY+12,220],[700,groundY+10,310],[1100,groundY+8,250],
+   [1500,groundY+10,280],[1900,groundY+8,240],[2300,groundY+12,290],[2700,groundY+10,260],
+   [3050,groundY+8,280]].forEach(([x,y,w]) => dune(bx,x,y,w));
+
+  // 피라미드 3개
+  const pyramid = (bx, px, pw, ph) => {
+    const top = groundY - ph;
+    bx.beginPath();
+    bx.moveTo(px, top);
+    bx.lineTo(px - pw/2, groundY);
+    bx.lineTo(px + pw/2, groundY);
+    bx.closePath(); bx.fill();
+    // 명암
+    bx.fillStyle = "rgba(0,0,0,0.2)";
+    bx.beginPath();
+    bx.moveTo(px, top);
+    bx.lineTo(px + pw/2, groundY);
+    bx.lineTo(px, groundY);
+    bx.closePath(); bx.fill();
+  };
+  bx.fillStyle = "#2e1e08";
+  pyramid(bx, 800,  380, 280);
+  pyramid(bx, 1600, 280, 210);
+  pyramid(bx, 2600, 340, 260);
+  bx.fillStyle = "#382410"; // 약간 밝은 피라미드
+  pyramid(bx, 1200, 200, 160);
+  pyramid(bx, 2200, 180, 140);
+
+  // 스핑크스 (월드 오른쪽 끝)
+  const sx = 3200, sy = groundY;
+  // 몸통
+  bx.fillStyle = "#4a2e10";
+  bx.fillRect(sx - 120, sy - 80, 240, 80);
+  // 머리
+  bx.fillStyle = "#5a3a18";
+  bx.fillRect(sx + 30, sy - 160, 90, 90);
+  // 이마 왕관
+  bx.fillStyle = "#6a4820";
+  bx.fillRect(sx + 25, sy - 175, 100, 20);
+  // 수염
+  bx.fillStyle = "#4a2e10";
+  bx.fillRect(sx + 60, sy - 95, 20, 30);
+  // 눈
+  bx.fillStyle = "#1a1008";
+  bx.fillRect(sx + 45, sy - 138, 14, 10);
+  bx.fillRect(sx + 80, sy - 138, 14, 10);
+  // 깃발 (목표 지점 표시)
+  bx.strokeStyle = "#e8e3d0"; bx.lineWidth = 2;
+  bx.beginPath(); bx.moveTo(sx + 75, sy - 175); bx.lineTo(sx + 75, sy - 210); bx.stroke();
+  bx.fillStyle = "#c8360a";
+  bx.beginPath();
+  bx.moveTo(sx + 75, sy - 210); bx.lineTo(sx + 95, sy - 203); bx.lineTo(sx + 75, sy - 196);
+  bx.closePath(); bx.fill();
+
+  // 모래 바닥
+  bx.fillStyle = "#5a3a18";
+  bx.fillRect(0, groundY, WORLD_W, H - groundY);
+  bx.fillStyle = "#7a5228";
+  bx.fillRect(0, groundY, WORLD_W, 4);
+  // 점박이 텍스처
+  bx.fillStyle = "rgba(255,200,100,0.1)";
+  for (let i = 0; i < 600; i++) bx.fillRect((i*97)%WORLD_W, groundY + 2 + (i*43)%(H-groundY-2), 3, 2);
+
+  return c;
+})();
+
+// ── 발판 그리기 ────────────────────────────────────────────────────────────
+function drawPlat(sx, sy, w, isMoving) {
+  ctx.fillStyle = isMoving ? "#7a5030" : "#6a4020";
+  ctx.fillRect(sx, sy, w, 13);
+  ctx.fillStyle = isMoving ? "#9a7050" : "#8a5828";
+  ctx.fillRect(sx, sy, w, 4);
+  ctx.fillStyle = "#3a1e08";
+  ctx.fillRect(sx, sy + 11, w, 2);
+  if (isMoving) {
+    // 이동 발판 = 흰 테두리로 구별
+    ctx.strokeStyle = "rgba(255,220,100,0.4)"; ctx.lineWidth = 1;
+    ctx.strokeRect(sx, sy, w, 13);
+  }
+}
+
+// ── 그리기 ────────────────────────────────────────────────────────────────
+function draw() {
+  // 배경 (월드 스크롤)
+  ctx.drawImage(bgLayer, camera.x, 0, W, H, 0, 0, W, H);
+
+  // 발판
+  for (const plat of PLATFORMS) {
+    const sx = plat.x - camera.x;
+    if (sx + plat.w < -10 || sx > W + 10) continue;
+    drawPlat(sx, plat.y, plat.w, !!plat.ampY);
+  }
+
+  // 대쉬 파티클
+  for (const p of particles) {
+    const alpha = p.life / p.maxLife;
+    ctx.fillStyle = `rgba(210,170,80,${alpha * 0.8})`;
+    ctx.beginPath(); ctx.arc(p.x - camera.x, p.y, 3 * alpha, 0, Math.PI*2); ctx.fill();
+  }
+
+  // 주변 모래 먼지
+  ctx.fillStyle = "rgba(180,140,60,0.18)";
+  for (const d of ambientDust) { ctx.beginPath(); ctx.arc(d.x, d.y, 2, 0, Math.PI*2); ctx.fill(); }
+
+  // 플레이어
+  const psx = player.x - camera.x;
+  const psy = player.y;
+
+  // 대쉬 중 잔상
+  if (player.dashTimer > 0) {
+    ctx.globalAlpha = 0.3;
+    drawCharacter(ctx, psx - player.dashDir * 14, psy, player.dir, 0, true, false);
+    ctx.globalAlpha = 1.0;
+  }
+  drawCharacter(ctx, psx, psy, player.dir, 0, !player.grounded, false);
+
+  // ── HUD ──────────────────────────────────────────────────────────────
+  // 구역 이름
+  ctx.textAlign = "left"; ctx.font = "bold 12px sans-serif";
+  ctx.fillStyle = "rgba(0,0,0,0.5)"; ctx.fillRect(8, 8, 132, 20);
+  ctx.fillStyle = "#ffd090"; ctx.fillText("🏛️ 카이로 사막 탐험", 13, 23);
+
+  if (!cleared) {
+    ctx.font = "11px sans-serif";
+    ctx.fillStyle = "rgba(0,0,0,0.45)"; ctx.fillRect(8, 32, 218, 18);
+    ctx.fillStyle = "#ffcc90"; ctx.fillText("임무: 스핑크스 정상의 깃발에 도달하기", 12, 45);
+  }
+
+  // 대쉬 쿨다운 게이지
+  const gx = 8, gy = H - 18, gw = 80;
+  ctx.fillStyle = "rgba(0,0,0,0.4)"; ctx.fillRect(gx, gy, gw, 8);
+  const dashPct = player.dashCooldown > 0 ? 1 - player.dashCooldown / DASH_CD :
+                  player.dashTimer > 0   ? 0 : 1;
+  ctx.fillStyle = dashPct >= 1 ? "#ffd700" : "#8a6030";
+  ctx.fillRect(gx, gy, gw * dashPct, 8);
+  ctx.font = "9px sans-serif"; ctx.fillStyle = "rgba(255,255,255,0.7)"; ctx.textAlign = "left";
+  ctx.fillText(dashPct >= 1 ? "DASH 준비!" : "대쉬 충전 중...", gx, gy - 2);
+
+  // 진행도 바 (오른쪽 아래)
+  const progX = W - 90, progY = H - 14, progW = 80;
+  const pct = Math.max(0, Math.min(1, player.x / WORLD_W));
+  ctx.fillStyle = "rgba(0,0,0,0.4)"; ctx.fillRect(progX, progY, progW, 8);
+  ctx.fillStyle = "#c8360a"; ctx.fillRect(progX, progY, progW * pct, 8);
+  ctx.font = "8px sans-serif"; ctx.fillStyle = "rgba(255,255,255,0.6)"; ctx.textAlign = "left";
+  ctx.fillText(`진행: ${Math.floor(pct*100)}%`, progX, progY - 2);
+
+  // 클리어 메시지
+  if (cleared && !showReturn) {
+    ctx.fillStyle = "rgba(0,0,0,0.4)"; ctx.fillRect(0, 0, W, H);
+    ctx.textAlign = "center"; ctx.font = "bold 28px sans-serif";
+    ctx.fillStyle = "#ffd700"; ctx.fillText("임무 완료! 🏛️", W/2, H/2);
+  }
+
+  // 귀환 화면
+  if (showReturn) {
+    ctx.fillStyle = "rgba(0,0,0,0.84)"; ctx.fillRect(0, 0, W, H);
+    ctx.textAlign = "center";
+    ctx.font = "bold 30px sans-serif"; ctx.fillStyle = "#ffd700";
+    ctx.fillText("🏛️ 이집트 클리어!", W/2, H/2 - 60);
+    ctx.font = "17px sans-serif"; ctx.fillStyle = "#ffd090";
+    ctx.fillText("스핑크스 정상을 정복했습니다!", W/2, H/2 - 22);
+    ctx.font = "15px sans-serif"; ctx.fillStyle = "white";
+    ctx.fillText("클릭 또는 Enter → 세계지도로 귀환", W/2, H/2 + 16);
+  }
+}
+
+canvas.addEventListener("click", () => { if (showReturn) doReturn(); });
+
+function loop() { update(); draw(); requestAnimationFrame(loop); }
+loop();
+</script>
+</body>
+</html>

@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>Faded Memory (빛바랜 기억)</title>
+<style>
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: #222;
+    color: white;
+    font-family: sans-serif;
+  }
+  h1 {
+    margin-bottom: 4px;
+  }
+  h1 .subtitle {
+    font-size: 0.6em;
+    color: #aaa;
+    font-weight: normal;
+  }
+  #gameWrap {
+    position: relative;
+    display: inline-block;
+    margin-top: 10px;
+  }
+  canvas {
+    background: #111;
+    border: 4px solid white;
+    display: block;
+  }
+  #hud {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+  }
+  #muteBtn {
+    background: transparent;
+    color: white;
+    border: none;
+    cursor: pointer;
+    font-size: 14px;
+    padding: 0 4px;
+  }
+  #caption {
+    margin-top: 12px;
+    font-size: 13px;
+    color: #aaa;
+    text-align: center;
+  }
+  a {
+    color: #9cf;
+    margin-top: 12px;
+  }
+  #popup {
+    display: none;
+    justify-content: center;
+    margin-top: 12px;
+  }
+  #popupCard {
+    background: #f5ecd7;
+    color: #3a2c1a;
+    border: 4px solid #8a6a3a;
+    border-radius: 8px;
+    padding: 18px 22px;
+    max-width: 80%;
+    text-align: center;
+  }
+  #popupCard h2 {
+    margin: 0 0 10px;
+    font-size: 18px;
+  }
+  #popupCard p {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  #popupCard .hint {
+    margin-top: 14px;
+    font-size: 12px;
+    color: #7a6a50;
+  }
+  #endLinks {
+    display: none;
+    margin-top: 12px;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
+</style>
+</head>
+<body>
+  <h1>Faded Memory <span class="subtitle">빛바랜 기억</span></h1>
+
+  <div id="gameWrap">
+    <canvas id="game" width="480" height="320"></canvas>
+
+    <div id="hud">
+      <button id="muteBtn" title="음악 켜기/끄기">🔈</button>
+    </div>
+  </div>
+
+  <div id="caption">스페이스바를 눌러 계속 진행하세요</div>
+
+  <div id="popup">
+    <div id="popupCard">
+      <h2 id="popupName"></h2>
+      <p id="popupMemory"></p>
+      <div class="hint" id="popupHint">스페이스바로 계속</div>
+    </div>
+  </div>
+
+  <div id="endLinks">
+    <a href="#" id="restartLink">처음부터 다시 시작하기</a>
+    <a href="../index.html">게임 목록으로 돌아가기</a>
+  </div>
+
+  <audio id="bgm" src="audio/Home - Toby Fox.mp3" loop preload="auto"></audio>
+  <audio id="wakeSfx" src="audio/Small Shock.webm" preload="auto"></audio>
+
+  <script src="data.js"></script>
+  <script src="pixel-art.js"></script>
+  <script>
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+    const popup = document.getElementById("popup");
+    const popupName = document.getElementById("popupName");
+    const popupMemory = document.getElementById("popupMemory");
+    const popupHint = document.getElementById("popupHint");
+    const muteBtn = document.getElementById("muteBtn");
+    const endLinks = document.getElementById("endLinks");
+    const caption = document.getElementById("caption");
+
+    // === 배경음악(이어서 재생) ===
+    // 깨어나는 효과음(아래)과 겹쳐 들리지 않도록, 배경음악은 그 효과음이 끝난 뒤에 시작함
+    const bgm = document.getElementById("bgm");
+    bgm.volume = 0.5;
+    let musicStarted = false;
+    const bgmState = restoreBgmState(bgm);
+    if (bgmState) {
+      muteBtn.textContent = bgm.muted ? "🔇" : "🔈";
+    }
+    function startMusic() {
+      if (musicStarted) return;
+      musicStarted = true;
+      bgm.play().catch(() => {});
+    }
+    muteBtn.addEventListener("click", () => {
+      startMusic();
+      bgm.muted = !bgm.muted;
+      muteBtn.textContent = bgm.muted ? "🔇" : "🔈";
+    });
+
+    // 혼수상태에서 깨어나는 순간(눈을 뜨기 시작할 때) 재생할 효과음 — 끝까지 다 들리게 함
+    // 페이지 이동 직후라 브라우저가 자동재생을 막을 수 있어서, 막히면 첫 키 입력 때 재시도함
+    const wakeSfx = document.getElementById("wakeSfx");
+    wakeSfx.volume = 0.6;
+    let wakeSfxPlayed = false;
+    function playWakeSfx() {
+      if (wakeSfxPlayed) return;
+      wakeSfx.currentTime = 0;
+      wakeSfx.play().then(() => { wakeSfxPlayed = true; }).catch(() => {});
+    }
+    document.addEventListener("keydown", () => playWakeSfx(), { once: true });
+
+    // 효과음이 끝나면(또는 재생에 실패하면) 그제서야 배경음악을 시작함
+    wakeSfx.addEventListener("ended", startMusic);
+    wakeSfx.addEventListener("error", startMusic);
+    setTimeout(startMusic, 16000); // 안전장치: 효과음 종료 신호를 못 받는 경우를 대비한 최대 대기 시간
+
+    // === 장면(배경) 그리기 ===
+    // 1단계: 천장의 흐릿한 불빛만 보이는 시야(눈을 막 떴을 때)
+    function drawCeiling(ctx) {
+      ditherGround(ctx, 0, 0, canvas.width, canvas.height, "#dcd6c8", "#cdc6b4", 8);
+
+      // 천장 타일 격자
+      ctx.strokeStyle = "rgba(110,100,82,0.35)";
+      ctx.lineWidth = 1;
+      for (let x = 40; x < canvas.width; x += 80) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
+      }
+      for (let y = 30; y < canvas.height; y += 70) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+      }
+
+      // 형광등 조명 패널(또렷한 직사각형 + 부드러운 빛 번짐)
+      pixelCircle(ctx, canvas.width / 2, 130, 70, "#fff6da", { outline: false });
+      pixelBlock(ctx, canvas.width / 2 - 64, 110, 128, 34, "#f5edc8", { outline: false });
+      pixelBlock(ctx, canvas.width / 2 - 54, 116, 108, 22, "#fffef2", { outline: false });
+      for (let x = canvas.width / 2 - 48; x < canvas.width / 2 + 48; x += 14) {
+        pixelBlock(ctx, x, 119, 2, 16, "#e9e2bd", { outline: false });
+      }
+    }
+
+    // 사람 얼굴(위에서 내려다보는 각도). hairStyle: "long"(엄마)/"short"(아빠)/"cap"(의사·간호사)
+    // happy: true면 걱정스러운 표정 대신 활짝 웃는 표정(가족사진용)을 그림
+    function drawFace(ctx, cx, cy, r, opts) {
+      const { skin = "#e8c9a8", hair = "#3a2c1f", hairStyle = "short", coatColor = null, redEyes = false, mask = false, happy = false, glasses = false, mustache = false } = opts;
+
+      // 옷깃/가운(얼굴보다 아래, 먼저 그려서 얼굴에 덮이게 함)
+      if (coatColor) {
+        pixelBlock(ctx, cx - r * 1.4, cy + r * 0.6, r * 2.8, r * 1.3, coatColor, { outline: false });
+      }
+
+      // 긴 머리(엄마)는 얼굴 양옆/뒤로 늘어진 머리카락을 얼굴보다 먼저 그림
+      if (hairStyle === "long") {
+        pixelCircle(ctx, cx, cy - r * 0.1, r * 1.15, hair, { outline: false });
+        pixelBlock(ctx, cx - r * 1.05, cy - r * 0.1, r * 0.55, r * 1.7, hair, { outline: false });
+        pixelBlock(ctx, cx + r * 0.5, cy - r * 0.1, r * 0.55, r * 1.7, hair, { outline: false });
+      } else if (hairStyle === "curly") {
+        // 곱슬머리(할머니) — 작은 동그라미를 여러 개 겹쳐서 풍성한 파마머리 느낌을 줌
+        const bumps = [[-0.95, -0.5], [-0.5, -0.9], [0, -1.0], [0.5, -0.9], [0.95, -0.5], [-1.1, -0.05], [1.1, -0.05], [-0.85, 0.3], [0.85, 0.3]];
+        bumps.forEach(([ox, oy]) => {
+          pixelCircle(ctx, cx + ox * r, cy + oy * r, r * 0.4, hair, { outline: false });
+        });
+      }
+
+      // 얼굴
+      pixelCircle(ctx, cx, cy, r, skin);
+
+      // 머리카락(짧은 머리/의사 위생모)
+      if (hairStyle === "short") {
+        pixelBlock(ctx, cx - r, cy - r, r * 2, r * 0.85, hair, { outline: false });
+      } else if (hairStyle === "long") {
+        pixelBlock(ctx, cx - r, cy - r, r * 2, r * 0.65, hair, { outline: false });
+      } else if (hairStyle === "cap") {
+        pixelCircle(ctx, cx, cy - r * 0.15, r * 1.08, "#eef3f4", { outline: false });
+        pixelBlock(ctx, cx - r, cy - r * 0.15, r * 2, r * 0.5, "#eef3f4", { outline: false });
+      } else if (hairStyle === "balding") {
+        // 정수리는 비어있고 옆머리만 낮게 남은 모습(할아버지)
+        pixelBlock(ctx, cx - r, cy - r * 0.05, r * 2, r * 0.32, hair, { outline: false });
+      }
+
+      // 눈(흰자 + 눈동자) — 또렷하게 보이도록 흰자를 먼저 깔고 동그란 눈동자를 그림
+      const eyeY = cy - r * 0.05;
+      const eyeOffsetX = r * 0.4;
+      const eyeW = r * 0.34, eyeH = r * 0.26;
+      [-1, 1].forEach((side) => {
+        const ex = cx + side * eyeOffsetX;
+        pixelBlock(ctx, ex - eyeW / 2, eyeY - eyeH / 2, eyeW, eyeH, "#fdfcf8", { outline: false });
+        ctx.fillStyle = "#2a1f14";
+        ctx.beginPath();
+        ctx.arc(ex, eyeY + eyeH * 0.05, eyeH * 0.34, 0, Math.PI * 2);
+        ctx.fill();
+        if (redEyes) {
+          // 충혈된 눈 — 눈 밑에 붉은 선을 살짝 그려서 피곤한 느낌을 줌
+          ctx.strokeStyle = "#c0524a";
+          ctx.lineWidth = 1.4;
+          ctx.beginPath();
+          ctx.moveTo(ex - eyeW / 2, eyeY + eyeH / 2);
+          ctx.lineTo(ex + eyeW / 2, eyeY + eyeH / 2);
+          ctx.stroke();
+        }
+      });
+
+      // 눈썹: 기본은 걱정스러운 표정(눈 위에서 가운데로 모이게), happy면 부드럽게 둥근 눈썹
+      ctx.strokeStyle = shadeColor(hairStyle === "cap" ? "#3a2c1f" : hair, -10);
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      if (happy) {
+        ctx.moveTo(cx - eyeOffsetX - eyeW / 2, eyeY - eyeH * 1.3);
+        ctx.quadraticCurveTo(cx - eyeOffsetX, eyeY - eyeH * 1.7, cx - eyeOffsetX + eyeW / 2, eyeY - eyeH * 1.3);
+        ctx.moveTo(cx + eyeOffsetX - eyeW / 2, eyeY - eyeH * 1.3);
+        ctx.quadraticCurveTo(cx + eyeOffsetX, eyeY - eyeH * 1.7, cx + eyeOffsetX + eyeW / 2, eyeY - eyeH * 1.3);
+      } else {
+        ctx.moveTo(cx - eyeOffsetX - eyeW / 2, eyeY - eyeH * 1.1);
+        ctx.lineTo(cx - eyeOffsetX + eyeW / 2, eyeY - eyeH * 1.7);
+        ctx.moveTo(cx + eyeOffsetX + eyeW / 2, eyeY - eyeH * 1.1);
+        ctx.lineTo(cx + eyeOffsetX - eyeW / 2, eyeY - eyeH * 1.7);
+      }
+      ctx.stroke();
+
+      // 안경(할머니·할아버지용) — 동그란 테 두 개 + 가운데 연결 다리
+      if (glasses) {
+        ctx.strokeStyle = "#3a2c1a";
+        ctx.lineWidth = 1.6;
+        [-1, 1].forEach((side) => {
+          const ex = cx + side * eyeOffsetX;
+          ctx.beginPath();
+          ctx.arc(ex, eyeY, eyeW * 0.62, 0, Math.PI * 2);
+          ctx.stroke();
+        });
+        ctx.beginPath();
+        ctx.moveTo(cx - eyeOffsetX + eyeW * 0.6, eyeY);
+        ctx.lineTo(cx + eyeOffsetX - eyeW * 0.6, eyeY);
+        ctx.stroke();
+      }
+
+      // 콧수염(할아버지용)
+      if (mustache && !mask) {
+        pixelBlock(ctx, cx - r * 0.34, cy + r * 0.28, r * 0.68, r * 0.16, shadeColor(hair, -6), { outline: false });
+      }
+
+      // 입(마스크를 쓰면 가려짐, happy면 활짝 웃는 입+볼터치)
+      if (mask) {
+        pixelBlock(ctx, cx - r * 0.5, cy + r * 0.25, r, r * 0.55, "#dfe8ec", { outline: false });
+        pixelBlock(ctx, cx - r * 0.5, cy + r * 0.25, r, PX, "#c5d4da", { outline: false });
+      } else if (happy) {
+        ctx.strokeStyle = "#7a4a3a";
+        ctx.lineWidth = 2.4;
+        ctx.beginPath();
+        ctx.arc(cx, cy + r * 0.32, r * 0.42, Math.PI * 0.1, Math.PI * 0.9);
+        ctx.stroke();
+        ctx.fillStyle = "rgba(224,140,118,0.35)";
+        ctx.beginPath(); ctx.arc(cx - r * 0.68, cy + r * 0.3, r * 0.16, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(cx + r * 0.68, cy + r * 0.3, r * 0.16, 0, Math.PI * 2); ctx.fill();
+      } else {
+        ctx.strokeStyle = "#9a6a5a";
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.arc(cx, cy + r * 0.5, r * 0.26, Math.PI * 0.15, Math.PI * 0.85);
+        ctx.stroke();
+      }
+    }
+
+    // 2단계: 부모님과 의사들이 위에서 내려다보는 모습 (자세히)
+    function drawFacesLeaningOver(ctx) {
+      drawCeiling(ctx);
+      // 의사·간호사(뒤쪽, 작게, 위생모+마스크)
+      drawFace(ctx, 95, 250, 30, { skin: "#e8c9a8", hairStyle: "cap", coatColor: "#eef3f4", mask: true });
+      drawFace(ctx, 395, 248, 30, { skin: "#e3c2a0", hairStyle: "cap", coatColor: "#eef3f4", mask: true });
+      // 부모님(가까이, 크게, 걱정스러운 표정 + 충혈된 눈)
+      drawFace(ctx, 175, 205, 46, { skin: "#e8c9a8", hair: "#4a3826", hairStyle: "long", coatColor: "#8a6a72", redEyes: true });
+      drawFace(ctx, 315, 210, 44, { skin: "#dcb992", hair: "#2a2420", hairStyle: "short", coatColor: "#5a6a7a", redEyes: true });
+    }
+
+    // 3단계: 병실 풍경 + 침대맡에 놓인 물에 젖은 가족사진 (자세히)
+    function drawHospitalRoom(ctx) {
+      ditherGround(ctx, 0, 0, canvas.width, 30, "#cfc8b8", "#bfb8a6", 10); // 천장 띠
+      ditherGround(ctx, 0, 30, canvas.width, 190, "#e8e4da", "#d8d3c4", 10); // 벽
+      ditherGround(ctx, 0, 220, canvas.width, 100, "#cfc9ba", "#bfb8a6", 12); // 바닥
+
+      // 바닥 타일 줄무늬
+      ctx.strokeStyle = "rgba(140,130,112,0.3)";
+      ctx.lineWidth = 1;
+      for (let x = 0; x < canvas.width; x += 36) {
+        ctx.beginPath(); ctx.moveTo(x, 220); ctx.lineTo(x, canvas.height); ctx.stroke();
+      }
+
+      // 창문(부드러운 햇빛) + 커튼
+      pixelBlock(ctx, 350, 36, 90, 70, "#bcd9e8");
+      pixelBlock(ctx, 350, 36, 90, 4, "#8a857a", { outline: false });
+      pixelBlock(ctx, 392, 36, 4, 70, "#8a857a", { outline: false });
+      pixelBlock(ctx, 344, 32, 14, 80, "#e0d8c2", { outline: false });
+      pixelBlock(ctx, 432, 32, 14, 80, "#e0d8c2", { outline: false });
+
+      // 사이 가리개 커튼(살짝 열려있음, 장식)
+      for (let x = 0; x < 60; x += 12) {
+        pixelBlock(ctx, x, 36, 10, 110, "#cfe3df", { outline: false });
+      }
+
+      // 벽시계(커튼과 겹치지 않는 자리)
+      pixelCircle(ctx, 150, 55, 16, "#f5f0e6");
+      ctx.strokeStyle = "#3a2c1a";
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(150, 55); ctx.lineTo(150, 45); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(150, 55); ctx.lineTo(157, 58); ctx.stroke();
+
+      // 침대(흰 시트 + 입체감 있는 프레임)
+      pixelBlock(ctx, 70, 134, 160, 20, "#8a857a"); // 다리/프레임
+      pixelBlock(ctx, 64, 108, 168, 30, "#fdfcf8"); // 시트
+      pixelBlock(ctx, 70, 104, 40, 16, "#fffefb"); // 베개
+      pixelBlock(ctx, 64, 134, 168, 4, "#bcd9a8", { outline: false }); // 담요 끝단
+
+      // 링거대(수액 줄까지)
+      pixelBlock(ctx, 256, 64, 4, 110, "#9a958a", { outline: false });
+      pixelBlock(ctx, 240, 58, 36, 10, "#9a958a", { outline: false });
+      pixelCircle(ctx, 258, 76, 11, "#d8ecf0", { outline: false });
+      ctx.strokeStyle = "#c2d8da";
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(258, 88); ctx.lineTo(220, 120); ctx.stroke();
+
+      // 심장 박동 모니터(화면에 파동선)
+      pixelBlock(ctx, 380, 150, 56, 40, "#2a2e28");
+      ctx.strokeStyle = "#7fe87a";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(388, 170);
+      ctx.lineTo(398, 170);
+      ctx.lineTo(402, 156);
+      ctx.lineTo(408, 182);
+      ctx.lineTo(412, 170);
+      ctx.lineTo(428, 170);
+      ctx.stroke();
+
+      // 보호자용 의자(등받이 + 좌석 + 다리가 또렷이 보이게)
+      pixelBlock(ctx, 298, 176, 6, 50, "#6b4423", { outline: false }); // 등받이 기둥(왼쪽)
+      pixelBlock(ctx, 328, 176, 6, 50, "#6b4423", { outline: false }); // 등받이 기둥(오른쪽)
+      pixelBlock(ctx, 298, 176, 36, 6, "#8a6a3a", { outline: false }); // 등받이 윗단
+      pixelBlock(ctx, 304, 188, 4, 30, "#8a6a3a", { outline: false }); // 등받이 살(슬랫)
+      pixelBlock(ctx, 314, 188, 4, 30, "#8a6a3a", { outline: false });
+      pixelBlock(ctx, 324, 188, 4, 30, "#8a6a3a", { outline: false });
+      pixelBlock(ctx, 296, 216, 40, 8, "#caa873"); // 좌석
+      pixelBlock(ctx, 300, 224, 6, 14, "#6b4423", { outline: false }); // 앞다리(왼쪽)
+      pixelBlock(ctx, 326, 224, 6, 14, "#6b4423", { outline: false }); // 앞다리(오른쪽)
+
+      // 협탁 + 물에 젖은 가족사진 + 꽃병
+      pixelBlock(ctx, 220, 190, 56, 40, "#b8a98a"); // 협탁
+      pixelBlock(ctx, 232, 174, 32, 24, "#e8e3d0"); // 사진 액자(흰 테두리)
+      pixelBlock(ctx, 235, 177, 26, 18, "#9ec9e0"); // 사진(물기 어린 색감)
+      pixelCircle(ctx, 264, 188, 7, "#caa873", { outline: false }); // 꽃병
+      pixelCircle(ctx, 262, 178, 4, "#e85d5d", { outline: false });
+      pixelCircle(ctx, 268, 180, 4, "#f2d33b", { outline: false });
+    }
+
+    // 4단계: 가족사진을 가까이 들여다보는 장면 (소년/할머니/할아버지/엄마/아빠가 거실에서 다 같이 웃고 있음)
+    // fade: 0=할머니·할아버지가 또렷이 보임, 1=먼지처럼 흩날려 완전히 사라짐
+    // tearProgress: 0=눈물 없음, 0~1=눈물이 떨어지는 중, 1=사진에 눈물이 스며들어 자국이 남음
+    const GRANDPA_POS = { cx: 95, cy: 175, r: 27 };
+    const GRANDMA_POS = { cx: 180, cy: 170, r: 27 };
+
+    let photoBaseCanvas = null;
+    function getPhotoBaseCanvas() {
+      if (photoBaseCanvas) return photoBaseCanvas;
+      const c = document.createElement("canvas");
+      c.width = canvas.width;
+      c.height = canvas.height;
+      const c2 = c.getContext("2d");
+      pixelBlock(c2, 30, 20, 420, 280, "#e8e3d0"); // 사진 액자(크림색)
+      ditherGround(c2, 40, 30, 400, 260, "#cdbf9c", "#c2b38f", 8); // 빛바랜 세피아 톤 벽
+
+      // 왼쪽: 벽난로(벽돌 + 선반 위 화분/액자) — 할머니·할아버지가 그 앞에 앉아있음
+      ditherGround(c2, 40, 30, 110, 260, "#8a4a3a", "#9a5644", 18); // 벽돌
+      ctx_drawMortarLines(c2, 40, 30, 110, 260);
+      pixelBlock(c2, 36, 134, 118, 10, "#6b4423"); // 벽난로 선반(맨틀)
+      // 선반 위 화분
+      pixelBlock(c2, 56, 116, 14, 16, "#b5896a", { outline: false });
+      pixelCircle(c2, 58, 108, 6, "#5a8a52", { outline: false });
+      pixelCircle(c2, 66, 104, 6, "#6a9a5e", { outline: false });
+      pixelCircle(c2, 62, 100, 6, "#5a8a52", { outline: false });
+      // 선반 위 작은 액자
+      pixelBlock(c2, 95, 110, 24, 20, "#e8e3d0");
+      pixelBlock(c2, 98, 113, 18, 14, "#bcd9e8", { outline: false });
+
+      // 오른쪽: 책장(책꽂이 칸 + 알록달록한 책등)
+      pixelBlock(c2, 372, 56, 64, 170, "#6b4423"); // 책장 틀
+      pixelBlock(c2, 378, 62, 52, 152, "#5a3a20", { outline: false }); // 안쪽
+      const shelfBooks = [
+        ["#a8463a", "#3a5a8a", "#caa83a"],
+        ["#3a7a5a", "#7a3a6a", "#3a5a8a", "#caa83a"],
+        ["#a8463a", "#caa83a", "#3a7a5a"]
+      ];
+      shelfBooks.forEach((row, i) => {
+        const shelfY = 70 + i * 48;
+        pixelBlock(c2, 378, shelfY + 38, 52, 4, "#6b4423", { outline: false }); // 칸막이
+        let bx = 382;
+        row.forEach((color) => {
+          const bw = 10 + hashCell(i, bx) % 5;
+          pixelBlock(c2, bx, shelfY, bw, 36, color, { outline: false });
+          bx += bw + 2;
+        });
+      });
+
+      // 바닥(러그)
+      ditherGround(c2, 40, 270, 400, 20, "#7a4a38", "#6a3e30", 14);
+      pixelBlock(c2, 40, 270, 400, 3, "#caa873", { outline: false }); // 러그 테두리 줄
+
+      // 할머니·할아버지가 앉은 안락의자 등받이(사람보다 먼저 그려서 뒤로 살짝 비치게 함) — fade로 사라져도 빈 의자만 남음
+      [GRANDPA_POS, GRANDMA_POS].forEach((p) => {
+        pixelBlock(c2, p.cx - p.r * 1.25, p.cy - p.r * 1.35, p.r * 2.5, p.r * 3.4, "#7a4a30");
+        pixelBlock(c2, p.cx - p.r * 1.4, p.cy + p.r * 0.6, p.r * 2.8, p.r * 0.9, "#6b4020"); // 팔걸이
+      });
+
+      // 사진 속에서 변하지 않는 사람들: 엄마/아빠(서 있는 줄), 소년(앞줄, 주인공)
+      drawFace(c2, 250, 110, 30, { skin: "#e8c9a8", hair: "#4a3826", hairStyle: "long", coatColor: "#3a8a78", happy: true });
+      drawFace(c2, 330, 108, 30, { skin: "#dcb992", hair: "#2a2420", hairStyle: "short", coatColor: "#5a6a7a", happy: true });
+      drawFace(c2, 290, 205, 20, { skin: "#e8c9a8", hair: "#2a2420", hairStyle: "short", coatColor: "#cf6b4a", happy: true });
+
+      // 어머니의 손이 소년의 어깨 위에 살짝 얹혀 있음
+      pixelBlock(c2, 270, 155, 10, 26, "#3a8a78", { outline: false }); // 팔(소매)
+      pixelCircle(c2, 277, 182, 6, "#e8c9a8", { outline: false }); // 손
+
+      photoBaseCanvas = c;
+      return c;
+    }
+
+    // 벽돌 사이의 회반죽(모르타르) 선을 그려서 벽돌처럼 보이게 함
+    function ctx_drawMortarLines(ctx, x, y, w, h) {
+      ctx.strokeStyle = "rgba(58,30,22,0.4)";
+      ctx.lineWidth = 1;
+      const rowH = 14;
+      for (let ry = y; ry < y + h; ry += rowH) {
+        ctx.beginPath(); ctx.moveTo(x, ry); ctx.lineTo(x + w, ry); ctx.stroke();
+        const offset = (Math.round((ry - y) / rowH) % 2) * 18;
+        for (let rx = x + offset; rx < x + w; rx += 36) {
+          ctx.beginPath(); ctx.moveTo(rx, ry); ctx.lineTo(rx, ry + rowH); ctx.stroke();
+        }
+      }
+    }
+
+    // 눈물방울(끝이 뾰족한 물방울 모양 + 반짝이는 하이라이트)
+    function drawTear(ctx, x, y, r) {
+      ctx.save();
+      ctx.fillStyle = "rgba(210,230,245,0.9)";
+      ctx.beginPath();
+      ctx.moveTo(x, y - r * 1.6);
+      ctx.quadraticCurveTo(x + r, y - r * 0.2, x, y + r);
+      ctx.quadraticCurveTo(x - r, y - r * 0.2, x, y - r * 1.6);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = "rgba(255,255,255,0.6)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.fillStyle = "rgba(255,255,255,0.75)";
+      ctx.beginPath();
+      ctx.arc(x - r * 0.3, y - r * 0.1, r * 0.25, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // 사람이 있던 자리에서 작은 먼지 알갱이들이 사방으로 흩날리며 옅어지는 효과
+    function drawDustScatter(ctx, cx, cy, fade) {
+      if (fade <= 0) return;
+      const count = 10;
+      for (let i = 0; i < count; i++) {
+        const angle = (i / count) * Math.PI * 2 + i * 0.35;
+        const dist = fade * (18 + (i % 3) * 11);
+        const px = cx + Math.cos(angle) * dist;
+        const py = cy + Math.sin(angle) * dist - fade * 16; // 위로 떠오르듯
+        const alpha = (1 - fade) * 0.85;
+        if (alpha <= 0.02) continue;
+        const size = Math.max(1, 3 * (1 - fade * 0.5));
+        ctx.fillStyle = `rgba(214,202,182,${alpha})`;
+        ctx.fillRect(px - size / 2, py - size / 2, size, size);
+      }
+    }
+
+    function drawPhotoCloseup(ctx, opts = {}) {
+      const { fade = 0, tearProgress = 0 } = opts;
+
+      ctx.fillStyle = "#1a1812";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(getPhotoBaseCanvas(), 0, 0);
+
+      // 할아버지(왼쪽, 안경+콧수염+벗어진 머리)·할머니(오른쪽, 안경+곱슬머리)는
+      // fade에 따라 점점 옅어지다 먼지처럼 사라짐 — 빈 안락의자만 남게 됨
+      ctx.save();
+      ctx.globalAlpha = 1 - fade;
+      drawFace(ctx, GRANDPA_POS.cx, GRANDPA_POS.cy, GRANDPA_POS.r, {
+        skin: "#dcb992", hair: "#cfcac0", hairStyle: "balding", coatColor: "#5a6a52",
+        happy: true, glasses: true, mustache: true
+      });
+      drawFace(ctx, GRANDMA_POS.cx, GRANDMA_POS.cy, GRANDMA_POS.r, {
+        skin: "#e8c9a8", hair: "#e3e0d4", hairStyle: "curly", coatColor: "#9a5a6a",
+        happy: true, glasses: true
+      });
+      // 무릎 위에 가만히 모은 두 손
+      pixelCircle(ctx, GRANDPA_POS.cx, GRANDPA_POS.cy + GRANDPA_POS.r * 1.7, GRANDPA_POS.r * 0.22, "#dcb992", { outline: false });
+      pixelCircle(ctx, GRANDMA_POS.cx, GRANDMA_POS.cy + GRANDMA_POS.r * 1.7, GRANDMA_POS.r * 0.22, "#e8c9a8", { outline: false });
+      ctx.restore();
+
+      if (fade > 0) {
+        drawDustScatter(ctx, GRANDPA_POS.cx, GRANDPA_POS.cy, fade);
+        drawDustScatter(ctx, GRANDMA_POS.cx, GRANDMA_POS.cy, fade);
+      }
+
+      // 오래되어 물에 젖은 사진 전체에 걸친 얼룩(인물 위에도 옅게 덮임)
+      ctx.save();
+      ctx.globalAlpha = 0.14;
+      ctx.fillStyle = "#7fa8bf";
+      ctx.beginPath(); ctx.arc(110, 240, 50, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(390, 230, 40, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+
+      // 눈물이 사진 위로 떨어지는 중(할머니·할아버지 쪽으로 떨어짐)
+      const tearX = 140, tearY = 130;
+      if (tearProgress > 0 && tearProgress < 1) {
+        const fallPortion = Math.min(1, tearProgress / 0.85);
+        const ty = -20 + (tearY - -20) * fallPortion;
+        drawTear(ctx, tearX, ty, 9);
+      }
+      if (tearProgress >= 0.85 && tearProgress < 1) {
+        const rippleP = (tearProgress - 0.85) / 0.15;
+        ctx.save();
+        ctx.strokeStyle = `rgba(180,210,230,${0.6 * (1 - rippleP)})`;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(tearX, tearY, 6 + rippleP * 16, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+      if (tearProgress >= 1) {
+        // 눈물이 스며들어 남은 자국
+        ctx.save();
+        ctx.globalAlpha = 0.3;
+        ctx.fillStyle = "#7fa8bf";
+        ctx.beginPath(); ctx.arc(tearX, tearY, 18, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+      }
+    }
+
+    const stages = [
+      drawCeiling,
+      drawFacesLeaningOver,
+      drawFacesLeaningOver,
+      drawHospitalRoom,
+      drawHospitalRoom,
+      (ctx) => drawPhotoCloseup(ctx, { fade: 0, tearProgress: 0 }),
+      (ctx) => drawPhotoCloseup(ctx, { fade: 0, tearProgress: 1 }),
+      (ctx) => drawPhotoCloseup(ctx, { fade: 1, tearProgress: 1 }),
+      (ctx) => drawPhotoCloseup(ctx, { fade: 1, tearProgress: 1 }),
+      drawHospitalRoom
+    ];
+    const TEAR_SLIDE_INDEX = 6;
+    const DUST_SLIDE_INDEX = 7;
+
+    function renderStage(i) {
+      const fn = stages[Math.min(i, stages.length - 1)];
+      fn(ctx);
+    }
+
+    let stageAnimId = null;
+    function cancelStageAnim() {
+      if (stageAnimId !== null) {
+        cancelAnimationFrame(stageAnimId);
+        stageAnimId = null;
+      }
+    }
+
+    // 눈물이 떨어지는 애니메이션(약 1.5초)
+    function animateTearStage() {
+      const start = performance.now();
+      const duration = 1500;
+      function frame(t) {
+        const progress = Math.min(1, (t - start) / duration);
+        drawPhotoCloseup(ctx, { fade: 0, tearProgress: progress });
+        stageAnimId = progress < 1 ? requestAnimationFrame(frame) : null;
+      }
+      stageAnimId = requestAnimationFrame(frame);
+    }
+
+    // 할머니·할아버지가 먼지처럼 흩날려 사라지는 애니메이션(약 2초)
+    function animateDustStage() {
+      const start = performance.now();
+      const duration = 2000;
+      function frame(t) {
+        const fade = Math.min(1, (t - start) / duration);
+        drawPhotoCloseup(ctx, { fade, tearProgress: 1 });
+        stageAnimId = fade < 1 ? requestAnimationFrame(frame) : null;
+      }
+      stageAnimId = requestAnimationFrame(frame);
+    }
+
+    // === 눈을 깜빡이다 뜨는 효과 ===
+    let blinkStart = null;
+    function drawBlink(t) {
+      const elapsed = t - blinkStart;
+      let lidRatio; // 0 = 완전히 감김, 1 = 완전히 뜸
+      if (elapsed < 400) lidRatio = 0;
+      else if (elapsed < 900) lidRatio = (elapsed - 400) / 500;
+      else if (elapsed < 1050) lidRatio = 1 - (elapsed - 900) / 150; // 짧게 깜빡
+      else if (elapsed < 1300) lidRatio = (elapsed - 1050) / 250;
+      else lidRatio = 1;
+      lidRatio = Math.max(0, Math.min(1, lidRatio));
+
+      drawCeiling(ctx);
+      const lidH = (canvas.height / 2) * (1 - lidRatio);
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, canvas.width, lidH);
+      ctx.fillRect(0, canvas.height - lidH, canvas.width, lidH);
+
+      if (elapsed < 1300) {
+        requestAnimationFrame(drawBlink);
+      } else {
+        introActive = true;
+        caption.style.display = "none";
+        showSlide();
+      }
+    }
+
+    function startBlink() {
+      blinkStart = performance.now();
+      playWakeSfx();
+      requestAnimationFrame(drawBlink);
+    }
+
+    // === 엔딩 슬라이드 ===
+    const SLIDES = [
+      "눈이 부시다. 천장의 새하얀 불빛이 흐릿하게 보인다.",
+      "초점이 서서히 맞춰지자, 낯익은 얼굴이 보인다. 눈이 붉게 충혈된 부모님이었다.",
+      "그 뒤로 흰 옷을 입은 의사와 간호사들이 분주히 움직이고 있다.",
+      "\"...정신이 드니?\" 어머니의 목소리가 떨리고 있었다.",
+      "고개를 돌려 옆을 보니, 물에 젖은 낡은 사진 한 장이 침대맡에 놓여 있었다.",
+      "가까이 들여다보니, 소년과 할머니, 할아버지, 어머니, 아버지가 다 함께 활짝 웃고 있는 가족사진이었다.",
+      "사진을 바라보던 두 눈에서, 뜨거운 눈물 한 줄기가 흘러내려 사진 위로 떨어졌다.",
+      "눈물이 스며든 자리부터, 사진 속 할머니와 할아버지의 모습이 먼지처럼 흩날리며 서서히 사라져갔다.",
+      "할머니, 할아버지와 함께했던 그 여름날들이, 다시 눈앞에 스쳐 지나갔다.",
+      "어쩌면 그 모든 순간들은, 그냥 꿈이 아니었을지도 모른다."
+    ];
+    let slideIndex = 0;
+    let introActive = false;
+
+    function showSlide() {
+      cancelStageAnim();
+      if (slideIndex === TEAR_SLIDE_INDEX) {
+        animateTearStage();
+      } else if (slideIndex === DUST_SLIDE_INDEX) {
+        animateDustStage();
+      } else {
+        renderStage(slideIndex);
+      }
+      popupName.textContent = "";
+      popupMemory.textContent = SLIDES[slideIndex];
+      popupHint.textContent = slideIndex === SLIDES.length - 1 ? "스페이스바를 눌러 마치기" : "스페이스바로 계속";
+      popup.style.display = "flex";
+    }
+
+    function advanceSlide() {
+      slideIndex++;
+      if (slideIndex >= SLIDES.length) {
+        introActive = false;
+        cancelStageAnim();
+        popup.style.display = "none";
+        renderStage(stages.length - 1);
+        endLinks.style.display = "flex";
+      } else {
+        showSlide();
+      }
+    }
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key === " ") {
+        e.preventDefault();
+        if (introActive) advanceSlide();
+      }
+    });
+
+    document.getElementById("restartLink").addEventListener("click", (e) => {
+      e.preventDefault();
+      saveCollected([]);
+      localStorage.removeItem("familyMemories_visited");
+      location.href = "family-yard.html";
+    });
+
+    startBlink();
+  </script>
+</body>
+</html>

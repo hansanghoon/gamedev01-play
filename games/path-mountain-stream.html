@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>Faded Memory (빛바랜 기억)</title>
+<style>
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: #222;
+    color: white;
+    font-family: sans-serif;
+  }
+  h1 {
+    margin-bottom: 4px;
+  }
+  h1 .subtitle {
+    font-size: 0.6em;
+    color: #aaa;
+    font-weight: normal;
+  }
+  #gameWrap {
+    position: relative;
+    display: inline-block;
+    margin-top: 10px;
+  }
+  canvas {
+    background: #6f8f5a;
+    border: 4px solid white;
+    display: block;
+  }
+  #hud {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    right: 8px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: rgba(0,0,0,0.4);
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 13px;
+  }
+  #caption {
+    margin-top: 10px;
+    font-size: 13px;
+    color: #aaa;
+    text-align: center;
+  }
+  a {
+    color: #9cf;
+    margin-top: 12px;
+  }
+  #muteBtn, #menuBtn {
+    background: transparent;
+    color: white;
+    border: none;
+    cursor: pointer;
+    font-size: 14px;
+    padding: 0 4px;
+  }
+  .hudBtns {
+    display: flex;
+    gap: 6px;
+  }
+  #menuOverlay {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.6);
+    display: none;
+    align-items: center;
+    justify-content: center;
+  }
+  #menuCard {
+    background: #f5ecd7;
+    color: #3a2c1a;
+    border: 3px solid #8a6a3a;
+    border-radius: 8px;
+    padding: 10px 12px;
+    width: 60%;
+    max-height: 75%;
+    overflow-y: auto;
+    font-size: 12px;
+  }
+  #menuTabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 8px;
+  }
+  .tabBtn {
+    flex: 1;
+    padding: 4px 0;
+    background: #e3d3ad;
+    border: 1px solid #8a6a3a;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .tabBtn.active {
+    background: #8a6a3a;
+    color: white;
+  }
+  .dexRow {
+    border-bottom: 1px solid #d8c6a0;
+    padding: 5px 0;
+    font-size: 11px;
+  }
+  .dexRow .dexName {
+    font-weight: bold;
+  }
+  .dexRow .dexLoc {
+    color: #7a6a50;
+    font-size: 11px;
+  }
+  .dexRow .dexMemory {
+    margin-top: 4px;
+    line-height: 1.4;
+  }
+  .mapRow {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    border-bottom: 1px solid #d8c6a0;
+    padding: 6px 2px;
+    font-size: 11px;
+  }
+  .mapStatus {
+    color: #7a6a50;
+    white-space: nowrap;
+  }
+  .mapClickable {
+    cursor: pointer;
+  }
+  .mapClickable:hover {
+    background: #e9dcbb;
+  }
+  #settingsPanel label {
+    font-size: 12px;
+    display: block;
+    margin-bottom: 10px;
+  }
+  #resetBtn, #closeMenuBtn {
+    background: #8a6a3a;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    padding: 4px 10px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  #closeMenuBtn {
+    margin-top: 10px;
+    width: 100%;
+  }
+</style>
+</head>
+<body>
+  <h1>Faded Memory <span class="subtitle">빛바랜 기억</span></h1>
+
+  <div id="gameWrap">
+    <canvas id="game" width="480" height="320"></canvas>
+
+    <div id="hud">
+      <span>뒷산과 시냇가를 잇는 길</span>
+      <div class="hudBtns">
+        <button id="muteBtn" title="음악 켜기/끄기">🔈</button>
+        <button id="menuBtn" title="도감 / 설정">☰</button>
+      </div>
+    </div>
+
+    <div id="menuOverlay">
+      <div id="menuCard">
+        <div id="menuTabs">
+          <button class="tabBtn active" data-tab="dex">도감</button>
+          <button class="tabBtn" data-tab="map">지도</button>
+          <button class="tabBtn" data-tab="settings">설정</button>
+        </div>
+        <div id="dexPanel"></div>
+        <div id="mapPanel" style="display:none;"></div>
+        <div id="settingsPanel" style="display:none;">
+          <label>음악 크기: <input type="range" id="volumeSlider" min="0" max="100" value="50"></label>
+          <button id="resetBtn">진행 상황 초기화</button>
+        </div>
+        <button id="closeMenuBtn">닫기</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="caption">방향키로 이동 · 산길을 따라가면 뒷산과 시냇가가 이어져요</div>
+  <a href="../index.html">← 게임 목록으로 돌아가기</a>
+
+  <audio id="bgm" src="audio/Home - Toby Fox.mp3" loop preload="auto"></audio>
+
+  <script src="data.js"></script>
+  <script src="pixel-art.js"></script>
+  <script>
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+    const muteBtn = document.getElementById("muteBtn");
+
+    const bgm = document.getElementById("bgm");
+    bgm.volume = 0.5;
+    let musicStarted = false;
+    const bgmState = restoreBgmState(bgm);
+    if (bgmState) {
+      muteBtn.textContent = bgm.muted ? "🔇" : "🔈";
+      if (bgmState.playing) {
+        // 자동재생이 막혀있으면 이 play()는 조용히 실패하고, musicStarted는 그대로 false로 남아서
+        // 첫 키 입력 때 startMusic()이 다시 시도함
+        bgm.play().then(() => { musicStarted = true; }).catch(() => {});
+      }
+    }
+    function startMusic() {
+      if (musicStarted) return;
+      musicStarted = true;
+      bgm.play().catch(() => {});
+    }
+    document.addEventListener("keydown", () => startMusic(), { once: true });
+    muteBtn.addEventListener("click", () => {
+      startMusic();
+      bgm.muted = !bgm.muted;
+      muteBtn.textContent = bgm.muted ? "🔇" : "🔈";
+    });
+    // 다음 맵으로 넘어가기 직전에 현재 재생 위치를 저장해서, 다음 페이지에서 이어서 재생되게 함
+    window.addEventListener("pagehide", () => saveBgmState(bgm));
+
+    // === 메뉴 (도감 / 지도 / 설정) ===
+    const menuBtn = document.getElementById("menuBtn");
+    const menuOverlay = document.getElementById("menuOverlay");
+    const dexPanel = document.getElementById("dexPanel");
+    const mapPanel = document.getElementById("mapPanel");
+    const settingsPanel = document.getElementById("settingsPanel");
+    const volumeSlider = document.getElementById("volumeSlider");
+    const resetBtn = document.getElementById("resetBtn");
+    const closeMenuBtn = document.getElementById("closeMenuBtn");
+    const tabBtns = document.querySelectorAll(".tabBtn");
+
+    let menuOpen = false;
+
+    function openMenu() {
+      menuOpen = true;
+      renderDex(dexPanel);
+      renderLocationList(mapPanel, null);
+      menuOverlay.style.display = "flex";
+    }
+    function closeMenu() {
+      menuOpen = false;
+      menuOverlay.style.display = "none";
+    }
+    menuBtn.addEventListener("click", openMenu);
+    closeMenuBtn.addEventListener("click", closeMenu);
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { menuOpen ? closeMenu() : openMenu(); }
+    });
+    menuOverlay.addEventListener("click", (e) => {
+      if (e.target === menuOverlay) closeMenu();
+    });
+    tabBtns.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        tabBtns.forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        const tab = btn.dataset.tab;
+        dexPanel.style.display = tab === "dex" ? "block" : "none";
+        mapPanel.style.display = tab === "map" ? "block" : "none";
+        settingsPanel.style.display = tab === "settings" ? "block" : "none";
+      });
+    });
+    volumeSlider.addEventListener("input", () => { bgm.volume = volumeSlider.value / 100; });
+    resetBtn.addEventListener("click", () => {
+      if (confirm("정말 처음부터 다시 시작할까? 모은 추억이 모두 사라져!")) {
+        saveCollected([]);
+        renderDex(dexPanel);
+      }
+    });
+
+    const player = {
+      x: 240,
+      y: 165,
+      speed: 2,
+      direction: "down",
+      moving: false,
+      crouching: false,
+      walkFrame: 0,
+      walkTimer: 0
+    };
+
+    // 뒷산/시냇가 양쪽에서 들어올 수 있으니, 어느 쪽에서 왔는지에 맞춰 반대쪽 끝에서 시작함
+    const arriving = popMapTransition();
+    if (arriving && arriving.dir === "right") {
+      player.x = 21;
+      player.y = arriving.pos;
+      player.direction = "right";
+    } else if (arriving && arriving.dir === "left") {
+      player.x = canvas.width - 21;
+      player.y = arriving.pos;
+      player.direction = "left";
+    }
+    player.y = Math.max(140, Math.min(190, player.y));
+
+    // 풀밭(위/아래)에는 부딪혀 막히고, 가운데 오솔길만 지나갈 수 있게 함
+    const OBSTACLES = [
+      { x: 0, y: 0, w: 480, h: 130 }, // 위쪽 풀밭
+      { x: 0, y: 200, w: 480, h: 120 } // 아래쪽 풀밭
+    ];
+
+    const keys = {};
+    document.addEventListener("keydown", (e) => { keys[e.key] = true; });
+    document.addEventListener("keyup", (e) => { keys[e.key] = false; });
+
+    function update() {
+      if (menuOpen) return;
+
+      let dx = 0, dy = 0;
+      if (keys["ArrowUp"]) { dy = -1; player.direction = "up"; }
+      else if (keys["ArrowDown"]) { dy = 1; player.direction = "down"; }
+      else if (keys["ArrowLeft"]) { dx = -1; player.direction = "left"; }
+      else if (keys["ArrowRight"]) { dx = 1; player.direction = "right"; }
+
+      player.moving = dx !== 0 || dy !== 0;
+
+      if (player.moving) {
+        moveWithObstacles(player, dx * player.speed, dy * player.speed, OBSTACLES);
+        player.walkTimer++;
+        if (player.walkTimer >= 8) {
+          player.walkTimer = 0;
+          player.walkFrame = player.walkFrame === 0 ? 1 : 0;
+        }
+      } else {
+        player.walkTimer = 0;
+        player.walkFrame = 0;
+      }
+
+      player.x = Math.max(20, Math.min(canvas.width - 20, player.x));
+      player.y = Math.max(40, Math.min(canvas.height - 10, player.y));
+
+      if (player.moving && player.direction === "left" && player.x <= 20) {
+        setMapTransition(player.y, "left");
+        location.href = "mountain.html";
+        return;
+      }
+      if (player.moving && player.direction === "right" && player.x >= canvas.width - 20) {
+        setMapTransition(player.y, "right");
+        location.href = "stream.html";
+        return;
+      }
+    }
+
+    // === 배경 그리기 ===
+    function drawPath(ctx) {
+      ditherGround(ctx, 0, 0, canvas.width, 130, "#6f8f5a", "#5c7a49", 18); // 위쪽 숲
+      ditherGround(ctx, 0, 200, canvas.width, 120, "#6f8f5a", "#5c7a49", 18); // 아래쪽 숲
+      ditherGround(ctx, 0, 130, canvas.width, 70, "#a99a7a", "#8a7d62", 20); // 가운데 산길(흙+이끼)
+
+      // 산길 입구를 알리는 나무 표지판(장식, 부딪히지 않음 — 이미 위아래 숲이 길을 좁혀놓음)
+      pixelBlock(ctx, 234, 116, 6, 50, "#6b4423");
+      pixelBlock(ctx, 220, 108, 34, 22, "#8a6a3a");
+
+      // 길가의 이끼 낀 돌멩이
+      pixelCircle(ctx, 60, 150, 9, "#8a9a7a", { outline: false });
+      pixelCircle(ctx, 420, 180, 11, "#8a9a7a", { outline: false });
+
+      // 길가의 작은 풀
+      for (let i = 0; i < 5; i++) {
+        pixelCircle(ctx, 40 + i * 90, 145 + (i % 2) * 30, 3, "#4f8f3b", { outline: false });
+      }
+
+      // 시냇가 쪽(오른쪽)에 가까워지며 보이는 갈대 덤불
+      drawReeds(ctx, 430, 170);
+    }
+
+    const bgCanvas = document.createElement("canvas");
+    bgCanvas.width = canvas.width;
+    bgCanvas.height = canvas.height;
+    drawPath(bgCanvas.getContext("2d"));
+
+    function draw() {
+      ctx.drawImage(bgCanvas, 0, 0);
+      drawCharacter(ctx, player.x, player.y, player.direction, player.walkFrame, player.crouching);
+    }
+
+    function loop() {
+      update();
+      draw();
+      requestAnimationFrame(loop);
+    }
+    loop();
+  </script>
+</body>
+</html>

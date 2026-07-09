@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>브라질 (아마존) — 정글 스윙</title>
+<style>
+  body { background: #060e06; display: flex; flex-direction: column; align-items: center;
+         color: white; font-family: sans-serif; margin: 0; padding: 0; }
+  h2   { margin: 12px 0 0; color: #90ee90; letter-spacing: 2px; }
+  #hint { font-size: 13px; color: #aaa; margin: 6px 0; text-align: center; }
+  canvas { border: 3px solid #1a4a0a; }
+  a { color: #90ee90; margin-top: 10px; font-size: 13px; }
+</style>
+</head>
+<body>
+<h2>🌴 브라질 — 정글 스윙</h2>
+<div id="hint">
+  A/D 또는 ←/→: 이동 &nbsp;|&nbsp;
+  <b>덩굴 근처에서 Space = 잡기!</b> &nbsp;|&nbsp;
+  잡은 후 A/D로 흔들고 Space로 놓기 &nbsp;|&nbsp;
+  강에 빠지면 리스폰
+</div>
+<canvas id="game" width="480" height="420"></canvas>
+<a href="world-map.html">← 세계지도로</a>
+<script src="pixel-art.js"></script>
+<script>
+const canvas = document.getElementById("game");
+const ctx    = canvas.getContext("2d");
+const W = canvas.width, H = canvas.height;
+
+// ── 저장 ─────────────────────────────────────────────────────────────────
+const SAVE_KEY = "wdttjw_world_explorer";
+function markCleared() {
+  try { const p = JSON.parse(localStorage.getItem(SAVE_KEY))||{}; p.brazil=true; localStorage.setItem(SAVE_KEY,JSON.stringify(p)); } catch {}
+}
+
+// ── 물리 ─────────────────────────────────────────────────────────────────
+const GRAVITY        = 0.45;
+const MOVE_ACCEL     = 0.55;
+const MAX_SPEED      = 5.5;
+const FRICTION       = 0.80;
+const JUMP_POWER     = -10.5;
+const SWING_PUMP     = 2.0;
+const SWING_PUMP_MIN = 0.25;
+const MAX_SWING_SPD  = 15;
+const SWING_RELEASE_BOOST = -7;
+const MIN_VINE_LEN   = 60;
+const LEN_LERP       = 0.08;
+const GRAB_R         = 68;
+
+// ── 월드 ─────────────────────────────────────────────────────────────────
+const WORLD_W = 2350;
+const groundY = 375;
+const PW = 8;
+
+// 안전 섬 (이 밖의 groundY 터치 = 강에 빠짐)
+const PLATFORMS = [
+  {x:0,    y:groundY, w:175},  // 시작 섬
+  {x:315,  y:groundY, w:160},  // 섬1
+  {x:615,  y:groundY, w:160},  // 섬2
+  {x:915,  y:groundY, w:160},  // 섬3
+  {x:1215, y:groundY, w:160},  // 섬4
+  {x:1515, y:groundY, w:160},  // 섬5
+  {x:1825, y:groundY, w:525},  // 마을 (목표)
+];
+
+// 강 구간
+const RIVERS = [
+  {x:175, w:140},   // 갭1
+  {x:475, w:140},   // 갭2
+  {x:775, w:140},   // 갭3
+  {x:1075, w:140},  // 갭4
+  {x:1375, w:140},  // 갭5
+  {x:1675, w:150},  // 갭6
+];
+
+// 덩굴 — 섬 오른쪽 끝 근처에 배치 → 서서도 잡을 수 있음
+// 펌핑(A/D)으로 140px 강을 건넌다
+const VINES = [
+  {ax:168, ay:50, len:290},   // 갭1 (섬1 오른쪽에서 잡기)
+  {ax:468, ay:50, len:290},   // 갭2
+  {ax:768, ay:50, len:290},   // 갭3
+  {ax:1068, ay:50, len:290},  // 갭4
+  {ax:1368, ay:50, len:290},  // 갭5
+  {ax:1668, ay:50, len:290},  // 갭6
+];
+
+// ── 플레이어 ─────────────────────────────────────────────────────────────
+const player = {
+  x: 80, y: groundY, vx: 0, vy: 0,
+  dir: "right", grounded: true,
+  lastSafeX: 80, lastSafeY: groundY,
+};
+
+const camera = { x: 0 };
+const swing  = { active: false, vine: null, length: 0, targetLength: 0 };
+const keys   = {};
+let wasLeft = false, wasRight = false;
+let deathFlash = 0, cleared = false, clearTimer = 0, showReturn = false;
+
+// ── 입력 ─────────────────────────────────────────────────────────────────
+document.addEventListener("keydown", e => {
+  const was = keys[e.code]; keys[e.code] = true;
+  if (["Space","ArrowUp","ArrowLeft","ArrowRight","KeyA","KeyD","KeyW"].includes(e.code)) e.preventDefault();
+  if (!was) {
+    if (e.code==="Space"||e.code==="ArrowUp"||e.code==="KeyW") handleSpace();
+    if (e.code==="Enter" && showReturn) doReturn();
+  }
+});
+document.addEventListener("keyup", e => { keys[e.code] = false; });
+
+function handleSpace() {
+  if (showReturn) { doReturn(); return; }
+
+  if (swing.active) {
+    // 덩굴 놓기
+    swing.active = false;
+    player.vy = Math.min(player.vy, SWING_RELEASE_BOOST);
+    return;
+  }
+
+  // 가장 가까운 덩굴 끝 탐색
+  let best = null, bestD = GRAB_R;
+  for (const v of VINES) {
+    const tipX = v.ax, tipY = v.ay + v.len;
+    const d = Math.hypot(player.x - tipX, player.y - tipY);
+    if (d < bestD) { bestD = d; best = v; }
+  }
+
+  if (best) {
+    const dy = player.y - best.ay;  // 플레이어가 앵커보다 얼마나 아래인지 (항상 양수)
+    if (dy < MIN_VINE_LEN + 8) return;
+    const dist = Math.hypot(player.x - best.ax, player.y - best.ay);
+    swing.vine = best;
+    swing.length = dist;
+    swing.targetLength = dist;
+    swing.active = true;
+    player.grounded = false;
+  } else if (player.grounded) {
+    player.vy = JUMP_POWER;
+    player.grounded = false;
+  }
+}
+
+function doReturn() { markCleared(); window.location.href = "world-map.html"; }
+
+function respawn() {
+  swing.active = false;
+  player.x = player.lastSafeX; player.y = player.lastSafeY;
+  player.vx = 0; player.vy = 0; player.grounded = false;
+  deathFlash = 22;
+}
+
+function inRiver(x) { return RIVERS.some(r => x > r.x && x < r.x + r.w); }
+
+// ── 업데이트 ─────────────────────────────────────────────────────────────
+function update() {
+  if (showReturn) return;
+  const left  = keys["ArrowLeft"]||keys["KeyA"];
+  const right = keys["ArrowRight"]||keys["KeyD"];
+  if (left)  player.dir = "left";
+  if (right) player.dir = "right";
+  if (deathFlash > 0) deathFlash--;
+
+  if (swing.active) {
+    swing.length += (swing.targetLength - swing.length) * LEN_LERP;
+    player.grounded = false;
+    player.vy += GRAVITY;
+
+    const v = swing.vine;
+    const sideOfAnchor = player.x - v.ax;
+    const pumpF = Math.max(SWING_PUMP_MIN, 1 - Math.abs(player.vx) / MAX_SWING_SPD);
+    // 연속 펌핑 (홀드) — 앵커 왼쪽에서 D, 오른쪽에서 A
+    const PUMP_RATE = 0.15;
+    if (right && sideOfAnchor <= 0) player.vx += PUMP_RATE * pumpF;
+    if (left  && sideOfAnchor >= 0) player.vx -= PUMP_RATE * pumpF;
+
+    let nx = player.x + player.vx, ny = player.y + player.vy;
+    const dx = nx - v.ax, dy = ny - v.ay;
+    const dist = Math.hypot(dx, dy) || 1;
+    const ratio = swing.length / dist;
+    nx = v.ax + dx * ratio;
+    ny = v.ay + dy * ratio;
+
+    player.vx = nx - player.x; player.vy = ny - player.y;
+    const spd = Math.hypot(player.vx, player.vy);
+    if (spd > MAX_SWING_SPD) { player.vx *= MAX_SWING_SPD/spd; player.vy *= MAX_SWING_SPD/spd; }
+    player.x = nx; player.y = ny;
+    player.dir = player.vx >= 0 ? "right" : "left";
+  } else {
+    player.vy += GRAVITY;
+    if (left)  { player.vx -= MOVE_ACCEL; if (player.vx < -MAX_SPEED) player.vx = -MAX_SPEED; }
+    if (right) { player.vx += MOVE_ACCEL; if (player.vx >  MAX_SPEED) player.vx =  MAX_SPEED; }
+    if (!left && !right && player.grounded) player.vx *= FRICTION;
+
+    const prevY = player.y;
+    player.x += player.vx; player.y += player.vy;
+
+    player.grounded = false;
+    for (const p of PLATFORMS) {
+      const inX = player.x+PW > p.x && player.x-PW < p.x+p.w;
+      if (inX && prevY <= p.y && player.y >= p.y) {
+        player.y = p.y; player.vy = 0; player.grounded = true;
+        player.lastSafeX = player.x; player.lastSafeY = player.y;
+        break;
+      }
+    }
+  }
+
+  // ─ 바닥 판정 ──────────────────────────────────────────────────────────
+  if (player.y >= groundY) {
+    // 스윙 중에는 강 사망 없음 (덩굴로 강 위를 지나는 정상 동작)
+    if (!swing.active && inRiver(player.x)) { respawn(); return; }
+    if (!player.grounded) {
+      player.y = groundY; player.vy = 0; player.grounded = true;
+      player.lastSafeX = player.x; player.lastSafeY = player.y;
+    }
+  }
+
+  // 세계 경계
+  if (player.x < PW)           { player.x = PW; player.vx = 0; }
+  if (player.x > WORLD_W - PW) { player.x = WORLD_W - PW; player.vx = 0; }
+
+  // 카메라
+  const look = Math.max(-70, Math.min(70, player.vx * 7));
+  camera.x += (player.x - W/2 + look - camera.x) * 0.1;
+  camera.x = Math.max(0, Math.min(WORLD_W - W, camera.x));
+
+  // 목표 도달
+  const last = PLATFORMS[PLATFORMS.length-1];
+  if (!cleared && player.grounded && player.x > last.x + 80) {
+    cleared = true; clearTimer = 160;
+  }
+  if (cleared) { clearTimer--; if (clearTimer <= 0) showReturn = true; }
+
+  wasLeft = left; wasRight = right;
+}
+
+// ── 배경 미리 렌더링 ─────────────────────────────────────────────────────
+const bgLayer = (() => {
+  const c = document.createElement("canvas"); c.width = WORLD_W; c.height = H;
+  const bx = c.getContext("2d");
+
+  // 하늘 (정글 속 오후 햇빛)
+  const sky = bx.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0, "#3a7020");
+  sky.addColorStop(0.4, "#4a9030");
+  sky.addColorStop(1,   "#2a5818");
+  bx.fillStyle = sky; bx.fillRect(0, 0, WORLD_W, H);
+
+  // 빛줄기
+  bx.globalAlpha = 0.09; bx.fillStyle = "#d8ffb0";
+  for (let i = 0; i < 30; i++) {
+    const lx = (i*137) % WORLD_W;
+    bx.beginPath(); bx.moveTo(lx-10,0); bx.lineTo(lx+10,0);
+    bx.lineTo(lx+50,H); bx.lineTo(lx+28,H); bx.closePath(); bx.fill();
+  }
+  bx.globalAlpha = 1;
+
+  // 먼 나무 실루엣
+  for (let i = 0; i < 55; i++) {
+    const tx = (i*73) % WORLD_W, th = 100+(i*61)%150, tw = 26+(i*23)%42;
+    bx.fillStyle = "#143808";
+    bx.fillRect(tx, groundY-th, tw, th);
+    bx.beginPath(); bx.ellipse(tx+tw/2, groundY-th, tw*1.1, 52, 0, 0, Math.PI*2); bx.fill();
+  }
+  // 중간 나무
+  for (let i = 0; i < 32; i++) {
+    const tx = (i*113) % WORLD_W, th = 55+(i*43)%85, tw = 20+(i*17)%30;
+    bx.fillStyle = "#1e5010";
+    bx.fillRect(tx+tw*.3, groundY-th, tw*.4, th);
+    bx.beginPath(); bx.ellipse(tx+tw/2, groundY-th, tw*1.3, 36, 0, 0, Math.PI*2); bx.fill();
+  }
+  // 앞쪽 캐노피 나무
+  for (let i = 0; i < 18; i++) {
+    const tx = (i*181) % WORLD_W;
+    bx.fillStyle = "#2a7018";
+    bx.beginPath(); bx.ellipse(tx, 45, 55, 70, 0, 0, Math.PI*2); bx.fill();
+    bx.fillStyle = "#368020";
+    bx.beginPath(); bx.ellipse(tx, 30, 40, 55, 0, 0, Math.PI*2); bx.fill();
+  }
+
+  // 강
+  for (const r of RIVERS) {
+    const g = bx.createLinearGradient(r.x, groundY-10, r.x, H);
+    g.addColorStop(0, "#1a8090"); g.addColorStop(0.4, "#1a6070"); g.addColorStop(1,"#0a3a4a");
+    bx.fillStyle = g; bx.fillRect(r.x, groundY-10, r.w, H-groundY+10);
+    // 피라냐 눈 (장식)
+    bx.fillStyle = "#ff4020";
+    const ex = r.x + r.w*0.4;
+    bx.fillRect(ex, groundY+8, 4, 3); bx.fillRect(ex+8, groundY+8, 4, 3);
+  }
+
+  // 안전 섬
+  for (const p of PLATFORMS) {
+    bx.fillStyle = "#4a2e10"; bx.fillRect(p.x, p.y, p.w, H-p.y);
+    bx.fillStyle = "#3a9a20"; bx.fillRect(p.x, p.y, p.w, 7);
+    bx.fillStyle = "#50c030"; bx.fillRect(p.x+2, p.y, p.w-4, 3);
+    bx.fillStyle = "#ffee40";
+    for (let i = 18; i < p.w-10; i += 26) {
+      bx.beginPath(); bx.arc(p.x+i, p.y-4, 3, 0, Math.PI*2); bx.fill();
+    }
+  }
+
+  // 마을 오두막
+  const vill = PLATFORMS[PLATFORMS.length-1];
+  const huts = [
+    [vill.x+50,  70, 62],
+    [vill.x+165, 60, 54],
+    [vill.x+280, 66, 58],
+  ];
+  for (const [hx, hh, hw] of huts) {
+    bx.fillStyle = "#6a4018"; bx.fillRect(hx, groundY-hh, hw, hh);
+    bx.fillStyle = "#8a5a20";
+    bx.beginPath(); bx.moveTo(hx-8,groundY-hh); bx.lineTo(hx+hw/2,groundY-hh-34); bx.lineTo(hx+hw+8,groundY-hh); bx.closePath(); bx.fill();
+    bx.fillStyle = "#ffe870";
+    bx.fillRect(hx+hw*.22, groundY-hh+hh*.32, hw*.2, hw*.2);
+    bx.fillRect(hx+hw*.58, groundY-hh+hh*.32, hw*.2, hw*.2);
+  }
+  // 마을 깃발
+  bx.strokeStyle = "#c0a030"; bx.lineWidth = 2;
+  bx.beginPath(); bx.moveTo(vill.x+81,groundY-70); bx.lineTo(vill.x+81,groundY-108); bx.stroke();
+  bx.fillStyle = "#50d050";
+  bx.beginPath(); bx.moveTo(vill.x+81,groundY-108); bx.lineTo(vill.x+105,groundY-99); bx.lineTo(vill.x+81,groundY-90); bx.closePath(); bx.fill();
+
+  // 위쪽 캐노피 그늘
+  const can = bx.createLinearGradient(0,0,0,70);
+  can.addColorStop(0,"#0a1a04"); can.addColorStop(1,"rgba(10,26,4,0)");
+  bx.fillStyle = can; bx.fillRect(0,0,WORLD_W,70);
+
+  return c;
+})();
+
+// ── 덩굴 그리기 ──────────────────────────────────────────────────────────
+function drawVine(v) {
+  const sx = v.ax - camera.x;
+  if (sx < -150 || sx > W+150) return;
+
+  const swinging = swing.active && swing.vine === v;
+  const ex = swinging ? player.x - camera.x : sx;
+  const ey = swinging ? player.y : v.ay + v.len;
+
+  ctx.strokeStyle = "#4aaa20"; ctx.lineWidth = 3.5; ctx.lineCap = "round";
+  ctx.beginPath(); ctx.moveTo(sx, v.ay); ctx.lineTo(ex, ey); ctx.stroke();
+  ctx.strokeStyle = "#2a6810"; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(sx+1.5, v.ay); ctx.lineTo(ex+1.5, ey); ctx.stroke();
+
+  // 잎사귀
+  ctx.fillStyle = "#3ab818";
+  const seg = Math.floor((ey - v.ay) / 48);
+  for (let i = 1; i <= seg; i++) {
+    const t = i / (seg+1);
+    const lx = sx + (ex-sx)*t, ly = v.ay + (ey-v.ay)*t;
+    const side = i%2===0 ? 1 : -1;
+    ctx.beginPath(); ctx.ellipse(lx+side*12, ly, 12, 5, side*0.5, 0, Math.PI*2); ctx.fill();
+  }
+  ctx.fillStyle = "#60c030";
+  ctx.beginPath(); ctx.arc(ex, ey, 5, 0, Math.PI*2); ctx.fill();
+
+  // 잡기 표시
+  if (!swinging) {
+    const d = Math.hypot(player.x - v.ax, player.y - (v.ay + v.len));
+    if (d < GRAB_R) {
+      ctx.strokeStyle = "rgba(255,240,60,0.85)"; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(sx, v.ay + v.len, 18, 0, Math.PI*2); ctx.stroke();
+      ctx.font = "bold 11px sans-serif"; ctx.textAlign = "center";
+      ctx.fillStyle = "rgba(255,240,60,0.95)";
+      ctx.fillText("Space", sx, v.ay + v.len + 30);
+    }
+  }
+}
+
+// ── 그리기 ───────────────────────────────────────────────────────────────
+let rippleT = 0;
+function draw() {
+  ctx.drawImage(bgLayer, Math.floor(camera.x), 0, W, H, 0, 0, W, H);
+
+  // 강 물결 애니메이션
+  rippleT += 0.025;
+  ctx.fillStyle = "rgba(180,240,255,0.15)";
+  for (const r of RIVERS) {
+    const sx = r.x - camera.x;
+    if (sx+r.w < 0 || sx > W) continue;
+    for (let i = 0; i < 4; i++) {
+      const wx = sx + ((i*52 + rippleT*22) % r.w);
+      if (wx > 0 && wx < W) ctx.fillRect(wx, groundY - 6, 18, 3);
+    }
+  }
+
+  // 덩굴
+  for (const v of VINES) drawVine(v);
+
+  // 사망 플래시
+  if (deathFlash > 0) {
+    ctx.fillStyle = `rgba(40,170,255,${deathFlash/22*0.5})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // 플레이어
+  if (typeof drawCharacter !== "undefined") {
+    drawCharacter(ctx, player.x - camera.x, player.y, player.dir, 0, !player.grounded, false);
+  }
+
+  // HUD
+  ctx.textAlign = "left"; ctx.font = "bold 12px sans-serif";
+  ctx.fillStyle = "rgba(0,0,0,0.5)"; ctx.fillRect(8, 8, 116, 20);
+  ctx.fillStyle = "#90ee90"; ctx.fillText("🌴 아마존 정글", 13, 23);
+
+  if (!cleared) {
+    ctx.font = "11px sans-serif";
+    ctx.fillStyle = "rgba(0,0,0,0.45)"; ctx.fillRect(8, 32, 216, 18);
+    ctx.fillStyle = "#c0ffa0"; ctx.fillText("임무: 강을 건너 마을에 도착하기", 12, 45);
+  }
+
+  // 진행도
+  const pct = Math.max(0, Math.min(1, player.x / WORLD_W));
+  const pbx = W-92, pby = H-14, pbw = 82;
+  ctx.fillStyle = "rgba(0,0,0,0.4)"; ctx.fillRect(pbx, pby, pbw, 8);
+  ctx.fillStyle = "#3aaa18"; ctx.fillRect(pbx, pby, pbw*pct, 8);
+  ctx.font = "9px sans-serif"; ctx.fillStyle = "rgba(255,255,255,0.65)"; ctx.textAlign = "left";
+  ctx.fillText(`진행 ${Math.floor(pct*100)}%`, pbx, pby-2);
+
+  // 클리어
+  if (cleared && !showReturn) {
+    ctx.fillStyle = "rgba(0,0,0,0.4)"; ctx.fillRect(0,0,W,H);
+    ctx.textAlign = "center"; ctx.font = "bold 28px sans-serif";
+    ctx.fillStyle = "#ffd700"; ctx.fillText("임무 완료! 🌴", W/2, H/2);
+  }
+  if (showReturn) {
+    ctx.fillStyle = "rgba(0,0,0,0.85)"; ctx.fillRect(0,0,W,H);
+    ctx.textAlign = "center";
+    ctx.font = "bold 30px sans-serif"; ctx.fillStyle = "#ffd700";
+    ctx.fillText("🌴 브라질 클리어!", W/2, H/2-60);
+    ctx.font = "17px sans-serif"; ctx.fillStyle = "#c0ffa0";
+    ctx.fillText("아마존 강을 덩굴로 건넜습니다!", W/2, H/2-22);
+    ctx.font = "15px sans-serif"; ctx.fillStyle = "white";
+    ctx.fillText("클릭 또는 Enter → 세계지도로 귀환", W/2, H/2+16);
+    ctx.font = "13px sans-serif"; ctx.fillStyle = "#aaa";
+    ctx.fillText("🌍 세계 탐험이 완성됐습니다!", W/2, H/2+48);
+  }
+}
+
+canvas.addEventListener("click", () => { if (showReturn) doReturn(); });
+
+function loop() { update(); draw(); requestAnimationFrame(loop); }
+loop();
+</script>
+</body>
+</html>

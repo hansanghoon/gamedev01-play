@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>캐릭터 움직임 테스트</title>
+<style>
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: #222;
+    color: white;
+    font-family: sans-serif;
+  }
+  canvas {
+    background: #cdeac0;
+    border: 4px solid white;
+    margin-top: 20px;
+  }
+  #info {
+    margin-top: 10px;
+    font-size: 16px;
+    text-align: center;
+    line-height: 1.6;
+  }
+  a {
+    color: #9cf;
+    margin-top: 12px;
+  }
+</style>
+</head>
+<body>
+  <h1>캐릭터 움직임 / 애니메이션 테스트</h1>
+  <div id="info">
+    방향키(↑↓←→)로 이동 · 스페이스바로 아이템 줍는 동작(웅크리기)<br>
+    아직 맵이나 아이템은 없고, 움직임과 애니메이션만 테스트하는 화면이야
+  </div>
+  <canvas id="game" width="400" height="300"></canvas>
+  <a href="../index.html">← 게임 목록으로 돌아가기</a>
+
+  <script>
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+
+    const player = {
+      x: 200,
+      y: 200,       // 발이 닿는 바닥 위치(y)
+      speed: 2,
+      direction: "down", // "up" | "down" | "left" | "right"
+      moving: false,
+      crouching: false,
+      crouchTimer: 0,
+      walkFrame: 0,      // 0 또는 1: 어느 발이 앞으로 나가있는지
+      walkTimer: 0
+    };
+
+    const keys = {};
+    document.addEventListener("keydown", (e) => {
+      keys[e.key] = true;
+      if (e.key === " ") {
+        e.preventDefault();
+        if (!player.crouching) {
+          player.crouching = true;
+          player.crouchTimer = 0;
+        }
+      }
+    });
+    document.addEventListener("keyup", (e) => { keys[e.key] = false; });
+
+    function update() {
+      if (player.crouching) {
+        // 웅크리는 동작은 일정 시간 동안 진행되고 끝나면 자동으로 풀림
+        player.crouchTimer++;
+        if (player.crouchTimer > 70) player.crouching = false;
+        return; // 웅크리는 동안은 이동 불가
+      }
+
+      let dx = 0, dy = 0;
+      if (keys["ArrowUp"]) { dy = -1; player.direction = "up"; }
+      else if (keys["ArrowDown"]) { dy = 1; player.direction = "down"; }
+      else if (keys["ArrowLeft"]) { dx = -1; player.direction = "left"; }
+      else if (keys["ArrowRight"]) { dx = 1; player.direction = "right"; }
+
+      player.moving = dx !== 0 || dy !== 0;
+
+      if (player.moving) {
+        player.x += dx * player.speed;
+        player.y += dy * player.speed;
+
+        // 8프레임마다 왼발/오른발 교체 (걷는 느낌)
+        player.walkTimer++;
+        if (player.walkTimer >= 8) {
+          player.walkTimer = 0;
+          player.walkFrame = player.walkFrame === 0 ? 1 : 0;
+        }
+      } else {
+        player.walkTimer = 0;
+        player.walkFrame = 0;
+      }
+
+      // 화면 밖으로 못 나가게
+      player.x = Math.max(20, Math.min(canvas.width - 20, player.x));
+      player.y = Math.max(40, Math.min(canvas.height - 10, player.y));
+    }
+
+    // 캐릭터를 단순한 사각형 조합(머리/몸/팔/다리)으로 그리기
+    function drawCharacter(cx, groundY, direction, walkFrame, crouching) {
+      const hairColor = "#6b4423";
+      const skinColor = "#f0c79a";
+      const shirtRed = "#cc3b3b";
+      const shirtWhite = "#f5f0e6";
+      const pantsColor = "#3b5fcc";
+      const shoeColor = "#f2d33b";
+
+      // 웅크리면 다리가 짧아지고 몸이 낮아짐
+      const legH = crouching ? 6 : 14;
+      const bodyH = crouching ? 10 : 16;
+      const bodyW = 18;
+      const legW = 6;
+      const legGap = 3;
+
+      const bodyTopY = groundY - legH - bodyH;
+      const headSize = 13;
+      const headTopY = bodyTopY - headSize;
+
+      // 걸을 때 다리가 번갈아 움직임: 양옆 이동은 다리가 앞뒤로 교차(스텝), 위아래 이동은 위아래로 살짝 어긋남
+      const sideways = direction === "left" || direction === "right";
+      let leftLegOffset = 0, rightLegOffset = 0;
+      let leftLegH = legH, rightLegH = legH;
+
+      if (!crouching) {
+        if (sideways) {
+          const dirSign = direction === "right" ? 1 : -1;
+          const stride = 5;
+          const swing = walkFrame === 0 ? stride : -stride;
+          leftLegOffset = dirSign * swing;
+          rightLegOffset = -leftLegOffset;
+          // 앞으로 내딛는 다리는 땅에서 살짝 들려서 짧게 보이게
+          leftLegH = leftLegOffset * dirSign > 0 ? legH * 0.7 : legH;
+          rightLegH = rightLegOffset * dirSign > 0 ? legH * 0.7 : legH;
+        } else {
+          const offsetAmount = 3;
+          if (walkFrame === 0) leftLegOffset = -offsetAmount;
+          else rightLegOffset = -offsetAmount;
+        }
+      }
+
+      ctx.save();
+
+      ctx.fillStyle = pantsColor;
+      if (sideways) {
+        ctx.fillRect(cx - legGap / 2 - legW + leftLegOffset, bodyTopY + bodyH, legW, leftLegH);
+        ctx.fillRect(cx + legGap / 2 + rightLegOffset, bodyTopY + bodyH, legW, rightLegH);
+      } else {
+        ctx.fillRect(cx - legGap / 2 - legW, bodyTopY + bodyH + leftLegOffset, legW, legH);
+        ctx.fillRect(cx + legGap / 2, bodyTopY + bodyH + rightLegOffset, legW, legH);
+      }
+      // 신발 (다리 끝부분)
+      ctx.fillStyle = shoeColor;
+      const shoeH = 4;
+      if (sideways) {
+        ctx.fillRect(cx - legGap / 2 - legW + leftLegOffset, bodyTopY + bodyH + leftLegH - shoeH, legW, shoeH);
+        ctx.fillRect(cx + legGap / 2 + rightLegOffset, bodyTopY + bodyH + rightLegH - shoeH, legW, shoeH);
+      } else {
+        ctx.fillRect(cx - legGap / 2 - legW, bodyTopY + bodyH + leftLegOffset + legH - shoeH, legW, shoeH);
+        ctx.fillRect(cx + legGap / 2, bodyTopY + bodyH + rightLegOffset + legH - shoeH, legW, shoeH);
+      }
+
+      // 몸통: 빨강-하양 가로 줄무늬
+      ctx.fillStyle = shirtWhite;
+      ctx.fillRect(cx - bodyW / 2, bodyTopY, bodyW, bodyH);
+      ctx.fillStyle = shirtRed;
+      const stripeH = bodyH / 4;
+      ctx.fillRect(cx - bodyW / 2, bodyTopY, bodyW, stripeH);
+      ctx.fillRect(cx - bodyW / 2, bodyTopY + stripeH * 2, bodyW, stripeH);
+
+      // 머리: 갈색 머리 + 얼굴(피부색). 뒤를 보면(up) 머리만 보임
+      ctx.fillStyle = skinColor;
+      ctx.fillRect(cx - headSize / 2, headTopY, headSize, headSize);
+      ctx.fillStyle = hairColor;
+      if (direction === "up") {
+        // 뒷모습: 머리 전체가 머리카락
+        ctx.fillRect(cx - headSize / 2, headTopY, headSize, headSize);
+      } else {
+        // 앞/옆모습: 머리 위쪽만 머리카락
+        ctx.fillRect(cx - headSize / 2, headTopY, headSize, headSize * 0.5);
+      }
+
+      ctx.restore();
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // 바닥 (잔디 느낌)
+      ctx.fillStyle = "#a8d18a";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      drawCharacter(player.x, player.y, player.direction, player.walkFrame, player.crouching);
+    }
+
+    function loop() {
+      update();
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    loop();
+  </script>
+</body>
+</html>

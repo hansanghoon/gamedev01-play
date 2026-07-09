@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>도트 갤러리 — 꿈속 탐험가</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: radial-gradient(circle at 50% 0%, #12102e, #05040f 70%);
+      color: #e4dcff;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      min-height: 100vh;
+      padding: 28px 18px 60px;
+    }
+    header { text-align: center; margin-bottom: 8px; }
+    h1 {
+      font-size: 26px; letter-spacing: .04em;
+      color: #d4b8ff;
+      text-shadow: 0 0 18px rgba(150,90,240,0.5);
+    }
+    .subtitle { color: #8877bb; font-size: 13px; margin-top: 6px; }
+
+    /* 조작 바 */
+    .toolbar {
+      display: flex; gap: 18px; justify-content: center; align-items: center;
+      flex-wrap: wrap;
+      margin: 22px 0 10px;
+    }
+    .toolbar label { font-size: 13px; color: #a894d0; display: flex; align-items: center; gap: 8px; }
+    input[type=range] { accent-color: #9966ee; width: 150px; }
+    .toggle-btn {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(150,100,255,0.3);
+      color: #cbb8f0; font-family: inherit; font-size: 13px;
+      padding: 7px 16px; border-radius: 8px; cursor: pointer;
+      transition: all .13s;
+    }
+    .toggle-btn:hover { border-color: #aa88ff; background: rgba(150,100,255,0.12); }
+    .toggle-btn.off { opacity: .4; }
+
+    /* 섹션 */
+    .section-title {
+      max-width: 1040px; margin: 30px auto 4px;
+      font-size: 16px; color: #b89aee; letter-spacing: .05em;
+      border-bottom: 1px solid rgba(150,100,255,0.18);
+      padding-bottom: 8px;
+    }
+    .section-title .count { color: #6a5a95; font-size: 13px; margin-left: 8px; }
+
+    .grid {
+      max-width: 1040px; margin: 16px auto 0;
+      display: flex; flex-wrap: wrap; gap: 16px;
+      justify-content: center;
+    }
+    .cell {
+      background: linear-gradient(160deg, rgba(30,22,60,0.6), rgba(12,8,26,0.7));
+      border: 1px solid rgba(120,80,220,0.25);
+      border-radius: 14px;
+      padding: 16px 14px 12px;
+      display: flex; flex-direction: column; align-items: center; gap: 10px;
+      transition: transform .15s, box-shadow .15s, border-color .15s;
+    }
+    .cell:hover {
+      transform: translateY(-5px);
+      border-color: #aa88ff;
+      box-shadow: 0 10px 30px rgba(120,70,230,0.3);
+    }
+    .cell.char  { border-color: rgba(90,130,240,0.35); }
+    .cell.enemy { border-color: rgba(220,90,90,0.30); }
+
+    .frame {
+      background:
+        linear-gradient(45deg, #0c0a1a 25%, transparent 25%) -10px 0/20px 20px,
+        linear-gradient(-45deg, #0c0a1a 25%, transparent 25%) -10px 0/20px 20px,
+        linear-gradient(45deg, transparent 75%, #0c0a1a 75%) -10px 0/20px 20px,
+        linear-gradient(-45deg, transparent 75%, #0c0a1a 75%) -10px 0/20px 20px,
+        #15122c;
+      border-radius: 10px;
+      padding: 12px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .frame img {
+      image-rendering: pixelated;
+      display: block;
+    }
+    .frame.showgrid img { outline: 1px solid rgba(255,255,255,0.08); }
+
+    .cell-name { font-size: 14px; font-weight: 600; color: #e0d4ff; }
+    .cell-id {
+      font-size: 10px; color: #6a5a90;
+      font-family: ui-monospace, monospace;
+      letter-spacing: .03em;
+    }
+    .footer-note {
+      text-align: center; color: #6a5a90; font-size: 12px;
+      margin-top: 40px; line-height: 1.7;
+    }
+    .footer-note a { color: #a894d0; }
+    .err {
+      max-width: 700px; margin: 40px auto; padding: 20px;
+      background: rgba(120,20,20,0.2); border: 1px solid #a04040;
+      border-radius: 12px; text-align: center; line-height: 1.7;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🎨 도트 갤러리</h1>
+    <div class="subtitle">꿈속 탐험가에 나오는 모든 픽셀아트를 한눈에</div>
+  </header>
+
+  <div class="toolbar">
+    <label>크기
+      <input type="range" id="scale" min="4" max="16" value="9" step="1">
+      <span id="scale-val" style="color:#cbb8f0;min-width:26px;">9×</span>
+    </label>
+    <button class="toggle-btn" id="grid-toggle">픽셀 격자 보기</button>
+  </div>
+
+  <div id="content"></div>
+
+  <div class="footer-note">
+    도트는 <code>games/dream-sprites.js</code> 한 곳에서 관리돼요.<br>
+    거기서 고치면 게임과 이 갤러리에 똑같이 반영됩니다.<br>
+    <a href="dream-card.html">← 게임으로 돌아가기</a>
+  </div>
+
+  <!-- 공용 스프라이트 데이터 -->
+  <script src="dream-sprites.js"></script>
+  <script>
+    const content = document.getElementById("content");
+    const scaleEl = document.getElementById("scale");
+    const scaleVal = document.getElementById("scale-val");
+    const gridBtn = document.getElementById("grid-toggle");
+
+    let showGrid = false;
+
+    // 스프라이트 하나를 원하는 배율로 canvas dataURL 생성
+    function renderSprite(id, scale) {
+      const sp = SPRITE_DATA[id];
+      const cv = document.createElement("canvas");
+      cv.width  = sp.rows[0].length * scale;
+      cv.height = sp.rows.length * scale;
+      const cx = cv.getContext("2d");
+      sp.rows.forEach((row, y) => {
+        for(let x = 0; x < row.length; x++){
+          const col = sp.pal[row[x]];
+          if(!col) continue;
+          cx.fillStyle = col;
+          cx.fillRect(x * scale, y * scale, scale, scale);
+        }
+      });
+      return { url: cv.toDataURL(), w: cv.width, h: cv.height };
+    }
+
+    function cellHTML(id, kind, scale) {
+      const img = renderSprite(id, scale);
+      const name = (typeof SPRITE_LABELS !== "undefined" && SPRITE_LABELS[id]) || id;
+      return `<div class="cell ${kind}">
+        <div class="frame${showGrid ? " showgrid" : ""}">
+          <img src="${img.url}" width="${img.w}" height="${img.h}" alt="${name}">
+        </div>
+        <div class="cell-name">${name}</div>
+        <div class="cell-id">${id}</div>
+      </div>`;
+    }
+
+    function draw() {
+      if(typeof SPRITE_DATA === "undefined"){
+        content.innerHTML = `<div class="err">
+          ⚠️ 도트 데이터(<code>dream-sprites.js</code>)를 불러오지 못했어요.<br>
+          이 파일을 <b>games 폴더 안에서</b> dream-sprites.js 와 함께 열어야 해요.
+        </div>`;
+        return;
+      }
+      const scale = +scaleEl.value;
+      scaleVal.textContent = scale + "×";
+
+      const groups = (typeof SPRITE_GROUPS !== "undefined")
+        ? SPRITE_GROUPS
+        : { characters: Object.keys(SPRITE_DATA), enemies: [] };
+
+      const sections = [
+        { title: "🧒 캐릭터", ids: groups.characters, kind: "char" },
+        { title: "👾 적",     ids: groups.enemies,    kind: "enemy" },
+      ];
+
+      content.innerHTML = sections.filter(s => s.ids && s.ids.length).map(s => `
+        <div class="section-title">${s.title}<span class="count">${s.ids.length}종</span></div>
+        <div class="grid">${s.ids.map(id => cellHTML(id, s.kind, scale)).join("")}</div>
+      `).join("");
+    }
+
+    scaleEl.addEventListener("input", draw);
+    gridBtn.addEventListener("click", () => {
+      showGrid = !showGrid;
+      gridBtn.classList.toggle("off", !showGrid);
+      draw();
+    });
+    gridBtn.classList.add("off");
+
+    draw();
+  </script>
+</body>
+</html>

@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>일본 (도쿄) — 닌자 벽타기</title>
+<style>
+  body { background: #100818; display: flex; flex-direction: column; align-items: center;
+         color: white; font-family: sans-serif; margin: 0; padding: 0; }
+  h2   { margin: 12px 0 0; color: #ffbbcc; letter-spacing: 2px; }
+  #hint { font-size: 13px; color: #aaa; margin: 6px 0; text-align: center; }
+  canvas { border: 3px solid #3a1428; }
+  a { color: #f9a; margin-top: 10px; font-size: 13px; }
+</style>
+</head>
+<body>
+<h2>⛩️ 일본 — 닌자 벽타기</h2>
+<div id="hint">
+  A/D 또는 ←/→: 이동 &nbsp;|&nbsp; Space / ↑ : 점프 &nbsp;|&nbsp;
+  <b>벽에 붙은 상태에서 점프 = 벽차기!</b> &nbsp;|&nbsp; 오른쪽 바: 남은 고도
+</div>
+<canvas id="game" width="480" height="420"></canvas>
+<a href="world-map.html">← 세계지도로</a>
+
+<script src="pixel-art.js"></script>
+<script>
+const canvas = document.getElementById("game");
+const ctx    = canvas.getContext("2d");
+const W = canvas.width, H = canvas.height;
+
+// ── 세계탐험 저장 ───────────────────────────────────────────────────────────
+const SAVE_KEY = "wdttjw_world_explorer";
+function markCleared() {
+  try {
+    const p = JSON.parse(localStorage.getItem(SAVE_KEY)) || {};
+    p.japan = true;
+    localStorage.setItem(SAVE_KEY, JSON.stringify(p));
+  } catch {}
+}
+
+// ── 물리 상수 ──────────────────────────────────────────────────────────────
+const GRAVITY         = 0.48;
+const MOVE_ACCEL      = 0.9;
+const MOVE_MAX        = 3.8;
+const FRICTION        = 0.78;  // 바닥 마찰
+const JUMP_VY         = -11.2;
+const WALL_JUMP_VX    = 5.8;   // 벽차기 수평 속도
+const WALL_JUMP_VY    = -10.8; // 벽차기 수직 속도
+const WALL_SLIDE_SPD  = 1.0;   // 벽에 붙어있을 때 최대 하강 속도
+const WALL_STICK_TIME = 10;    // 벽차기 직후 이쪽 벽에 다시 붙는 것을 막는 프레임 수
+
+// ── 월드 ────────────────────────────────────────────────────────────────────
+const WORLD_H = 2900;
+const PW = 8, PH = 36; // 플레이어 반폭, 전체 높이
+
+// 플랫폼 {x, y(상단), w}  — 아래(y 큰 값)가 시작, 위(y 작은 값)가 목표
+const PLATFORMS = [
+  // ── 시작 구간 (y 2700~2900) ────────────────────────────────────────────
+  { x:80,  y:2860, w:320 }, // 넓은 시작 발판
+  { x:10,  y:2690, w:130 }, { x:340, y:2690, w:130 },
+  { x:160, y:2530, w:160 },
+  // ── 하단 (2200~2530) ───────────────────────────────────────────────────
+  { x:10,  y:2370, w:110 }, { x:360, y:2370, w:110 },
+  { x:170, y:2200, w:140 },
+  { x:10,  y:2040, w:90  }, { x:380, y:2040, w:90  },
+  { x:178, y:1870, w:124 },
+  // ── 중단 (1500~1870) ───────────────────────────────────────────────────
+  { x:10,  y:1720, w:80  }, { x:390, y:1720, w:80  },
+  { x:182, y:1550, w:116 },
+  { x:10,  y:1400, w:70  }, { x:400, y:1400, w:70  },
+  { x:184, y:1230, w:112 },
+  // ── 상단 (800~1230) ────────────────────────────────────────────────────
+  { x:10,  y:1080, w:65  }, { x:405, y:1080, w:65  },
+  { x:186, y:910,  w:108 },
+  { x:10,  y:760,  w:60  }, { x:410, y:760,  w:60  },
+  { x:188, y:590,  w:104 },
+  // ── 근접 정상 (200~590) ───────────────────────────────────────────────
+  { x:10,  y:445,  w:55  }, { x:415, y:445,  w:55  },
+  { x:185, y:275,  w:110 },
+  { x:10,  y:130,  w:50  }, { x:420, y:130,  w:50  },
+  // ── 정상 도리이 발판 ───────────────────────────────────────────────────
+  { x:150, y:70,   w:180 },
+];
+
+const GOAL_Y   = 70;   // 도리이 발판 상단 y
+const GOAL_X   = 240;  // 도리이 중심 x
+
+// ── 플레이어 ────────────────────────────────────────────────────────────────
+const SPAWN = { x: 240, y: 2850 };
+const player = {
+  x: SPAWN.x, y: SPAWN.y,
+  vx: 0, vy: 0,
+  dir: "right",
+  grounded: false,
+  touchLeft: false, touchRight: false,
+  wallCooldownL: 0, wallCooldownR: 0, // 같은 벽에 즉시 재부착 방지
+  lastSafeX: SPAWN.x, lastSafeY: SPAWN.y,
+};
+
+const camera = { y: WORLD_H - H };
+
+const keys = {};
+document.addEventListener("keydown", e => {
+  const was = keys[e.code];
+  keys[e.code] = true;
+  if (["Space","ArrowUp","ArrowLeft","ArrowRight","KeyA","KeyD","KeyW"].includes(e.code)) e.preventDefault();
+  if (!was && (e.code === "Space" || e.code === "ArrowUp" || e.code === "KeyW")) handleJump();
+  if (!was && e.code === "Enter" && showReturn) doReturn();
+});
+document.addEventListener("keyup", e => { keys[e.code] = false; });
+
+// ── 게임 상태 ───────────────────────────────────────────────────────────────
+let gameOver     = false;
+let cleared      = false;
+let clearTimer   = 0;
+let showReturn   = false;
+
+// ── 입력 ─────────────────────────────────────────────────────────────────────
+function handleJump() {
+  if (showReturn)  { doReturn(); return; }
+  if (gameOver)    { respawn();  return; }
+  if (player.grounded) {
+    player.vy = JUMP_VY;
+    player.grounded = false;
+  } else if (player.touchLeft && player.wallCooldownL <= 0) {
+    player.vx = WALL_JUMP_VX;
+    player.vy = WALL_JUMP_VY;
+    player.touchLeft = false;
+    player.wallCooldownL = WALL_STICK_TIME;
+  } else if (player.touchRight && player.wallCooldownR <= 0) {
+    player.vx = -WALL_JUMP_VX;
+    player.vy = WALL_JUMP_VY;
+    player.touchRight = false;
+    player.wallCooldownR = WALL_STICK_TIME;
+  }
+}
+
+function respawn() {
+  player.x = player.lastSafeX; player.y = player.lastSafeY;
+  player.vx = 0; player.vy = 0;
+  player.grounded = false; gameOver = false;
+}
+
+function doReturn() { markCleared(); window.location.href = "world-map.html"; }
+
+// ── 업데이트 ─────────────────────────────────────────────────────────────────
+function update() {
+  if (gameOver || showReturn) return;
+
+  const left  = keys["ArrowLeft"]  || keys["KeyA"];
+  const right = keys["ArrowRight"] || keys["KeyD"];
+  if (left)  { player.dir = "left";  player.vx -= MOVE_ACCEL; if (player.vx < -MOVE_MAX) player.vx = -MOVE_MAX; }
+  if (right) { player.dir = "right"; player.vx += MOVE_ACCEL; if (player.vx >  MOVE_MAX) player.vx =  MOVE_MAX; }
+  if (!left && !right && player.grounded) player.vx *= FRICTION;
+
+  if (player.wallCooldownL > 0) player.wallCooldownL--;
+  if (player.wallCooldownR > 0) player.wallCooldownR--;
+
+  // 중력
+  player.vy += GRAVITY;
+
+  // 이동
+  const prevY = player.y;
+  player.x += player.vx;
+  player.y += player.vy;
+
+  // ─ 좌우 경계 + 벽 접촉 ─────────────────────────────────────────────────
+  player.touchLeft = false; player.touchRight = false;
+
+  if (player.x - PW < 0) {
+    player.x = PW; player.vx = Math.max(0, player.vx);
+    if (!player.grounded && player.wallCooldownL <= 0) {
+      player.touchLeft = true;
+      if (left && player.vy > WALL_SLIDE_SPD) player.vy = WALL_SLIDE_SPD;
+    }
+  }
+  if (player.x + PW > W) {
+    player.x = W - PW; player.vx = Math.min(0, player.vx);
+    if (!player.grounded && player.wallCooldownR <= 0) {
+      player.touchRight = true;
+      if (right && player.vy > WALL_SLIDE_SPD) player.vy = WALL_SLIDE_SPD;
+    }
+  }
+
+  // ─ 발판 충돌 (위에서 내려올 때만) ─────────────────────────────────────
+  player.grounded = false;
+  for (const plat of PLATFORMS) {
+    const inX = player.x + PW > plat.x && player.x - PW < plat.x + plat.w;
+    if (inX && prevY <= plat.y && player.y >= plat.y) {
+      player.y = plat.y; player.vy = 0;
+      player.grounded = true;
+      player.lastSafeX = player.x; player.lastSafeY = player.y;
+      break;
+    }
+  }
+
+  // ─ 카메라: 플레이어를 화면 60% 지점에 유지 ───────────────────────────
+  const targetCamY = player.y - H * 0.62;
+  camera.y += (targetCamY - camera.y) * 0.1;
+  camera.y = Math.max(0, Math.min(WORLD_H - H, camera.y));
+
+  // ─ 목표 도달 ─────────────────────────────────────────────────────────
+  if (!cleared && player.grounded && player.y <= GOAL_Y + 2 && Math.abs(player.x - GOAL_X) < 88) {
+    cleared = true; clearTimer = 160;
+  }
+  if (cleared) { clearTimer--; if (clearTimer <= 0) showReturn = true; }
+
+  // ─ 낙하 사망 ─────────────────────────────────────────────────────────
+  if (player.y > camera.y + H + 60) gameOver = true;
+
+  // ─ 벚꽃 파티클 ───────────────────────────────────────────────────────
+  for (const p of petals) {
+    p.x += p.vx; p.y += p.vy;
+    if (p.y > H + 5) { p.y = -5; p.x = Math.random() * W; }
+    if (p.x < -5) p.x = W + 5;
+  }
+}
+
+// ── 파티클 ─────────────────────────────────────────────────────────────────
+const petals = Array.from({length:28}, () => ({
+  x: Math.random() * W, y: Math.random() * H,
+  vy: 0.3 + Math.random() * 0.5, vx: -0.4 + Math.random() * 0.8,
+}));
+
+// ── 배경 미리 렌더링 ────────────────────────────────────────────────────────
+const bgLayer = (() => {
+  const c = document.createElement("canvas");
+  c.width = W; c.height = H;
+  const bx = c.getContext("2d");
+  const sky = bx.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0, "#0c0418"); sky.addColorStop(1, "#38102a");
+  bx.fillStyle = sky; bx.fillRect(0, 0, W, H);
+  // 달
+  bx.fillStyle = "#ffeebb";
+  bx.beginPath(); bx.arc(390, 58, 32, 0, Math.PI*2); bx.fill();
+  bx.fillStyle = "rgba(255,210,120,0.25)";
+  bx.beginPath(); bx.arc(390, 58, 46, 0, Math.PI*2); bx.fill();
+  // 먼 산 실루엣
+  bx.fillStyle = "#1e0d28";
+  [[0,320],[80,220],[180,260],[300,200],[380,240],[480,210]].forEach(([x,y],i,arr) => {
+    if (i === 0) bx.beginPath(), bx.moveTo(x, y);
+    else bx.lineTo(x, y);
+  });
+  bx.lineTo(W, H); bx.lineTo(0, H); bx.closePath(); bx.fill();
+  return c;
+})();
+
+// ── 도리이 그리기 ───────────────────────────────────────────────────────────
+function drawTorii(cx, screenY) {
+  const gap = 64, pw = 10, ph = 88;
+  const lx = cx - gap/2, rx = cx + gap/2;
+  ctx.fillStyle = "#c8360a";
+  ctx.fillRect(lx - pw/2, screenY - ph, pw, ph);
+  ctx.fillRect(rx - pw/2, screenY - ph, pw, ph);
+  // 하단 가로대
+  ctx.fillRect(lx - pw/2 - 5, screenY - ph*0.35, gap + pw + 10, 10);
+  // 상단 가로대 (끝이 살짝 올라간 모양)
+  const ty = screenY - ph * 0.78;
+  ctx.fillRect(lx - pw/2 - 14, ty, gap + pw + 28, 13);
+  ctx.fillRect(lx - pw/2 - 20, ty - 5, 10, 8);
+  ctx.fillRect(rx + pw/2 + 10, ty - 5, 10, 8);
+}
+
+// ── 발판 그리기 ─────────────────────────────────────────────────────────────
+function drawPlat(sx, sy, w) {
+  ctx.fillStyle = "#5e3a22"; ctx.fillRect(sx, sy, w, 12);
+  ctx.fillStyle = "#80583a"; ctx.fillRect(sx, sy, w, 3);
+  ctx.fillStyle = "#3a2010"; ctx.fillRect(sx, sy + 10, w, 2);
+  // 나무결 줄무늬
+  ctx.fillStyle = "rgba(0,0,0,0.18)";
+  for (let i = 18; i < w - 4; i += 18) ctx.fillRect(sx + i, sy + 1, 2, 10);
+}
+
+// ── 그리기 ─────────────────────────────────────────────────────────────────
+function draw() {
+  ctx.drawImage(bgLayer, 0, 0);
+
+  // 별
+  ctx.fillStyle = "rgba(255,255,255,0.75)";
+  for (let i = 0; i < 42; i++) ctx.fillRect((i*139)%W, (i*83)%155 + 6, 1.5, 1.5);
+
+  // 벚꽃 파티클
+  ctx.fillStyle = "rgba(255,155,168,0.75)";
+  for (const p of petals) { ctx.beginPath(); ctx.arc(p.x, p.y, 2.5, 0, Math.PI*2); ctx.fill(); }
+
+  // 발판
+  for (const plat of PLATFORMS) {
+    const sy = plat.y - camera.y;
+    if (sy > H + 20 || sy + 12 < -20) continue;
+    drawPlat(plat.x, sy, plat.w);
+  }
+
+  // 도리이 (정상)
+  const toriiSY = GOAL_Y - camera.y;
+  if (toriiSY > -110 && toriiSY < H + 20) drawTorii(GOAL_X, toriiSY);
+
+  // 플레이어
+  const psy = player.y - camera.y;
+
+  // 벽 슬라이드 표시
+  if (!player.grounded) {
+    if (player.touchLeft)  { ctx.fillStyle = "rgba(255,180,80,0.28)"; ctx.fillRect(0, psy - PH, 5, PH); }
+    if (player.touchRight) { ctx.fillStyle = "rgba(255,180,80,0.28)"; ctx.fillRect(W-5, psy - PH, 5, PH); }
+  }
+
+  drawCharacter(ctx, player.x, psy, player.dir, 0, !player.grounded, false);
+
+  // ── HUD ────────────────────────────────────────────────────────────────
+  // 고도 바 (오른쪽)
+  const barX = W - 14, barTop = 10, barBot = H - 10;
+  const barH = barBot - barTop;
+  ctx.fillStyle = "rgba(0,0,0,0.4)"; ctx.fillRect(barX, barTop, 8, barH);
+  const pct = Math.max(0, Math.min(1, 1 - player.y / WORLD_H));
+  const fill = barH * pct;
+  ctx.fillStyle = "#ff6688"; ctx.fillRect(barX, barTop + barH - fill, 8, fill);
+  ctx.fillStyle = "#ffd700"; ctx.fillRect(barX, barTop, 8, 3); // 목표 표시
+  ctx.textAlign = "center"; ctx.font = "7px sans-serif"; ctx.fillStyle = "rgba(255,255,255,0.6)";
+  ctx.fillText("↑", barX + 4, barTop - 1);
+
+  // 구역 표시
+  ctx.textAlign = "left"; ctx.font = "bold 12px sans-serif";
+  ctx.fillStyle = "rgba(0,0,0,0.5)"; ctx.fillRect(8, 8, 128, 20);
+  ctx.fillStyle = "#ffe8a0"; ctx.fillText("⛩️ 도쿄 탑 등정", 13, 23);
+
+  if (!cleared) {
+    ctx.font = "11px sans-serif";
+    ctx.fillStyle = "rgba(0,0,0,0.45)"; ctx.fillRect(8, 32, 202, 18);
+    ctx.fillStyle = "#ffbbcc"; ctx.fillText("임무: 꼭대기 도리이에 도달하기", 12, 45);
+  }
+
+  // 벽 점프 힌트 (초반에만)
+  if (!cleared && player.y > WORLD_H - 600 && (player.touchLeft || player.touchRight)) {
+    ctx.textAlign = "center"; ctx.font = "bold 12px sans-serif";
+    ctx.fillStyle = "rgba(255,200,80,0.95)";
+    ctx.fillText("↑ 점프 = 벽차기!", W/2, H - 18);
+  }
+
+  // 사망 화면
+  if (gameOver) {
+    ctx.fillStyle = "rgba(0,0,0,0.68)"; ctx.fillRect(0, 0, W, H);
+    ctx.textAlign = "center"; ctx.font = "bold 26px sans-serif";
+    ctx.fillStyle = "#ff6688"; ctx.fillText("떨어졌다!", W/2, H/2 - 16);
+    ctx.font = "14px sans-serif"; ctx.fillStyle = "#ccc";
+    ctx.fillText("스페이스/클릭으로 재시작", W/2, H/2 + 14);
+  }
+
+  // 클리어 메시지
+  if (cleared && !showReturn) {
+    ctx.fillStyle = "rgba(0,0,0,0.4)"; ctx.fillRect(0, 0, W, H);
+    ctx.textAlign = "center"; ctx.font = "bold 28px sans-serif";
+    ctx.fillStyle = "#ffd700"; ctx.fillText("임무 완료! 🎌", W/2, H/2);
+  }
+
+  // 귀환 화면
+  if (showReturn) {
+    ctx.fillStyle = "rgba(0,0,0,0.84)"; ctx.fillRect(0, 0, W, H);
+    ctx.textAlign = "center";
+    ctx.font = "bold 30px sans-serif"; ctx.fillStyle = "#ffd700";
+    ctx.fillText("⛩️ 일본 클리어!", W/2, H/2 - 60);
+    ctx.font = "17px sans-serif"; ctx.fillStyle = "#ffbbcc";
+    ctx.fillText("닌자처럼 도쿄 탑을 정복했습니다!", W/2, H/2 - 22);
+    ctx.font = "15px sans-serif"; ctx.fillStyle = "white";
+    ctx.fillText("클릭 또는 Enter → 세계지도로 귀환", W/2, H/2 + 16);
+    ctx.font = "13px sans-serif"; ctx.fillStyle = "#888";
+    ctx.fillText("(브라질 해금됨!)", W/2, H/2 + 46);
+  }
+}
+
+// ── 마우스 클릭 ─────────────────────────────────────────────────────────────
+canvas.addEventListener("click", () => {
+  if (showReturn) { doReturn(); return; }
+  if (gameOver)   { respawn(); }
+});
+
+// ── 루프 ────────────────────────────────────────────────────────────────────
+function loop() { update(); draw(); requestAnimationFrame(loop); }
+loop();
+</script>
+</body>
+</html>

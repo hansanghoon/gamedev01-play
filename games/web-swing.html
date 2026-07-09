@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>스파이더 액션 게임 - 2단계: 구역 + 첫 임무</title>
+<style>
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: #222;
+    color: white;
+    font-family: sans-serif;
+  }
+  canvas {
+    background: #1c2740;
+    border: 4px solid white;
+    margin-top: 20px;
+    cursor: crosshair;
+  }
+  #info {
+    margin-top: 10px;
+    font-size: 16px;
+    line-height: 1.5;
+    text-align: center;
+  }
+  a {
+    color: #9cf;
+    margin-top: 12px;
+  }
+</style>
+</head>
+<body>
+  <h1>스파이더 액션 게임 (만드는 중 - 2단계: 구역 + 첫 임무)</h1>
+  <div id="info">
+    마우스로 건물 쪽을 가리키고 <b>누르고 있으면</b> 그 점에 줄을 걸고 그네처럼 스윙해요.<br>
+    마우스를 <b>놓으면</b> 줄을 놓고 그 속도 그대로 날아가요. <b>스페이스바</b>를 누르면 그네에서 위로 솟구치며 뛰어내려요(땅에서는 그냥 점프).<br>
+    공중에서 A / D (또는 ← →) 로 살짝 방향을 조절할 수 있고, <b>그네를 타는 중에도</b> 같은 키로 그네를 더 크게 흔들 수 있어요(펌핑).<br>
+    줄을 안 타고 공중에 떠 있을 때 <b>Shift</b>를 누르고 있으면 활공해요(천천히 떨어지면서 더 멀리 나갈 수 있음). 그네에서 뛰어내리며 바로 이어갈 수도 있어요.<br>
+    <b>M</b> 키를 누르면 지도가 열려요(지금 위치와 임무 확인용, 이동은 안 됨).
+  </div>
+  <canvas id="game" width="480" height="420"></canvas>
+  <a href="../index.html">← 게임 목록으로 돌아가기</a>
+
+  <script src="pixel-art.js"></script>
+  <script>
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+
+    const groundY = 380;        // 땅(바닥) 높이. 스윙은 대부분 이보다 위 공중에서 함
+
+    const GRAVITY = 0.45;
+    const AIR_ACCEL = 0.4;   // 공중에서 좌우로 살짝 방향을 트는 힘
+    const MAX_AIR_SPEED = 7;
+    const JUMP_POWER = -10;     // 땅에서 그냥 점프할 때 솟는 힘
+    const SWING_JUMP_BOOST = -9; // 그네에서 뛰어내릴 때 추가로 솟는 힘 (지금 속도 위에 더해짐)
+    const SWING_PUMP_ACCEL = 2.2;   // 스윙 중 방향키를 다시 누르는 순간마다 한 번씩 더해지는 힘 (최대 효과일 때)
+    const SWING_PUMP_MIN_FACTOR = 0.25; // 속도가 빨라도 펌핑 효과가 완전히 0이 되지는 않게 두는 최소 비율
+    const GLIDE_GRAVITY_SCALE = 0.3; // 활공 중엔 중력을 이만큼만 적용해서 천천히 떨어짐
+    const MAX_GLIDE_FALL_SPEED = 3.5; // 활공 중 떨어지는 속도의 한계 (이 이상으로는 안 빨라짐)
+    const GLIDE_ACCEL = 0.5;   // 활공 중 좌우로 트는 힘 (공중 이동보다 조금 더 잘 들음)
+    const MAX_GLIDE_SPEED = 10; // 활공 중 좌우 최고 속도 (공중 이동보다 더 빠르게 멀리 나갈 수 있음)
+    const MAX_SWING_SPEED = 16;   // 펌핑해도 이 속도 이상으로는 안 빨라짐 (무한 가속 방지)
+
+    const HALF_W = 10;
+    const PLAYER_H = 44;
+
+    // 구역마다 테마(색, 건물 크기 범위, 개수)를 다르게 줘서 "여긴 다운타운, 여긴 항구" 같은
+    // 구분이 느껴지게 함. 구역 사이는 크게 띄워서 스윙이나 점프로 건너가야 다음 구역에 닿을 수 있음
+    // style이 다르면 drawBuilding이 완전히 다른 모양(지붕/굴뚝/크레인 등)으로 그림 -
+    // 그래서 색만 다른 게 아니라 구역마다 실루엣 자체가 달라 보임
+    const ZONE_THEMES = [
+      { name: "다운타운", style: "tower",     count: 4, heightMin: 160, heightMax: 330, widthMin: 70, widthMax: 110, palette: ["#3d4a63", "#46405c"] },
+      { name: "항구",     style: "warehouse", count: 3, heightMin: 60,  heightMax: 100, widthMin: 100, widthMax: 150, palette: ["#5c4a3a", "#6b5a42"] },
+      { name: "공업지구", style: "smokestack", count: 4, heightMin: 100, heightMax: 180, widthMin: 40, widthMax: 60,  palette: ["#3a3a3a", "#4a4038"] },
+      { name: "주택가",   style: "house",     count: 4, heightMin: 50,  heightMax: 90,  widthMin: 50, widthMax: 70,  palette: ["#5a4a5c", "#4a5c52", "#3a4a4f"] }
+    ];
+
+    const buildings = [];
+    const zoneRanges = []; // 구역 이름과 시작/끝 x좌표 (지금 어느 구역에 있는지 표시하는 데 씀)
+    let cursorX = 150;
+    let bIndex = 0;
+    for (let zoneIdx = 0; zoneIdx < ZONE_THEMES.length; zoneIdx++) {
+      const theme = ZONE_THEMES[zoneIdx];
+      const zoneStartX = cursorX;
+      for (let k = 0; k < theme.count; k++) {
+        const heightSpan = theme.heightMax - theme.heightMin;
+        const widthSpan = theme.widthMax - theme.widthMin;
+        const height = theme.heightMin + ((bIndex * 53) % (heightSpan + 1));
+        const width = theme.widthMin + ((bIndex * 37) % (widthSpan + 1));
+        buildings.push({
+          x: cursorX,
+          width,
+          height,
+          color: theme.palette[bIndex % theme.palette.length],
+          style: theme.style,
+          hasAntenna: theme.style === "tower" && bIndex % 3 === 0,
+          hasTank: theme.style === "tower" && bIndex % 4 === 2,
+          hasCrane: theme.style === "warehouse" && bIndex % 2 === 0,
+          zoneIdx,
+          seed: bIndex
+        });
+        cursorX += width + 16 + (bIndex % 3) * 8; // 같은 구역 안에서는 건물끼리 가깝게
+        bIndex++;
+      }
+      zoneRanges.push({ name: theme.name, startX: zoneStartX, endX: cursorX });
+      cursorX += 200 + (zoneIdx % 2) * 90; // 구역 사이는 크게 띄움 (스윙이나 점프로 건너가는 구간)
+    }
+    const WORLD_WIDTH = cursorX + 200;
+
+    // 첫 임무: "항구" 구역에서 가장 높은 건물 옥상에 깃발을 꽂아두고 거기 도달하는 게 목표
+    const harborBuildings = buildings.filter((b) => b.zoneIdx === 1);
+    const missionTarget = harborBuildings.reduce((a, b) => (b.height > a.height ? b : a));
+    missionTarget.isMissionTarget = true;
+    const mission = {
+      zoneName: "항구",
+      done: false,
+      messageTimer: 0
+    };
+
+    function currentZoneName(x) {
+      for (const z of zoneRanges) {
+        if (x >= z.startX - 100 && x <= z.endX + 100) return z.name;
+      }
+      return null;
+    }
+
+    // 멀리 보이는 배경 스카이라인 (장식 전용, 카메라보다 느리게 움직여서 거리감을 줌)
+    const farSkyline = [];
+    {
+      let fx = 0, fi = 0;
+      while (fx < WORLD_WIDTH * 0.5 + 600) {
+        const fh = 60 + ((fi * 71) % 140);
+        const fw = 50 + ((fi * 29) % 70);
+        farSkyline.push({ x: fx, width: fw, height: fh });
+        fx += fw + 30 + (fi % 4) * 12;
+        fi++;
+      }
+    }
+
+    // 하늘에 떠 있는 별들 (고정 위치, 아주 느리게 스크롤)
+    const stars = [];
+    for (let i = 0; i < 40; i++) {
+      stars.push({ x: (i * 137) % (WORLD_WIDTH + 400), y: 10 + ((i * 53) % 150) });
+    }
+
+    const player = {
+      x: 100,
+      y: groundY,
+      vx: 0,
+      vy: 0,
+      dir: "right",
+      grounded: true, // 땅이나 건물 옥상처럼 발 디딜 곳에 서 있는지 (점프 가능 여부에 씀)
+      gliding: false  // Shift를 누른 채 공중에 떠 있는지 (활공 중인지)
+    };
+
+    const camera = { x: 0 };
+
+    const MIN_SWING_LENGTH = 70;     // 너무 짧으면 그네 느낌이 안 나는 최소 길이
+    const GROUND_SAFETY_MARGIN = 16; // 그네의 가장 낮은 지점이 바닥에 닿지 않도록 두는 여유
+    const LENGTH_LERP = 0.1;         // 길이가 목표치로 부드럽게 줄거나 늘어나는 속도
+
+    const swing = {
+      active: false,
+      anchorX: 0,
+      anchorY: 0,
+      length: 0,      // 지금 순간의 실제 줄 길이 (목표치를 향해 매 프레임 조금씩 움직임)
+      targetLength: 0  // 줄이 도달해야 하는 "스윙이 가능한" 길이
+    };
+
+    const keys = {};
+    document.addEventListener("keydown", (e) => { keys[e.code] = true; });
+    document.addEventListener("keyup", (e) => { keys[e.code] = false; });
+
+    // 지도: 이동 기능은 없고 지금 위치 + 임무 확인용. 열려있는 동안은 게임이 멈춤(update를 건너뜀)
+    let mapOpen = false;
+    document.addEventListener("keydown", (e) => {
+      if (e.code === "KeyM") { e.preventDefault(); mapOpen = !mapOpen; }
+    });
+
+    function mouseWorldPos(e) {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: (e.clientX - rect.left) + camera.x,
+        y: (e.clientY - rect.top)
+      };
+    }
+
+    canvas.addEventListener("mousedown", (e) => {
+      const m = mouseWorldPos(e);
+
+      // 그 점에서 바닥까지 수직 거리: 줄이 이보다 길면 그네의 가장 낮은 지점이 바닥 밑으로 내려가서
+      // 스윙이 안 일어나고 그냥 제자리에 멈춰버림. 너무 낮은 곳(이 거리가 최소 길이도 안 되는 곳)은
+      // 애초에 줄을 걸 수 없게 함
+      const groundClearance = groundY - m.y;
+      if (groundClearance < MIN_SWING_LENGTH + GROUND_SAFETY_MARGIN) return;
+
+      const dx = m.x - player.x;
+      const dy = m.y - player.y;
+      const desiredLength = Math.hypot(dx, dy);
+      const maxSwingableLength = groundClearance - GROUND_SAFETY_MARGIN;
+
+      swing.anchorX = m.x;
+      swing.anchorY = m.y;
+      swing.length = desiredLength; // 처음엔 실제 클릭 거리 그대로 시작해서 순간적으로 튕기지 않게 함
+      swing.targetLength = Math.max(MIN_SWING_LENGTH, Math.min(desiredLength, maxSwingableLength));
+      swing.active = true;
+    });
+    window.addEventListener("mouseup", () => { swing.active = false; });
+
+    function jump() {
+      if (swing.active) {
+        // 그네를 타다가 뛰어내리기: 줄을 놓으면서 위로 한 번 더 솟아오르게 함 (지금 속도는 그대로 유지)
+        swing.active = false;
+        player.vy = Math.min(player.vy, SWING_JUMP_BOOST);
+      } else if (player.grounded) {
+        player.vy = JUMP_POWER;
+      }
+    }
+    document.addEventListener("keydown", (e) => { if (e.code === "Space") { e.preventDefault(); jump(); } });
+
+    let wasPressingLeft = false, wasPressingRight = false; // 펌핑이 "누르고 있는 동안 계속"이 아니라 "다시 누르는 순간"에만 한 번 작동하게 하는 데 씀
+
+    function update() {
+      const pressingLeft = keys["ArrowLeft"] || keys["KeyA"];
+      const pressingRight = keys["ArrowRight"] || keys["KeyD"];
+      const pressingGlide = keys["ShiftLeft"] || keys["ShiftRight"];
+      const rightJustPressed = pressingRight && !wasPressingRight;
+      const leftJustPressed = pressingLeft && !wasPressingLeft;
+      if (pressingLeft) player.dir = "left";
+      if (pressingRight) player.dir = "right";
+      // 활공: 줄을 안 타고 공중에 떠 있을 때 Shift를 누르고 있으면 활공. 그네에서 뛰어내리는 순간에도
+      // (jump()가 swing.active를 끄고 vy만 바꾸므로) 다음 프레임에 곧바로 이 조건을 만족해서 자연스럽게 이어짐
+      player.gliding = pressingGlide && !swing.active && !player.grounded;
+
+      if (swing.active) {
+        // 줄 길이를 목표 길이(targetLength)로 매 프레임 조금씩 부드럽게 옮김.
+        // (너무 길게 쏴서 줄였거나, 너무 짧게 쏴서 늘렸을 때 순간적으로 튕기지 않고 스윽 변함)
+        swing.length += (swing.targetLength - swing.length) * LENGTH_LERP;
+
+        // 그네 물리: 중력으로 다음 위치를 예측한 뒤, "줄 길이를 항상 똑같이 유지"하도록 위치를 보정함.
+        // 이 보정 하나만으로 자연스러운 그네 모양 곡선이 만들어짐 (각도/삼각함수 계산 없이도 됨)
+        player.grounded = false;
+        player.vy += GRAVITY;
+        // 펌핑: 누르고 있는 동안 계속이 아니라, 키를 "다시 누르는 순간"에만 한 번 툭 밀어줌.
+        // 방향 판정은 "지금 속도"가 아니라 "줄을 건 점 기준으로 어느 쪽에 있는지"로 함 -
+        // 사람은 반대쪽 끝에 도착하기 직전에 미리 다음 방향키를 누르기 때문에, 그 시점엔
+        // 아직 속도가 반대로 안 바뀌어 있을 수 있어서 속도로 판정하면 너무 엄격해짐.
+        // 그리고 효과 크기는 "지금 속도가 느릴수록" 더 크게 줌 - 끝에 거의 멈췄을 때 밀면
+        // 제대로 된 펌핑이 되고, 한창 빠르게 지나가는 중간에 반대로 누르면 그냥 살짝 감속만 됨
+        const sideOfAnchor = player.x - swing.anchorX; // 음수면 줄 기준 왼쪽, 양수면 오른쪽
+        const pumpFactor = Math.max(SWING_PUMP_MIN_FACTOR, 1 - Math.abs(player.vx) / MAX_SWING_SPEED);
+        if (rightJustPressed && sideOfAnchor <= 0) player.vx += SWING_PUMP_ACCEL * pumpFactor;
+        else if (leftJustPressed && sideOfAnchor >= 0) player.vx -= SWING_PUMP_ACCEL * pumpFactor;
+        let nx = player.x + player.vx;
+        let ny = player.y + player.vy;
+        const dx = nx - swing.anchorX;
+        const dy = ny - swing.anchorY;
+        const dist = Math.hypot(dx, dy) || 1;
+        const ratio = swing.length / dist;
+        nx = swing.anchorX + dx * ratio;
+        ny = swing.anchorY + dy * ratio;
+        if (ny > groundY) ny = groundY; // 그네 곡선이 바닥보다 낮아지면 거기서 멈춤 (속도는 실제로 움직인 만큼만 반영)
+        player.vx = nx - player.x;
+        player.vy = ny - player.y;
+
+        // 펌핑을 계속해도 속도가 한계를 넘지 않게 막음 (안 그러면 무한히 가속해서 하늘로 날아가버림)
+        const swingSpeed = Math.hypot(player.vx, player.vy);
+        if (swingSpeed > MAX_SWING_SPEED) {
+          const speedScale = MAX_SWING_SPEED / swingSpeed;
+          player.vx *= speedScale;
+          player.vy *= speedScale;
+        }
+
+        player.x = nx;
+        player.y = ny;
+        player.dir = player.vx >= 0 ? "right" : "left";
+      } else {
+        const prevY = player.y; // 건물 옥상을 위에서 아래로 지나치는 순간을 잡아내는 데 씀
+        const beforeAccelVx = player.vx; // 그네에서 막 뛰어내린 빠른 속도를 누르고 있던 만큼 강제로 깎아내리지 않기 위해 기억해둠
+
+        if (player.gliding) {
+          player.vy += GRAVITY * GLIDE_GRAVITY_SCALE;
+          if (player.vy > MAX_GLIDE_FALL_SPEED) player.vy = MAX_GLIDE_FALL_SPEED; // 천천히, 일정한 속도로 떨어지게 함
+          if (pressingLeft) player.vx -= GLIDE_ACCEL;
+          if (pressingRight) player.vx += GLIDE_ACCEL;
+          // 키를 눌러서 한계보다 더 빨라지는 것만 막고, 그네에서 가져온 기존 속도는 그대로 둠(순간적으로 안 깎임)
+          if (Math.abs(beforeAccelVx) <= MAX_GLIDE_SPEED) {
+            player.vx = Math.max(-MAX_GLIDE_SPEED, Math.min(MAX_GLIDE_SPEED, player.vx));
+          }
+        } else {
+          player.vy += GRAVITY;
+          if (pressingLeft) player.vx -= AIR_ACCEL;
+          if (pressingRight) player.vx += AIR_ACCEL;
+          if (Math.abs(beforeAccelVx) <= MAX_AIR_SPEED) {
+            player.vx = Math.max(-MAX_AIR_SPEED, Math.min(MAX_AIR_SPEED, player.vx));
+          }
+        }
+
+        // 건물은 옆으로는 막지 않고 그냥 통과함 (옥상에 올라서는 것만 의미가 있게)
+        player.x += player.vx;
+        player.y += player.vy;
+
+        // 건물 옥상에 올라서기 (위에서 떨어지다가 옥상을 지나치면 그 위에 멈춰 섬)
+        let roofY = null;
+        let roofBuilding = null;
+        for (const b of buildings) {
+          const top = groundY - b.height;
+          const withinX = player.x + HALF_W > b.x && player.x - HALF_W < b.x + b.width;
+          if (withinX && prevY <= top + 0.5 && player.y >= top) {
+            if (roofY === null || top < roofY) { roofY = top; roofBuilding = b; }
+          }
+        }
+        if (roofY !== null) {
+          player.y = roofY;
+          player.vy = 0;
+          player.vx *= 0.85;
+          player.grounded = true;
+          if (roofBuilding.isMissionTarget && !mission.done) {
+            mission.done = true;
+            mission.messageTimer = 180;
+          }
+        } else if (player.y >= groundY) {
+          player.y = groundY;
+          player.vy = 0;
+          player.vx *= 0.85; // 땅에 닿으면 마찰로 서서히 멈춤
+          player.grounded = true;
+        } else {
+          player.grounded = false;
+        }
+      }
+
+      if (player.x < 20) { player.x = 20; player.vx = 0; }
+      if (player.x > WORLD_WIDTH - 20) { player.x = WORLD_WIDTH - 20; player.vx = 0; }
+
+      // 카메라: 캐릭터를 따라가되, 속도가 빠를수록 진행 방향 앞쪽을 더 보여줌
+      const lookahead = Math.max(-80, Math.min(80, player.vx * 7));
+      const targetCameraX = player.x - canvas.width / 2 + lookahead;
+      camera.x += (targetCameraX - camera.x) * 0.1;
+      camera.x = Math.max(0, Math.min(WORLD_WIDTH - canvas.width, camera.x));
+
+      if (mission.messageTimer > 0) mission.messageTimer--;
+
+      wasPressingLeft = pressingLeft;
+      wasPressingRight = pressingRight;
+    }
+
+    function drawMissionFlag(ctx, x, topY, b) {
+      if (!b.isMissionTarget) return;
+      const fx = x + b.width * 0.5;
+      ctx.strokeStyle = "#e8e3d0";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(fx, topY);
+      ctx.lineTo(fx, topY - 28);
+      ctx.stroke();
+      ctx.fillStyle = "#d9483b";
+      ctx.beginPath();
+      ctx.moveTo(fx, topY - 28);
+      ctx.lineTo(fx + 16, topY - 22);
+      ctx.lineTo(fx, topY - 16);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    function drawWindowGrid(ctx, x, topY, b, winW, winH, gapX, gapY, margin, litChance) {
+      const cols = Math.max(1, Math.floor((b.width - margin * 2 + gapX) / (winW + gapX)));
+      const rows = Math.max(1, Math.floor((b.height - margin * 2 + gapY) / (winH + gapY)));
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const wx = x + margin + c * (winW + gapX);
+          const wy = topY + margin + r * (winH + gapY);
+          const lit = hashCell(b.seed * 31 + r * 7 + c, b.seed) % litChance === 0;
+          ctx.fillStyle = lit ? "#f2d33b" : "#1a2030";
+          ctx.fillRect(wx, wy, winW, winH);
+        }
+      }
+    }
+
+    // 구역마다 건물 모양을 완전히 다르게 그림 (색만 다른 게 아니라 실루엣 자체가 다르게 보이도록).
+    // 이 함수는 미리 한 번만 그려서 cityLayer에 저장해두고, 매 프레임에는 다시 호출하지 않음 (그래서 느려도 괜찮음)
+    function drawBuilding(ctx, x, topY, b) {
+      if (b.style === "house") {
+        // 작은 집: 몸체 + 뾰족한 지붕 (다른 구역의 평평한 옥상 건물과 실루엣이 다름)
+        pixelBlock(ctx, x, topY, b.width, b.height, b.color);
+        pixelRoof(ctx, x + b.width / 2, topY, b.width / 2 + 5, 26, shadeColor(b.color, -25));
+        drawWindowGrid(ctx, x, topY, b, 10, 12, 10, 14, 10, 4);
+        return;
+      }
+
+      if (b.style === "warehouse") {
+        // 낮고 넓은 창고: 창문 대신 커다란 셔터문 몇 개
+        pixelBlock(ctx, x, topY, b.width, b.height, b.color);
+        const doorCount = Math.max(2, Math.round(b.width / 55));
+        const doorW = b.width / doorCount - 14;
+        const doorH = b.height * 0.55;
+        for (let i = 0; i < doorCount; i++) {
+          const dx = x + 10 + i * (b.width / doorCount);
+          pixelBlock(ctx, dx, topY + b.height - doorH - 4, doorW, doorH, shadeColor(b.color, -30), { outline: false });
+          ctx.strokeStyle = "rgba(0,0,0,0.3)";
+          for (let s = 1; s < 3; s++) {
+            ctx.beginPath();
+            ctx.moveTo(dx, topY + b.height - doorH - 4 + (doorH / 3) * s);
+            ctx.lineTo(dx + doorW, topY + b.height - doorH - 4 + (doorH / 3) * s);
+            ctx.stroke();
+          }
+        }
+        if (b.hasCrane) {
+          const cx = x + b.width - 14;
+          ctx.strokeStyle = "#c9b86a";
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.moveTo(cx, topY);
+          ctx.lineTo(cx, topY - 50);
+          ctx.lineTo(cx - 46, topY - 50);
+          ctx.stroke();
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(cx - 40, topY - 50);
+          ctx.lineTo(cx - 40, topY - 34);
+          ctx.stroke();
+        }
+        drawMissionFlag(ctx, x, topY, b);
+        return;
+      }
+
+      if (b.style === "smokestack") {
+        // 공장: 창문이 거의 없고 굴뚝 + 뿌연 연기 뭉치가 솟아있음
+        pixelBlock(ctx, x, topY, b.width, b.height, b.color);
+        drawWindowGrid(ctx, x, topY, b, 7, 8, 10, 14, 8, 9);
+        const stackW = 12;
+        const stackX = x + b.width * 0.25;
+        const stackH = 38;
+        pixelBlock(ctx, stackX, topY - stackH, stackW, stackH, shadeColor(b.color, -15));
+        ctx.fillStyle = "rgba(150,150,150,0.35)";
+        ctx.beginPath();
+        ctx.arc(stackX + stackW / 2, topY - stackH - 10, 9, 0, Math.PI * 2);
+        ctx.arc(stackX + stackW / 2 + 10, topY - stackH - 22, 12, 0, Math.PI * 2);
+        ctx.fill();
+        drawMissionFlag(ctx, x, topY, b);
+        return;
+      }
+
+      // 기본형(다운타운): 평범한 고층 건물 - 창문 + 안테나/물탱크
+      pixelBlock(ctx, x, topY, b.width, b.height, b.color);
+      drawWindowGrid(ctx, x, topY, b, 8, 10, 6, 10, 8, 5);
+
+      if (b.hasAntenna) {
+        const ax = x + b.width * 0.5;
+        ctx.strokeStyle = "#9aa3b5";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(ax, topY);
+        ctx.lineTo(ax, topY - 22);
+        ctx.stroke();
+        ctx.fillStyle = "#d9483b";
+        ctx.beginPath();
+        ctx.arc(ax, topY - 22, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      if (b.hasTank) {
+        pixelBlock(ctx, x + b.width * 0.6, topY - 14, 18, 14, "#6b6356");
+      }
+      drawMissionFlag(ctx, x, topY, b);
+    }
+
+    // 건물들은 안 움직이는 그림이라 매 프레임 다시 그릴 필요가 없음.
+    // 도트 그리기(pixelBlock)는 칸을 하나씩 채워서 큰 건물에 쓰면 한 프레임에 그리기 명령이 수만 번 쌓여 렉이 걸림.
+    // 그래서 세계 전체 너비짜리 캔버스에 건물을 딱 한 번만 그려두고, 매 프레임엔 그 결과 이미지를 잘라서 복사만 함.
+    const cityLayer = document.createElement("canvas");
+    cityLayer.width = WORLD_WIDTH;
+    cityLayer.height = canvas.height;
+    {
+      const cityCtx = cityLayer.getContext("2d");
+      for (const b of buildings) {
+        drawBuilding(cityCtx, b.x, groundY - b.height, b);
+      }
+    }
+
+    // 바닥 점박이 텍스처도 마찬가지로 한 번만 그려서 재사용함 (화면 크기만큼만 필요하고 스크롤도 안 됨)
+    const groundLayer = document.createElement("canvas");
+    groundLayer.width = canvas.width;
+    groundLayer.height = canvas.height - groundY;
+    {
+      const groundCtx = groundLayer.getContext("2d");
+      ditherGround(groundCtx, 0, 0, groundLayer.width, groundLayer.height, "#22281f", "#2b3326", 10);
+      groundCtx.fillStyle = "rgba(255,255,255,0.08)";
+      groundCtx.fillRect(0, 0, groundLayer.width, 3); // 보도 경계선 느낌
+    }
+
+    function draw() {
+      // 하늘 (해질 무렵 도시 느낌의 그라데이션)
+      const sky = ctx.createLinearGradient(0, 0, 0, canvas.height);
+      sky.addColorStop(0, "#2a3a5c");
+      sky.addColorStop(1, "#6b7fa3");
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // 별 (아주 느리게 스크롤 - 멀리 있는 느낌)
+      ctx.fillStyle = "rgba(255,255,255,0.8)";
+      for (const s of stars) {
+        const sx = s.x - camera.x * 0.1;
+        const wrapped = ((sx % canvas.width) + canvas.width) % canvas.width;
+        ctx.fillRect(wrapped, s.y, 2, 2);
+      }
+
+      // 멀리 보이는 스카이라인 (가까운 건물보다 느리게 움직여서 거리감을 줌)
+      for (const b of farSkyline) {
+        const screenX = b.x - camera.x * 0.45;
+        if (screenX + b.width < -50 || screenX > canvas.width + 50) continue;
+        ctx.fillStyle = "rgba(30,38,58,0.7)";
+        ctx.fillRect(screenX, groundY - b.height, b.width, b.height);
+      }
+
+      // 건물들: 미리 그려둔 cityLayer에서 지금 카메라 위치에 보이는 부분만 잘라서 복사
+      ctx.drawImage(cityLayer, camera.x, 0, canvas.width, canvas.height, 0, 0, canvas.width, canvas.height);
+
+      // 땅: 미리 그려둔 텍스처를 그대로 복사 (화면에 고정, 스크롤 안 됨)
+      ctx.drawImage(groundLayer, 0, groundY);
+
+      // 줄(웹): 스윙 중일 때만 그림
+      if (swing.active) {
+        ctx.strokeStyle = "#f0f0f0";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(swing.anchorX - camera.x, swing.anchorY);
+        ctx.lineTo(player.x - camera.x, player.y);
+        ctx.stroke();
+        ctx.fillStyle = "#f0f0f0";
+        ctx.beginPath();
+        ctx.arc(swing.anchorX - camera.x, swing.anchorY, 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // 캐릭터 (공중에 떠 있을 때는 살짝 움츠린 자세로, 활공 중일 때는 팔을 펼친 자세로)
+      drawCharacter(ctx, player.x - camera.x, player.y, player.dir, 0, !player.grounded, player.gliding);
+
+      // 화면 위 안내: 지금 있는 구역 이름 + 임무 안내
+      const zoneName = currentZoneName(player.x);
+      ctx.textAlign = "left";
+      ctx.font = "bold 14px sans-serif";
+      if (zoneName) {
+        ctx.fillStyle = "rgba(0,0,0,0.45)";
+        ctx.fillRect(8, 8, ctx.measureText(zoneName).width + 16, 24);
+        ctx.fillStyle = "#f5f0e6";
+        ctx.fillText(zoneName, 16, 25);
+      }
+      if (!mission.done) {
+        const msg = "임무: " + mission.zoneName + "의 깃발 꽂힌 건물 옥상에 도달하기";
+        ctx.font = "12px sans-serif";
+        ctx.fillStyle = "rgba(0,0,0,0.45)";
+        ctx.fillRect(8, 36, ctx.measureText(msg).width + 16, 20);
+        ctx.fillStyle = "#cfe0e6";
+        ctx.fillText(msg, 16, 50);
+      } else if (mission.messageTimer > 0) {
+        ctx.textAlign = "center";
+        ctx.font = "bold 20px sans-serif";
+        ctx.fillStyle = "rgba(0,0,0,0.5)";
+        ctx.fillRect(canvas.width / 2 - 90, 50, 180, 34);
+        ctx.fillStyle = "#f2d33b";
+        ctx.fillText("임무 완료!", canvas.width / 2, 74);
+        ctx.textAlign = "left";
+      }
+
+      if (mapOpen) drawMapOverlay(ctx);
+    }
+
+    // 지도 화면: 전체 구역을 가로 막대로 보여주고, 지금 위치(▲)와 임무가 있는 구역(깃발)을 표시함.
+    // 눌러서 이동하는 기능은 없음 - "지금 어디 있고 임무가 어디 남았는지"만 확인하는 용도
+    function drawMapOverlay(ctx) {
+      ctx.fillStyle = "rgba(10, 14, 24, 0.96)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.textAlign = "center";
+      ctx.font = "bold 18px sans-serif";
+      ctx.fillStyle = "#f5f0e6";
+      ctx.fillText("지도", canvas.width / 2, 40);
+
+      const trackX = 30;
+      const trackY = canvas.height / 2;
+      const trackWidth = canvas.width - 60;
+      const trackHeight = 22;
+
+      ctx.fillStyle = "#1a2030";
+      ctx.fillRect(trackX, trackY - trackHeight / 2, trackWidth, trackHeight);
+
+      const zoneAccent = ["#6b7fd1", "#caa05a", "#9a9a9a", "#7fc18f"];
+      for (let i = 0; i < zoneRanges.length; i++) {
+        const z = zoneRanges[i];
+        const segX = trackX + (z.startX / WORLD_WIDTH) * trackWidth;
+        const segW = ((z.endX - z.startX) / WORLD_WIDTH) * trackWidth;
+        ctx.fillStyle = zoneAccent[i % zoneAccent.length];
+        ctx.fillRect(segX, trackY - trackHeight / 2, segW, trackHeight);
+
+        ctx.font = "11px sans-serif";
+        ctx.fillStyle = "#e8e3d0";
+        ctx.fillText(z.name, segX + segW / 2, trackY + trackHeight / 2 + 16);
+
+        // 이 구역에 임무가 있으면 깃발 아이콘 + 완료 여부 표시
+        if (z.name === mission.zoneName) {
+          const flagX = segX + segW / 2;
+          const flagY = trackY - trackHeight / 2 - 6;
+          ctx.fillStyle = mission.done ? "#7fc18f" : "#d9483b";
+          ctx.beginPath();
+          ctx.moveTo(flagX, flagY);
+          ctx.lineTo(flagX + 10, flagY - 4);
+          ctx.lineTo(flagX, flagY - 8);
+          ctx.closePath();
+          ctx.fill();
+          ctx.strokeStyle = "#e8e3d0";
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(flagX, flagY);
+          ctx.lineTo(flagX, flagY - 16);
+          ctx.stroke();
+          ctx.font = "10px sans-serif";
+          ctx.fillStyle = mission.done ? "#7fc18f" : "#f2d33b";
+          ctx.fillText(mission.done ? "임무 완료" : "임무 진행 중", flagX, flagY - 22);
+        }
+      }
+
+      // 지금 위치 표시 (▲)
+      const playerTrackX = trackX + (player.x / WORLD_WIDTH) * trackWidth;
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.moveTo(playerTrackX, trackY + trackHeight / 2 + 4);
+      ctx.lineTo(playerTrackX - 6, trackY + trackHeight / 2 + 14);
+      ctx.lineTo(playerTrackX + 6, trackY + trackHeight / 2 + 14);
+      ctx.closePath();
+      ctx.fill();
+      ctx.font = "10px sans-serif";
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText("현재 위치", playerTrackX, trackY + trackHeight / 2 + 26);
+
+      ctx.font = "12px sans-serif";
+      ctx.fillStyle = "rgba(245,240,230,0.7)";
+      ctx.fillText("M 키를 다시 눌러 닫기", canvas.width / 2, canvas.height - 20);
+      ctx.textAlign = "left";
+    }
+
+    function loop() {
+      if (!mapOpen) update();
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    loop();
+  </script>
+</body>
+</html>

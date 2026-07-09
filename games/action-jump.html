@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>점프 게임 - 첫 번째 게임 만들기</title>
+<style>
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: #222;
+    color: white;
+    font-family: sans-serif;
+  }
+  canvas {
+    background: #87ceeb;
+    border: 4px solid white;
+    margin-top: 20px;
+  }
+  #info {
+    margin-top: 10px;
+    font-size: 18px;
+  }
+  a {
+    color: #9cf;
+    margin-top: 12px;
+  }
+</style>
+</head>
+<body>
+  <h1>점프해서 장애물 피하기 (액션 장르)</h1>
+  <div id="info">스페이스바 또는 화면 클릭으로 점프! 점수: <span id="score">0</span></div>
+  <canvas id="game" width="600" height="300"></canvas>
+  <a href="../index.html">← 게임 목록으로 돌아가기</a>
+
+  <script>
+    // 화면(캔버스)을 그리기 위한 준비
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+    const scoreEl = document.getElementById("score");
+
+    const groundY = 250; // 바닥 높이
+
+    // 플레이어(점프하는 사각형)의 상태
+    const player = {
+      x: 50,
+      y: groundY,
+      size: 30,
+      vy: 0,        // 위아래 속도 (velocity y)
+      jumping: false
+    };
+
+    const GRAVITY = 0.6;     // 중력: 점프 후 다시 떨어지는 힘
+    const JUMP_POWER = -11;  // 점프할 때 위로 솟는 힘
+
+    // 장애물 목록 (여러 개가 동시에 화면에 있을 수 있음)
+    let obstacles = [];
+    let frame = 0;
+    let score = 0;
+    let gameOver = false;
+
+    function jump() {
+      if (!player.jumping && !gameOver) {
+        player.vy = JUMP_POWER;
+        player.jumping = true;
+      }
+      if (gameOver) restart();
+    }
+
+    function restart() {
+      obstacles = [];
+      frame = 0;
+      score = 0;
+      gameOver = false;
+      player.y = groundY;
+      player.vy = 0;
+      player.jumping = false;
+    }
+
+    // 점프 입력 받기: 키보드 스페이스바, 화면 클릭 둘 다 지원
+    document.addEventListener("keydown", (e) => {
+      if (e.code === "Space") jump();
+    });
+    canvas.addEventListener("mousedown", jump);
+
+    function update() {
+      frame++;
+
+      // 중력 적용: 점프 중이면 점점 아래로 당겨짐
+      player.vy += GRAVITY;
+      player.y += player.vy;
+      if (player.y >= groundY) {
+        player.y = groundY;
+        player.vy = 0;
+        player.jumping = false;
+      }
+
+      // 일정 간격마다 새 장애물 생성
+      if (frame % 90 === 0) {
+        obstacles.push({ x: canvas.width, y: groundY, size: 25 });
+      }
+
+      // 장애물을 왼쪽으로 이동, 화면 밖으로 나가면 제거
+      obstacles.forEach(o => o.x -= 5);
+      obstacles = obstacles.filter(o => o.x + o.size > 0);
+
+      // 충돌 검사: 플레이어와 장애물 사각형이 겹치는지 확인
+      for (const o of obstacles) {
+        const hit =
+          player.x < o.x + o.size &&
+          player.x + player.size > o.x &&
+          player.y < o.y + o.size &&
+          player.y + player.size > o.y;
+        if (hit) gameOver = true;
+      }
+
+      if (!gameOver) {
+        score++;
+        scoreEl.textContent = score;
+      }
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // 바닥
+      ctx.fillStyle = "#3a7d44";
+      ctx.fillRect(0, groundY + player.size, canvas.width, canvas.height - groundY - player.size);
+
+      // 플레이어
+      ctx.fillStyle = gameOver ? "red" : "orange";
+      ctx.fillRect(player.x, player.y, player.size, player.size);
+
+      // 장애물
+      ctx.fillStyle = "#444";
+      obstacles.forEach(o => ctx.fillRect(o.x, o.y, o.size, o.size));
+
+      if (gameOver) {
+        ctx.fillStyle = "black";
+        ctx.font = "24px sans-serif";
+        ctx.fillText("게임 오버! 클릭하면 다시 시작", 130, 150);
+      }
+    }
+
+    function loop() {
+      if (!gameOver) update();
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    loop();
+  </script>
+</body>
+</html>
