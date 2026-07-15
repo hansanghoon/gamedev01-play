@@ -63,6 +63,30 @@ function pixelCircle(ctx, cx, cy, r, baseColor, opts = {}) {
   }
 }
 
+// 무늬가 있는 원을 도트로 채움. colorFn(px, py, dist)가 칸마다 기본색을 정해주면
+// (축구공 무늬, 행성 줄무늬 등), 여기서 외곽선·3단 명암·점박이 질감을 자동으로 입혀줌.
+// pixelCircle과 같은 도트 규칙을 따르면서 무늬만 바꿔 끼울 수 있게 한 버전. (행성 습관 앱에서 사용)
+function pixelPatternCircle(ctx, cx, cy, r, colorFn, opts = {}) {
+  const { speckle = 8 } = opts;
+  const cells = Math.ceil(r / PX);
+  for (let dy = -cells; dy <= cells; dy++) {
+    for (let dx = -cells; dx <= cells; dx++) {
+      const px = dx * PX, py = dy * PX;
+      const dist = Math.hypot(px, py);
+      if (dist > r) continue;
+      let color = colorFn(px, py, dist);
+      if (dist > r - PX * 1.4) color = shadeColor(color, -55); // 외곽선
+      else if (dx + dy < -cells * 0.5) color = shadeColor(color, 22); // 하이라이트(왼쪽 위)
+      else if (dx + dy > cells * 0.6) color = shadeColor(color, -22); // 그림자(오른쪽 아래)
+      else if (hashCell(Math.round(cx / PX) + dx, Math.round(cy / PX) + dy) < speckle * 10) {
+        color = shadeColor(color, -10); // 점박이 질감
+      }
+      ctx.fillStyle = color;
+      ctx.fillRect(cx + px, cy + py, PX, PX);
+    }
+  }
+}
+
 // 지붕(위로 갈수록 좁아지는 삼각 모양)을 도트로 채움. 기와처럼 줄무늬 명암을 넣고 외곽선을 두름.
 function pixelRoof(ctx, centerX, baseY, halfWidth, height, baseColor) {
   const rows = Math.round(height / PX);

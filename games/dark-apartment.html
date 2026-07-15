@@ -1,0 +1,1274 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>🏢 어두운 아파트 (공포 방탈출)</title>
+<style>
+  body {
+    margin: 0;
+    overflow: hidden;
+    background: #000;
+    font-family: sans-serif;
+  }
+
+  /* 시작 화면 */
+  #overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.88);
+    color: #ccc;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    cursor: pointer;
+    z-index: 10;
+  }
+  #overlay h1 {
+    color: #7fae6a;
+    font-size: 32px;
+    margin-bottom: 8px;
+    text-shadow: 0 0 18px rgba(90, 160, 70, 0.5);
+  }
+  #overlay .hint {
+    color: #888;
+    font-size: 15px;
+    line-height: 1.9;
+  }
+  #overlay .start {
+    margin-top: 24px;
+    color: #fff;
+    font-size: 18px;
+    animation: blink 1.6s infinite;
+  }
+  @keyframes blink { 50% { opacity: 0.3; } }
+
+  #crosshair {
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    color: rgba(255, 255, 255, 0.55);
+    font-size: 20px;
+    pointer-events: none;
+    display: none;
+  }
+  #prompt {
+    position: fixed;
+    left: 50%;
+    top: 56%;
+    transform: translateX(-50%);
+    background: rgba(0, 0, 0, 0.65);
+    color: #b8d8a0;
+    font-size: 15px;
+    padding: 6px 14px;
+    border-radius: 14px;
+    display: none;
+    pointer-events: none;
+    z-index: 13; /* 장롱 틈새 화면보다 위 */
+  }
+  #msg {
+    position: fixed;
+    left: 50%;
+    bottom: 48px;
+    transform: translateX(-50%);
+    max-width: 70%;
+    background: rgba(6, 10, 6, 0.85);
+    border: 1px solid #3f5c3a;
+    color: #d8e8c8;
+    font-size: 17px;
+    line-height: 1.6;
+    padding: 12px 22px;
+    border-radius: 10px;
+    text-align: center;
+    display: none;
+    pointer-events: none;
+    z-index: 13; /* 장롱 틈새 화면보다 위 */
+  }
+  #msg small { color: #8a9a7a; }
+
+  /* 인벤토리 (오른쪽 위) */
+  #inventory {
+    position: fixed;
+    top: 14px;
+    right: 16px;
+    color: #d8e8c8;
+    background: rgba(6, 10, 6, 0.7);
+    border: 1px solid #3f5c3a;
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 15px;
+    display: none;
+  }
+
+  /* 도어락 키패드 */
+  #keypad-ui {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 15;
+  }
+  #keypad-panel {
+    background: #1a201a;
+    border: 3px solid #3f5c3a;
+    border-radius: 14px;
+    padding: 22px 28px;
+    text-align: center;
+    box-shadow: 0 0 50px rgba(0, 0, 0, 0.9);
+  }
+  #kp-title { color: #8fbf78; font-size: 17px; margin-bottom: 14px; }
+  #kp-display { display: flex; gap: 10px; justify-content: center; margin-bottom: 16px; }
+  #kp-display span {
+    width: 44px;
+    height: 56px;
+    background: #060a06;
+    border: 1px solid #3f5c3a;
+    border-radius: 8px;
+    color: #9fe87a;
+    font-size: 34px;
+    line-height: 56px;
+  }
+  #kp-display.wrong span { border-color: #cc3333; color: #ee6666; }
+  #kp-grid { display: grid; grid-template-columns: repeat(3, 64px); gap: 8px; justify-content: center; }
+  #kp-grid button {
+    height: 48px;
+    font-size: 20px;
+    background: #26302a;
+    color: #d8e8c8;
+    border: 1px solid #3f5c3a;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  #kp-grid button:hover { background: #33403a; }
+  .shake { animation: shake 0.4s; }
+  @keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    20% { transform: translateX(-10px); }
+    40% { transform: translateX(10px); }
+    60% { transform: translateX(-7px); }
+    80% { transform: translateX(7px); }
+  }
+
+  /* 방탈출 실패 (잡아먹혔을 때) */
+  #fail-screen {
+    position: fixed;
+    inset: 0;
+    background: #050203;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 20;
+    text-align: center;
+  }
+  #fail-screen h1 {
+    color: #b03030;
+    font-size: 44px;
+    margin-bottom: 10px;
+    text-shadow: 0 0 24px rgba(160, 20, 20, 0.6);
+  }
+  #fail-screen p { color: #7a6060; font-size: 18px; line-height: 1.9; }
+  #fail-screen button {
+    margin-top: 24px;
+    font-size: 17px;
+    padding: 11px 28px;
+    background: #4a2020;
+    color: #e8d8d8;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+
+  /* 탈출 성공 */
+  #win-screen {
+    position: fixed;
+    inset: 0;
+    background: rgba(4, 8, 4, 0.94);
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 20;
+    color: #eee;
+    text-align: center;
+  }
+  #win-screen h1 { color: #9fe87a; font-size: 42px; margin-bottom: 8px; }
+  #win-screen p { color: #a8b898; font-size: 18px; line-height: 1.9; }
+  #win-screen button {
+    margin-top: 24px;
+    font-size: 17px;
+    padding: 11px 28px;
+    background: #3f5c3a;
+    color: #e8f0d8;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+
+  /* 괴물에게 잡혔을 때: 화면이 잠깐 깜깜해졌다가 돌아온다 */
+  #catch-fx {
+    position: fixed;
+    inset: 0;
+    background: #000;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.5s;
+    z-index: 12;
+  }
+  /* 장롱 안에 숨었을 때: 문틈으로만 밖이 보인다 */
+  #hide-fx {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    display: none;
+    z-index: 11;
+    background: linear-gradient(90deg,
+      #000 0%, #000 42%,
+      rgba(0, 0, 0, 0.2) 46%, rgba(0, 0, 0, 0.2) 54%,
+      #000 58%, #000 100%);
+  }
+
+  #error-screen {
+    position: fixed;
+    inset: 0;
+    background: #111;
+    color: #e77;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    font-size: 18px;
+    line-height: 2;
+    z-index: 30;
+  }
+</style>
+</head>
+<body>
+
+<div id="overlay">
+  <h1>🏢 어두운 아파트</h1>
+  <div class="hint">
+    한밤중, 정전된 아파트에 갇혔다.<br>
+    전기를 복구하고 현관문으로 탈출하자.<br>
+    <span style="color:#667">…어디선가 이상한 소리가 들리는 것 같다.</span>
+    <br><br>
+    <b>W A S D</b> — 걷기 &nbsp;|&nbsp; <b>마우스</b> — 둘러보기 &nbsp;|&nbsp; <b>E</b> — 조사 &nbsp;|&nbsp; <b>ESC</b> — 일시정지
+  </div>
+  <div class="start">▶ 화면을 클릭해서 시작</div>
+</div>
+
+<div id="crosshair">+</div>
+<div id="prompt"></div>
+<div id="msg"></div>
+<div id="inventory"></div>
+<div id="hide-fx"></div>
+<div id="catch-fx"></div>
+
+<div id="keypad-ui">
+  <div id="keypad-panel">
+    <div id="kp-title">🔒 현관 도어락</div>
+    <div id="kp-display"><span></span><span></span><span></span></div>
+    <div id="kp-grid">
+      <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button>
+      <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button>
+      <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button>
+      <button data-k="del">⌫</button><button data-k="0">0</button><button data-k="close">✕</button>
+    </div>
+  </div>
+</div>
+
+<div id="fail-screen">
+  <h1>💀 방탈출 실패</h1>
+  <p>괴물에게 잡아먹히고 말았다…<br>어둠 속에서 다시 눈을 뜰 수 있을까.</p>
+  <button onclick="location.reload()">🔄 처음 화면으로</button>
+</div>
+
+<div id="win-screen">
+  <h1>🌅 탈출 성공!</h1>
+  <p>어두운 아파트에서 빠져나왔다.<br><span id="win-time"></span></p>
+  <button onclick="location.reload()">🔄 다시 도전</button>
+</div>
+
+<div id="error-screen">
+  ⚠️ 3D 라이브러리(Three.js)를 불러오지 못했어요.<br>
+  이 게임은 <b>인터넷 연결이 필요해요.</b><br>
+  연결을 확인하고 새로고침(F5) 해주세요.
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+let THREE, PointerLockControls;
+try {
+  THREE = await import('three');
+  ({ PointerLockControls } = await import('three/addons/controls/PointerLockControls.js'));
+} catch (e) {
+  document.getElementById('overlay').style.display = 'none';
+  document.getElementById('error-screen').style.display = 'flex';
+  throw e;
+}
+
+// ===== 아파트 크기 =====
+// 천장이 낮아서(2.6m) 답답하고 무서운 느낌이 든다
+const APT_W = 14, APT_D = 10, APT_H = 2.6;
+const EYE_HEIGHT = 1.55;
+const DOOR_CODE = '347'; // 전기가 켜지면 TV 화면에 나타난다
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x040604);
+scene.fog = new THREE.Fog(0x040604, 4, 20); // 손전등 밖은 서서히 어둠에 잠긴다
+
+const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 60);
+camera.position.set(2, EYE_HEIGHT, -1); // 거실에서 시작
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+// ===== 재질 =====
+const wallMat   = new THREE.MeshStandardMaterial({ color: 0x8a8378 }); // 낡은 벽지
+const floorMat  = new THREE.MeshStandardMaterial({ color: 0x6a5138 }); // 장판
+const ceilMat   = new THREE.MeshStandardMaterial({ color: 0x77726a });
+const woodMat   = new THREE.MeshStandardMaterial({ color: 0x5a4028 });
+const woodDark  = new THREE.MeshStandardMaterial({ color: 0x362817 });
+const fabricMat = new THREE.MeshStandardMaterial({ color: 0x4a5a44 }); // 소파 천
+const whiteMat  = new THREE.MeshStandardMaterial({ color: 0xc8c8c0 }); // 가전
+const metalMat  = new THREE.MeshStandardMaterial({ color: 0x666a70, metalness: 0.5, roughness: 0.5 });
+
+function box(w, h, d, mat, x, y, z, parent = scene) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  m.position.set(x, y, z);
+  parent.add(m);
+  return m;
+}
+
+const colliders = [];
+function addCollider(x, z, halfW, halfD) {
+  colliders.push({ minX: x - halfW, maxX: x + halfW, minZ: z - halfD, maxZ: z + halfD });
+}
+
+// ===== 아파트 뼈대 =====
+// 바닥·천장
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(APT_W, APT_D), floorMat);
+floor.rotation.x = -Math.PI / 2;
+scene.add(floor);
+const ceil = new THREE.Mesh(new THREE.PlaneGeometry(APT_W, APT_D), ceilMat);
+ceil.rotation.x = Math.PI / 2;
+ceil.position.y = APT_H;
+scene.add(ceil);
+
+// 바깥벽 (상자라서 안팎 모두 보인다)
+box(APT_W + 0.4, APT_H, 0.2, wallMat, 0, APT_H / 2, -APT_D / 2 - 0.1); // 북
+box(0.2, APT_H, APT_D + 0.4, wallMat, -APT_W / 2 - 0.1, APT_H / 2, 0); // 서
+box(0.2, APT_H, APT_D + 0.4, wallMat,  APT_W / 2 + 0.1, APT_H / 2, 0); // 동
+// 남쪽 벽: 현관문 구멍(x 5.0~6.0)을 남기고
+box(12.2, APT_H, 0.2, wallMat, -1.1, APT_H / 2, APT_D / 2 + 0.1);      // 문 왼쪽
+box(1.2, APT_H, 0.2, wallMat, 6.6, APT_H / 2, APT_D / 2 + 0.1);       // 문 오른쪽
+box(1.0, APT_H - 2.15, 0.2, wallMat, 5.5, 2.15 + (APT_H - 2.15) / 2, APT_D / 2 + 0.1); // 문 위
+
+// 안쪽 벽: 침실(서쪽)과 거실 사이, 가운데(z -0.5~1.5)가 뚫린 문간
+box(0.15, APT_H, 4.5, wallMat, -2, APT_H / 2, -2.75);
+addCollider(-2, -2.75, 0.08, 2.25);
+box(0.15, APT_H, 3.5, wallMat, -2, APT_H / 2, 3.25);
+addCollider(-2, 3.25, 0.08, 1.75);
+
+// ===== 조사 대상을 만드는 도우미 =====
+const examinables = [];
+function makeExaminable(mesh, type) {
+  mesh.userData = { type };
+  examinables.push(mesh);
+  return mesh;
+}
+
+// ===== 거실 =====
+// 소파 (북쪽 TV를 보고 있다)
+box(2.0, 0.45, 0.85, fabricMat, 2, 0.22, -0.8);
+box(2.0, 0.55, 0.25, fabricMat, 2, 0.72, -0.45);
+addCollider(2, -0.7, 1.05, 0.55);
+// TV장 + TV (북쪽 벽)
+box(2.2, 0.4, 0.5, woodDark, 2, 0.2, -4.5);
+addCollider(2, -4.5, 1.15, 0.35);
+const tvBody = box(1.7, 1.0, 0.12, new THREE.MeshStandardMaterial({ color: 0x111114 }), 2, 1.1, -4.55);
+// TV 화면: 전기가 켜지면 여기에 비밀번호가 나타난다!
+const tvScreenMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+const tvScreen = box(1.55, 0.86, 0.02, tvScreenMat, 2, 1.1, -4.48);
+makeExaminable(tvScreen, 'tv');
+makeExaminable(tvBody, 'tv');
+// 식탁 + 의자
+box(1.4, 0.06, 0.9, woodMat, 0.5, 0.72, 3);
+for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]])
+  box(0.07, 0.72, 0.07, woodDark, 0.5 + sx * 0.6, 0.36, 3 + sz * 0.38);
+box(0.45, 0.5, 0.45, woodDark, 0.5, 0.25, 4.0);
+addCollider(0.5, 3.2, 0.8, 0.9);
+
+// ===== 부엌 (북동쪽 구석) =====
+// 냉장고
+const fridge = box(0.95, 1.9, 0.8, whiteMat, 6.4, 0.95, -4.2);
+makeExaminable(fridge, 'fridge');
+addCollider(6.4, -4.2, 0.55, 0.5);
+// 조리대 (서랍에 퓨즈가 숨어 있다!)
+const counter = box(2.0, 0.9, 0.7, whiteMat, 4.9, 0.45, -4.25);
+box(2.0, 0.06, 0.75, woodDark, 4.9, 0.93, -4.25); // 상판
+makeExaminable(counter, 'counter');
+addCollider(4.9, -4.25, 1.1, 0.45);
+
+// ===== 침실 (서쪽) =====
+// 침대
+box(1.5, 0.4, 2.1, woodDark, -5.6, 0.2, -3.2);
+const blanket = box(1.4, 0.12, 1.5, new THREE.MeshStandardMaterial({ color: 0x51616e }), -5.6, 0.46, -3.0);
+box(1.2, 0.12, 0.5, whiteMat, -5.6, 0.46, -4.0); // 베개
+makeExaminable(blanket, 'bed');
+addCollider(-5.6, -3.2, 0.85, 1.15);
+// 장롱 (다음 단계에서 숨을 수 있게 될 예정)
+const wardrobe = box(0.75, 2.2, 1.4, woodMat, -6.55, 1.1, 2.8);
+box(0.04, 1.6, 0.05, woodDark, -6.15, 1.1, 2.45); // 손잡이
+box(0.04, 1.6, 0.05, woodDark, -6.15, 1.1, 3.15);
+makeExaminable(wardrobe, 'wardrobe');
+addCollider(-6.55, 2.8, 0.55, 0.85);
+// 가족 사진 (서쪽 벽)
+const photo = box(0.5, 0.4, 0.04, new THREE.MeshStandardMaterial({ color: 0x8a7a4a }), -6.95, 1.6, -1.5);
+makeExaminable(photo, 'photo');
+
+// ===== 현관 (남동쪽) =====
+// 현관문 (경첩 그룹 — 열리면 밖으로 나갈 수 있다)
+const doorGroup = new THREE.Group();
+doorGroup.position.set(5.0, 0, APT_D / 2 + 0.05);
+scene.add(doorGroup);
+const frontDoor = box(1.0, 2.15, 0.1, metalMat, 0.5, 1.075, 0, doorGroup);
+makeExaminable(frontDoor, 'frontdoor');
+// 도어락 (문 위의 작은 상자)
+const doorlock = box(0.14, 0.22, 0.06, new THREE.MeshStandardMaterial({ color: 0x22262a }), 0.82, 1.15, -0.07, doorGroup);
+makeExaminable(doorlock, 'frontdoor');
+let doorOpen = false;
+// 신발장 (낡은 운동화 속에 서랍 열쇠가 숨어 있다!)
+const shoeRack = box(1.0, 1.1, 0.35, woodMat, 6.6, 0.55, 4.0);
+makeExaminable(shoeRack, 'shoerack');
+addCollider(6.6, 4.0, 0.55, 0.25);
+// 두꺼비집 (동쪽 벽, 현관 근처)
+const breaker = box(0.45, 0.6, 0.1, metalMat, 6.95, 1.6, 2.2);
+makeExaminable(breaker, 'breaker');
+
+// ===== 문 밖 (아파트 복도): 문이 열리면 보인다 =====
+box(2.4, 0.02, 3.0, new THREE.MeshStandardMaterial({ color: 0x555a55 }), 5.5, 0, 6.3); // 복도 바닥
+box(3.0, APT_H, 0.2, new THREE.MeshStandardMaterial({ color: 0x6a7068 }), 5.5, APT_H / 2, 7.6); // 복도 벽
+const exitLight = new THREE.PointLight(0xbfffcc, 10, 7); // 복도의 밝은 비상등
+exitLight.position.set(5.5, 2.2, 6.5);
+scene.add(exitLight);
+
+// ===== 조명 =====
+// 정전 상태: 어둡지만 달빛이 은은하게 (너무 무섭지 않게)
+scene.add(new THREE.AmbientLight(0x556677, 0.35));
+
+// 손전등: 카메라를 따라다니는 SpotLight (넓고 밝게)
+const flashlight = new THREE.SpotLight(0xfff2cc, 42, 15, 0.5, 0.45);
+flashlight.position.set(0, 0, 0);
+scene.add(flashlight);
+scene.add(flashlight.target);
+
+// 천장 형광등 3개: 전기가 켜지면 살아난다
+const ceilingLights = [];
+for (const [lx, lz] of [[2, -2.5], [2, 2.5], [-4.5, 0]]) {
+  box(0.8, 0.06, 0.25, whiteMat, lx, APT_H - 0.04, lz); // 형광등 몸체
+  const pl = new THREE.PointLight(0xe8f0d8, 0, 9); // 처음엔 꺼짐 (intensity 0)
+  pl.position.set(lx, APT_H - 0.25, lz);
+  scene.add(pl);
+  ceilingLights.push(pl);
+}
+
+// ===== 괴물 (v2) =====
+// 넓은 어깨, 긴 팔에 발톱, 세로 동공 눈, 그리고 경첩처럼 벌어지는 턱
+const monsterMat = new THREE.MeshStandardMaterial({ color: 0x2e3a34 });
+const monsterDark = new THREE.MeshStandardMaterial({ color: 0x232c27 });
+const eyeballMat = new THREE.MeshBasicMaterial({ color: 0xf2e8b8 }); // 어둠 속에서 빛나는 눈알
+const pupilMat = new THREE.MeshBasicMaterial({ color: 0x1a0505 });   // 동공
+const toothMat = new THREE.MeshBasicMaterial({ color: 0xe8dfc8 });   // 상아색 이빨
+const toothMat2 = new THREE.MeshBasicMaterial({ color: 0xd4c6a8 });  // 살짝 누런 이빨
+
+const monster = new THREE.Group();
+// 몸통 + 넓은 어깨 (구부정한 느낌)
+box(0.72, 1.1, 0.42, monsterMat, 0, 1.12, 0, monster);
+box(0.98, 0.22, 0.42, monsterDark, 0, 1.6, -0.02, monster); // 어깨
+box(0.2, 0.14, 0.2, monsterDark, 0, 1.72, 0, monster);      // 목
+// 긴 팔 + 발톱
+for (const s of [-1, 1]) {
+  box(0.17, 1.05, 0.17, monsterMat, s * 0.56, 1.02, 0, monster);
+  for (const c of [-1, 1]) { // 손끝 발톱
+    const claw = new THREE.Mesh(new THREE.ConeGeometry(0.02, 0.1, 5), toothMat2);
+    claw.position.set(s * 0.56 + c * 0.04, 0.44, 0.02);
+    claw.rotation.x = Math.PI;
+    monster.add(claw);
+  }
+}
+box(0.2, 0.55, 0.2, monsterMat, -0.18, 0.28, 0, monster); // 다리
+box(0.2, 0.55, 0.2, monsterMat,  0.18, 0.28, 0, monster);
+
+// 머리: 윗머리 + 뒤통수(턱 관절 부분) — 입은 그 사이에서 벌어진다
+box(0.52, 0.34, 0.46, monsterMat, 0, 2.05, 0, monster);      // 윗머리
+box(0.52, 0.16, 0.34, monsterDark, 0, 1.8, -0.06, monster);  // 뒤통수·턱 관절
+// 입 속 (시뻘건 어둠) — 턱이 벌어지면 드러난다
+box(0.44, 0.18, 0.03, new THREE.MeshBasicMaterial({ color: 0x3a0808 }), 0, 1.8, 0.1, monster);
+
+// 눈: 눈알 + 세로로 길쭉한 동공 (한쪽만 문틈에 대고 들여다볼 때 제일 무섭다)
+for (const s of [-1, 1]) {
+  const eyeball = new THREE.Mesh(new THREE.SphereGeometry(0.052), eyeballMat);
+  eyeball.position.set(s * 0.12, 2.06, 0.23);
+  monster.add(eyeball);
+  const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.02), pupilMat);
+  pupil.scale.set(1, 2.1, 0.5); // 세로로 가늘고 길쭉한 동공 (뱀 눈처럼)
+  pupil.position.set(s * 0.12, 2.06, 0.272);
+  monster.add(pupil);
+}
+
+// 윗니: 윗머리에 매달려 있다 (닫혀 있을 땐 아래턱 입술 뒤에 숨는다)
+function makeTooth(w, h, x, y, z, parent, flip) {
+  const t = new THREE.Mesh(new THREE.ConeGeometry(w, h, 5),
+    Math.random() > 0.5 ? toothMat : toothMat2);
+  t.position.set(x, y, z);
+  if (flip) t.rotation.x = Math.PI; // 아래로 뾰족
+  t.rotation.z = (Math.random() - 0.5) * 0.16; // 삐뚤빼뚤
+  parent.add(t);
+}
+for (let i = 0; i < 7; i++) {
+  const x = -0.15 + i * 0.05;
+  const fang = (i === 0 || i === 6); // 양끝은 긴 송곳니
+  makeTooth(0.02 + Math.random() * 0.008, fang ? 0.15 : 0.07 + Math.random() * 0.05,
+            x, 1.84, 0.15, monster, true);
+}
+
+// 아래턱: 경첩(뒤쪽)에 달려 있어서 아래로 쩍 벌어진다
+const lowerJaw = new THREE.Group();
+lowerJaw.position.set(0, 1.72, -0.04); // 턱 경첩 위치
+box(0.5, 0.12, 0.09, monsterDark, 0, 0.06, 0.24, lowerJaw); // 입술·턱 끝
+box(0.44, 0.05, 0.2, monsterDark, 0, 0.02, 0.12, lowerJaw); // 턱 바닥
+for (let i = 0; i < 6; i++) { // 아랫니 (위로 뾰족)
+  const x = -0.125 + i * 0.05;
+  makeTooth(0.019 + Math.random() * 0.008, 0.07 + Math.random() * 0.05,
+            x, 0.1, 0.16, lowerJaw, false);
+}
+monster.add(lowerJaw);
+let jawOpen = 0; // 0 = 꽉 다묾, 1 = 쩍 벌어짐
+
+monster.visible = false;
+scene.add(monster);
+
+// 괴물의 순찰 경로: [x, z, 멈추는 시간(초), 장면 이름]
+// 침실 문간에서 두리번 → 그리고 장롱 바로 앞까지 와서 문틈에 눈을 댄다!! 😱
+const PATROL = [
+  [5.5, 4.2, 0], [3.5, 2.0, 0], [2.0, -1.8, 0], [4.9, -3.0, 0],
+  [2.0, 1.0, 0], [-1.2, 0.5, 0],
+  [-3.8, 0.5, 1.6, 'peek'],  // 침실 문간에서 두리번
+  [-5.2, 2.8, 2.4, 'slit'],  // 장롱 코앞! 눈을 문틈에 대본다
+  [-1.2, 0.5, 0], [2.0, 3.5, 0], [5.5, 4.2, 0],
+];
+const PAUSE_MSG = {
+  peek: '👀 괴물이 방 안을 들여다본다… <b>숨을 참자…</b>',
+  slit: '😨 괴물이 <b>장롱 바로 앞</b>에 있다…! 눈이 문틈을 들여다본다…!!',
+};
+// ===== 괴물의 시야 =====
+// 괴물과 플레이어 사이에 벽이 있으면 괴물은 나를 볼 수 없다!
+const sightBlockers = [
+  { minX: -2.08, maxX: -1.92, minZ: -5.0, maxZ: -0.5 }, // 안쪽 벽 (침실 북쪽)
+  { minX: -2.08, maxX: -1.92, minZ: 1.5, maxZ: 5.0 },   // 안쪽 벽 (침실 남쪽)
+  { minX: -7.1, maxX: -6.0, minZ: 1.95, maxZ: 3.65 },   // 장롱
+  { minX: 5.85, maxX: 6.95, minZ: -4.7, maxZ: -3.7 },   // 냉장고
+];
+// 선분(괴물→나)이 상자를 통과하는지 검사 (slab 방법)
+function segmentHitsBox(x1, z1, x2, z2, b) {
+  const dx = x2 - x1, dz = z2 - z1;
+  let tmin = 0, tmax = 1;
+  for (const [p, d, min, max] of [[x1, dx, b.minX, b.maxX], [z1, dz, b.minZ, b.maxZ]]) {
+    if (Math.abs(d) < 1e-9) {
+      if (p < min || p > max) return false;
+    } else {
+      let t1 = (min - p) / d, t2 = (max - p) / d;
+      if (t1 > t2) [t1, t2] = [t2, t1];
+      tmin = Math.max(tmin, t1);
+      tmax = Math.min(tmax, t2);
+      if (tmin > tmax) return false;
+    }
+  }
+  return true;
+}
+function monsterCanSeePlayer() {
+  if (hidden) return false; // 장롱 안이면 절대 안 보인다
+  for (const b of sightBlockers) {
+    if (segmentHitsBox(monster.position.x, monster.position.z,
+                       camera.position.x, camera.position.z, b)) return false;
+  }
+  return true;
+}
+
+// 상태: idle(조용함) → warning(쿵쿵 경고) → active(순찰 중) → 다시 idle
+let monsterState = 'idle';
+let monsterTimer = 22 + Math.random() * 10; // 첫 등장은 시작하고 좀 있다가
+let wpIndex = 0;
+let thumpTimer = 0;
+let monsterPause = 0;     // 멈춰서 두리번거리는 남은 시간
+let pauseScene = null;    // 지금 멈춰 있는 장면 이름 ('peek' | 'slit')
+let shownScenes = {};     // 장면 메시지는 순찰마다 한 번씩만
+const MONSTER_SPEED = 1.1; // 사람보다 훨씬 느리다
+
+// 발각당했을 때 (stalk = 노려보며 다가옴, devour = 잡아먹히는 장면)
+let stalkPhase = null;    // 'entry'(들어옴) → 'turn'(스윽 돌아봄) → 'approach'(다가옴)
+let stalkTimer = 0;
+let frozen = false;       // 눈이 마주치면 발이 얼어붙는다
+let moveMsgCooldown = 0;
+let devourTimer = 0;
+let devourBlack = false;
+let mouthShown = false;
+let jawCrackStep = 0; // 턱 벌어지는 "딱딱" 소리 타이밍
+const STALK_SPEED = 1.3;
+const camTarget = new THREE.Vector3(); // 잡아먹힐 때 카메라가 끌려가는 지점
+
+function thump() { beep(52, 0.35, 0.3, 'sine'); beep(40, 0.5, 0.2, 'sine'); }
+
+function updateMonster(dt) {
+  if (escaped || doorOpen) { monster.visible = false; return; }
+
+  if (monsterState === 'idle') {
+    monsterTimer -= dt;
+    if (monsterTimer <= 0) {
+      monsterState = 'warning';
+      monsterTimer = 4.5;
+      showMsg('👂 쿵… 쿵… <b>뭔가 다가온다!</b> 장롱에 숨자!');
+    }
+  } else if (monsterState === 'warning') {
+    monsterTimer -= dt;
+    thumpTimer -= dt;
+    if (thumpTimer <= 0) { thump(); thumpTimer = 1.0; }
+    if (monsterTimer <= 0) {
+      monster.position.set(PATROL[0][0], 0, PATROL[0][1]);
+      monster.visible = true;
+      if (!hidden && camera.position.x > -2 && monsterCanSeePlayer()) {
+        // 플레이어가 거실 쪽에 있고, 가리는 벽도 없다 → 발각 장면 시작!
+        monsterState = 'stalk';
+        stalkPhase = 'entry';
+        stalkTimer = 1.3;
+        monster.rotation.y = Math.atan2(2 - 5.5, 0 - 4.2); // 일단 거실 안쪽을 본다
+        if (uiMode === 'keypad') closeKeypad();
+        showMsg('👣 <b>괴물이 들어왔다.</b> …아직 나를 보지 못했다.');
+      } else {
+        monsterState = 'active'; // 평소처럼 순찰
+        wpIndex = 0;
+        monsterPause = 0;
+        pauseScene = null;
+        shownScenes = {};
+      }
+    }
+  } else if (monsterState === 'stalk') {
+    // 발각! 괴물이 나를 향해 고개를 돌리고, 눈이 마주친 채 다가온다
+    if (hidden) { // 그 사이 장롱에 숨는 데 성공하면 → 그냥 순찰로
+      monsterState = 'active';
+      wpIndex = 1; monsterPause = 0; pauseScene = null; shownScenes = {};
+      frozen = false;
+      controls.pointerSpeed = 0; // (숨은 상태 유지)
+      return;
+    }
+    thumpTimer -= dt;
+    if (thumpTimer <= 0) { thump(); thumpTimer = 0.6; } // 심장이 빨라진다
+    const lookY = Math.atan2(camera.position.x - monster.position.x,
+                             camera.position.z - monster.position.z);
+    if (stalkPhase === 'entry') {
+      stalkTimer -= dt;
+      if (stalkTimer <= 0) { stalkPhase = 'turn'; stalkTimer = 1.0; }
+    } else if (stalkPhase === 'turn') {
+      stalkTimer -= dt;
+      monster.rotation.y += (lookY - monster.rotation.y) * Math.min(1, dt * 2.5); // 스윽—
+      if (stalkTimer <= 0) {
+        if (!monsterCanSeePlayer()) {
+          // 그 사이 벽 뒤로 도망쳤다! → 괴물은 나를 못 찾고 순찰만 한다
+          monsterState = 'active';
+          wpIndex = 1; monsterPause = 0; pauseScene = null; shownScenes = {};
+          showMsg('…괴물이 두리번거리더니 고개를 돌렸다. <b>들키지 않았다…!</b>');
+        } else {
+          stalkPhase = 'approach';
+          frozen = true;             // 발이 얼어붙는다
+          controls.pointerSpeed = 0; // 고개도 마음대로 못 돌린다
+          beep(65, 1.0, 0.25, 'sawtooth');
+          showMsg('…괴물의 눈이 <b>스윽—</b> 나를 향했다. <b>눈이 마주쳤다.</b>');
+        }
+      }
+    } else { // approach: 눈을 바라보며 천천히 다가온다
+      monster.rotation.y = lookY;
+      const dx = camera.position.x - monster.position.x;
+      const dz = camera.position.z - monster.position.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist < 0.8) startDevour();
+      else {
+        monster.position.x += (dx / dist) * STALK_SPEED * dt;
+        monster.position.z += (dz / dist) * STALK_SPEED * dt;
+      }
+    }
+  } else if (monsterState === 'devour') {
+    // 잡아먹히는 장면: ① 들어올려진다 ② 입이 쩍 벌어진다 ③ 이빨 속으로…
+    devourTimer += dt;
+    monster.rotation.y = Math.atan2(camera.position.x - monster.position.x,
+                                    camera.position.z - monster.position.z);
+
+    // ① 괴물이 나를 붙잡아 들어올린다 — 몸이 붕 뜨고 버둥거린다
+    if (devourTimer < 1.3) {
+      camera.position.y = Math.min(2.15, camera.position.y + dt * 0.7);
+      camera.position.x += (Math.random() - 0.5) * 0.012; // 버둥버둥
+      camera.position.z += (Math.random() - 0.5) * 0.012;
+    }
+
+    // ② 턱이 쩌적… 쩌저적… 천천히 벌어지며 이빨이 드러난다
+    if (devourTimer > 0.8 && !mouthShown) {
+      mouthShown = true;
+      beep(55, 1.2, 0.3, 'sawtooth');
+      showMsg('괴물의 입이 <b>쩌적… 쩌저적—</b> 벌어지기 시작한다. <b>뾰족한 이빨이 가득하다…!</b>');
+    }
+    if (mouthShown && jawOpen < 1) {
+      jawOpen = Math.min(1, jawOpen + dt * 0.5); // 뿅! 이 아니라 천천히 쩍—
+      lowerJaw.rotation.x = jawOpen * 1.05;      // 경첩을 축으로 아래턱이 내려간다
+      if (jawOpen > jawCrackStep + 0.25) {       // 뼈 벌어지는 소리: 딱, 딱
+        jawCrackStep = jawOpen;
+        beep(140, 0.06, 0.22, 'square');
+        beep(90, 0.1, 0.18, 'square');
+      }
+    }
+
+    // ③ 입 쪽으로 끌려간다 — 이빨이 눈앞을 가득 채운다
+    if (devourTimer > 1.3) {
+      const fx = Math.sin(monster.rotation.y), fz = Math.cos(monster.rotation.y);
+      camTarget.set(monster.position.x + fx * 0.5, 1.85, monster.position.z + fz * 0.5);
+      camera.position.lerp(camTarget, Math.min(1, dt * 1.6));
+      camera.position.x += (Math.random() - 0.5) * 0.008;
+      camera.position.y += (Math.random() - 0.5) * 0.008;
+    }
+
+    if (devourTimer > 3.2 && !devourBlack) {
+      devourBlack = true;
+      catchFx.style.opacity = 1; // 이빨이 눈앞을 가득 채우고 — 어둠
+      showMsg('차가운 숨결… 이빨이 눈앞을 가득 채우고— <b>어둠이 나를 삼켰다.</b>');
+      beep(38, 1.6, 0.35, 'sawtooth');
+    }
+    if (devourTimer > 4.7) failGame();
+  } else if (monsterState === 'active') {
+    thumpTimer -= dt;
+    if (thumpTimer <= 0) { thump(); thumpTimer = 1.4; }
+
+    if (monsterPause > 0) {
+      // 멈춰서 장롱 쪽을 빤히 바라본다
+      monsterPause -= dt;
+      monster.rotation.y = Math.atan2(-6.55 - monster.position.x, 2.8 - monster.position.z);
+      if (pauseScene === 'slit') {
+        // 몸을 웅크려서 "오른쪽 눈"이 문틈 정중앙에 딱 오도록 계산해서 다가온다
+        const k = Math.min(1, dt * 2);
+        const ry = monster.rotation.y;
+        const ex = 0.12 * Math.cos(ry) + 0.23 * Math.sin(ry);  // 오른눈의 몸 기준 위치를
+        const ez = -0.12 * Math.sin(ry) + 0.23 * Math.cos(ry); // 회전에 맞춰 계산
+        monster.position.x += ((-5.95 - ex) - monster.position.x) * k;
+        monster.position.z += ((2.8 - ez) - monster.position.z) * k;
+        monster.position.y += (-0.51 - monster.position.y) * k; // 눈높이 = 문틈 높이
+        monster.rotation.z = 0;
+      }
+      if (hidden && pauseScene && !shownScenes[pauseScene]) {
+        shownScenes[pauseScene] = true;
+        showMsg(PAUSE_MSG[pauseScene]);
+        if (pauseScene === 'slit') { // 심장 쿵쿵!
+          beep(48, 0.25, 0.3, 'sine');
+          setTimeout(() => beep(48, 0.25, 0.3, 'sine'), 350);
+          setTimeout(() => beep(48, 0.25, 0.3, 'sine'), 700);
+        }
+      }
+    } else {
+      // 다음 순찰 지점으로 느릿느릿 걷기
+      const [tx, tz, pauseSec, scene] = PATROL[wpIndex];
+      const dx = tx - monster.position.x;
+      const dz = tz - monster.position.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist < 0.15) {
+        monsterPause = pauseSec || 0; // 이 지점에서 두리번거릴 시간 (대부분 0)
+        pauseScene = scene || null;
+        wpIndex++;
+        if (wpIndex >= PATROL.length) { // 순찰 끝 → 사라짐
+          monster.visible = false;
+          monsterState = 'idle';
+          monsterTimer = 30 + Math.random() * 15;
+          showMsg('…소리가 멀어졌다. 이제 안전한 것 같다.');
+          return;
+        }
+      } else {
+        monster.position.x += (dx / dist) * MONSTER_SPEED * dt;
+        monster.position.z += (dz / dist) * MONSTER_SPEED * dt;
+        monster.position.y += (0 - monster.position.y) * Math.min(1, dt * 3); // 웅크렸다면 다시 일어서기
+        monster.rotation.y = Math.atan2(dx, dz); // 걷는 방향 바라보기
+        monster.rotation.z = Math.sin(performance.now() / 260) * 0.06; // 뒤뚱뒤뚱
+      }
+    }
+
+    // 너무 가까이 붙으면 발각! (숨어 있거나 벽에 가려져 있으면 안 잡힌다)
+    if (!hidden && !escaped && monsterCanSeePlayer() &&
+        monster.position.distanceTo(camera.position) < 1.8) {
+      monsterState = 'stalk';
+      stalkPhase = 'approach';
+      frozen = true;
+      if (uiMode === 'keypad') closeKeypad();
+      controls.pointerSpeed = 0;
+      beep(65, 1.0, 0.25, 'sawtooth');
+      showMsg('…괴물이 <b>나를 봤다.</b> 눈이 마주쳤다.');
+    }
+  }
+}
+
+const catchFx = document.getElementById('catch-fx');
+function startDevour() {
+  monsterState = 'devour';
+  devourTimer = 0;
+  devourBlack = false;
+  mouthShown = false;
+  jawOpen = 0;
+  jawCrackStep = 0;
+  lowerJaw.rotation.x = 0;
+  frozen = true;
+  controls.pointerSpeed = 0;
+  // 낮게 으르렁거리는 소리
+  beep(70, 1.6, 0.3, 'sawtooth');
+  beep(45, 2.0, 0.25, 'sawtooth');
+  showMsg('『…찾았다…』');
+}
+// 잡아먹혔다 → 방탈출 실패! 처음 화면으로 돌아가야 한다
+function failGame() {
+  uiMode = 'fail';
+  msgEl.style.display = 'none';
+  crosshair.style.display = 'none';
+  inventoryEl.style.display = 'none';
+  document.getElementById('fail-screen').style.display = 'flex';
+  controls.unlock();
+}
+
+// ===== 장롱에 숨기 =====
+let hidden = false;
+const savedPos = new THREE.Vector3();
+const hideFx = document.getElementById('hide-fx');
+function enterWardrobe() {
+  hidden = true;
+  savedPos.copy(camera.position);
+  camera.position.set(-6.4, 1.5, 2.8);
+  camera.lookAt(0, 1.5, 2.8);  // 장롱 문에 딱 수직으로, 문틈 정면을 내다본다
+  controls.pointerSpeed = 0;   // 숨어 있는 동안엔 고개를 못 돌린다
+  hideFx.style.display = 'block';
+  promptEl.textContent = 'E — 장롱에서 나가기';
+  promptEl.style.top = '80%';  // 안내문은 아래쪽으로 (틈새 가운데를 가리지 않게)
+  promptEl.style.display = 'block';
+  showMsg('🤫 장롱 안에 숨었다. 문틈으로 밖이 보인다…');
+}
+function exitWardrobe() {
+  hidden = false;
+  camera.position.copy(savedPos);
+  controls.pointerSpeed = 1; // 다시 고개를 돌릴 수 있다
+  hideFx.style.display = 'none';
+  promptEl.style.top = '56%';
+  promptEl.style.display = 'none';
+}
+
+// ===== 간단한 효과음 (파일 없이 소리를 직접 만든다 — WebAudio) =====
+let audioCtx = null;
+function beep(freq, dur, vol = 0.15, type = 'square') {
+  audioCtx ??= new AudioContext();
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.type = type;
+  o.frequency.value = freq;
+  g.gain.setValueAtTime(vol, audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+  o.connect(g).connect(audioCtx.destination);
+  o.start();
+  o.stop(audioCtx.currentTime + dur);
+}
+function powerHum() { // 전기 들어오는 소리: 우웅—
+  beep(60, 1.2, 0.25, 'sawtooth');
+  setTimeout(() => beep(120, 0.8, 0.15, 'sine'), 300);
+}
+function tvStatic() { beep(2200, 0.35, 0.06, 'sawtooth'); beep(1400, 0.5, 0.05, 'square'); }
+
+// ===== 게임 상태 =====
+let hasKey = false;   // 신발장에서 찾는 서랍 열쇠
+let hasFuse = false;
+let powerOn = false;
+let escaped = false;
+
+function turnOnPower() {
+  powerOn = true;
+  powerHum();
+  // 형광등이 지지직거리며 켜진다 (animate에서 깜빡임 연출)
+  powerFlickerTime = 1.6;
+  // TV가 켜지며 비밀번호가 나타난다!
+  const cv = document.createElement('canvas');
+  cv.width = 256; cv.height = 144;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#041006';
+  ctx.fillRect(0, 0, 256, 144);
+  ctx.fillStyle = '#39e75f';
+  ctx.font = 'bold 64px monospace';
+  ctx.textAlign = 'center';
+  // 첫째·셋째 숫자만 보이고 가운데는 지지직 깨져 있다!
+  ctx.fillText(DOOR_CODE[0], 60, 92);
+  ctx.fillText(DOOR_CODE[2], 196, 92);
+  for (let i = 0; i < 22; i++) { // 가운데 자리: 초록 노이즈 블록
+    ctx.fillStyle = Math.random() > 0.5 ? '#1a4a26' : '#2a7a3c';
+    ctx.fillRect(102 + Math.random() * 44, 36 + Math.random() * 62, 8, 5);
+  }
+  for (let y = 0; y < 144; y += 4) { // 지지직 줄무늬
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.fillRect(0, y, 256, 1);
+  }
+  tvScreenMat.color.set(0xffffff);
+  tvScreenMat.map = new THREE.CanvasTexture(cv);
+  tvScreenMat.needsUpdate = true;
+  tvStatic();
+  updateInventory();
+  showMsg('⚡ 우웅— 불이 들어왔다! …그리고 <b>TV가 저절로 켜졌다.</b>');
+  // 전기가 들어온 걸 눈치챘나…? 잠시 뒤 괴물이 또 온다!
+  if (monsterState === 'idle') monsterTimer = Math.min(monsterTimer, 8);
+}
+let powerFlickerTime = 0; // 형광등 켜질 때 지지직 연출용
+
+const inventoryEl = document.getElementById('inventory');
+function updateInventory() {
+  if (escaped) return;
+  const items = [];
+  if (hasKey && !hasFuse) items.push('🔑열쇠');
+  if (hasFuse && !powerOn) items.push('⚡퓨즈');
+  if (items.length) { inventoryEl.textContent = '🎒 ' + items.join('  '); inventoryEl.style.display = 'block'; }
+  else inventoryEl.style.display = 'none';
+}
+
+// ===== 1인칭 조작 =====
+const controls = new PointerLockControls(camera, document.body);
+const overlay = document.getElementById('overlay');
+const crosshair = document.getElementById('crosshair');
+
+let startTime = null;
+controls.addEventListener('lock', () => {
+  startTime ??= performance.now();
+  overlay.style.display = 'none';
+  crosshair.style.display = 'block';
+});
+controls.addEventListener('unlock', () => {
+  if (uiMode) return;
+  overlay.style.display = 'flex';
+  crosshair.style.display = 'none';
+});
+overlay.addEventListener('click', () => controls.lock());
+renderer.domElement.addEventListener('click', () => {
+  if (!controls.isLocked && !uiMode) controls.lock();
+});
+
+const keys = {};
+document.addEventListener('keydown', (e) => { keys[e.code] = true; });
+document.addEventListener('keyup',   (e) => { keys[e.code] = false; });
+
+// ===== 조사 시스템 =====
+const raycaster = new THREE.Raycaster();
+raycaster.far = 2.6;
+const promptEl = document.getElementById('prompt');
+const msgEl = document.getElementById('msg');
+const PROMPT_TEXT = {
+  tv: 'E — TV 보기',
+  fridge: 'E — 냉장고 열기',
+  counter: 'E — 서랍 뒤지기',
+  shoerack: 'E — 신발장 열기',
+  bed: 'E — 침대 살펴보기',
+  wardrobe: 'E — 장롱 열기',
+  photo: 'E — 사진 보기',
+  breaker: 'E — 두꺼비집 열기',
+  frontdoor: 'E — 현관문',
+};
+
+let target = null;
+function updateTarget() {
+  if (hidden) return; // 장롱 안에서는 "E — 나가기"만 표시
+  raycaster.setFromCamera({ x: 0, y: 0 }, camera);
+  const hit = controls.isLocked ? raycaster.intersectObjects(examinables, false)[0] : null;
+  const found = hit ? hit.object : null;
+  if (found === target) return;
+  if (target) target.material = target.userData.origMat;
+  target = found;
+  if (target) {
+    target.userData.origMat = target.material;
+    const hl = target.material.clone();
+    if (hl.emissive) hl.emissive = new THREE.Color(0x2a3512);
+    target.material = hl;
+    promptEl.textContent = PROMPT_TEXT[target.userData.type];
+    promptEl.style.display = 'block';
+  } else {
+    promptEl.style.display = 'none';
+  }
+}
+
+let msgTimer;
+function showMsg(html) {
+  msgEl.innerHTML = html;
+  msgEl.style.display = 'block';
+  clearTimeout(msgTimer);
+  msgTimer = setTimeout(() => { msgEl.style.display = 'none'; }, 4500);
+}
+
+function examine(obj) {
+  const t = obj.userData.type;
+  if (t === 'shoerack') {
+    if (!hasKey) {
+      hasKey = true;
+      updateInventory();
+      beep(880, 0.12, 0.1, 'sine');
+      showMsg('👟 신발장 구석, 낡은 운동화 속에서 <b>🔑작은 열쇠</b>를 발견했다!');
+    } else showMsg('👟 이제 신발 냄새밖에 안 난다…');
+  } else if (t === 'counter') {
+    if (!hasKey) {
+      showMsg('🗄️ 서랍이 <b>잠겨 있다.</b> 작은 열쇠 구멍이 보인다… 열쇠가 어디 있을까?');
+    } else if (!hasFuse) {
+      hasFuse = true;
+      updateInventory();
+      beep(880, 0.12, 0.1, 'sine');
+      showMsg('🔑 열쇠로 서랍을 열었다! 깊숙한 곳에서 <b>⚡퓨즈</b>를 발견했다!');
+      // 서랍 소리를 들었나…? 퓨즈를 집는 순간 괴물이 온다!!
+      if (monsterState === 'idle') monsterTimer = Math.min(monsterTimer, 2.5);
+    } else showMsg('🗄️ 더 이상 쓸 만한 건 없다.');
+  } else if (t === 'breaker') {
+    if (powerOn) showMsg('🔌 두꺼비집. 전기가 잘 들어오고 있다.');
+    else if (hasFuse) turnOnPower();
+    else showMsg('🔌 두꺼비집이다. <b>퓨즈가 뽑혀 있다…</b> 어딘가에 예비 퓨즈가 있을 텐데.');
+  } else if (t === 'tv') {
+    if (powerOn) showMsg(`📺 지지직… 숫자가 떠 있다: <b>${DOOR_CODE[0]} ▓ ${DOOR_CODE[2]}</b> — 가운데 숫자는 깨져서 안 보인다…`);
+    else showMsg('📺 꺼져 있다. 전기가 나갔으니 당연한가…');
+  } else if (t === 'fridge') {
+    showMsg('🧊 전기가 나가서 조용하다. 안은 캄캄하고… 시큼한 냄새가 난다.');
+  } else if (t === 'bed') {
+    showMsg('🛏️ 침대 밑을 들여다봤다. …아무것도 없다. 다행이다.');
+  } else if (t === 'photo') {
+    showMsg('🖼️ <b>네 명의 가족</b>이 웃고 있는 사진이다. 뒤집어 보니 메모가 있다:<br>「도어락 <b>가운데 숫자</b>는 우리 가족 수」');
+  } else if (t === 'wardrobe') {
+    enterWardrobe();
+  } else if (t === 'frontdoor') {
+    if (doorOpen) showMsg('🚪 문이 열려 있다! 나가자!');
+    else if (!powerOn) { beep(140, 0.3, 0.1); showMsg('🔒 도어락에 <b>전원이 들어오지 않는다.</b> 전기부터 복구해야 한다.'); }
+    else openKeypad();
+  }
+}
+
+// ===== 도어락 키패드 =====
+const keypadUI = document.getElementById('keypad-ui');
+const kpDisplay = document.getElementById('kp-display');
+const kpPanel = document.getElementById('keypad-panel');
+const kpSlots = kpDisplay.querySelectorAll('span');
+let uiMode = null;
+let kpEntry = '';
+let kpChecking = false;
+
+function renderKp() { kpSlots.forEach((s, i) => { s.textContent = kpEntry[i] ?? ''; }); }
+function openKeypad() {
+  uiMode = 'keypad';
+  kpEntry = '';
+  kpChecking = false;
+  renderKp();
+  keypadUI.style.display = 'flex';
+  controls.unlock();
+}
+function closeKeypad() {
+  uiMode = null;
+  keypadUI.style.display = 'none';
+  controls.lock();
+}
+function kpInput(k) {
+  if (kpChecking) return;
+  if (k === 'close') { closeKeypad(); return; }
+  if (k === 'del') { kpEntry = kpEntry.slice(0, -1); renderKp(); return; }
+  if (kpEntry.length >= 3) return;
+  beep(700 + Number(k) * 40, 0.08, 0.08, 'sine');
+  kpEntry += k;
+  renderKp();
+  if (kpEntry.length === 3) { kpChecking = true; setTimeout(kpCheck, 400); }
+}
+function kpCheck() {
+  if (kpEntry === DOOR_CODE) {
+    beep(900, 0.15, 0.12, 'sine');
+    setTimeout(() => beep(1200, 0.3, 0.12, 'sine'), 150);
+    closeKeypad();
+    doorOpen = true;
+    showMsg('🔓 삐빅! 현관문이 열렸다! <b>나가자!</b>');
+  } else {
+    beep(160, 0.5, 0.15);
+    kpDisplay.classList.add('wrong');
+    kpPanel.classList.add('shake');
+    setTimeout(() => {
+      kpDisplay.classList.remove('wrong');
+      kpPanel.classList.remove('shake');
+      kpEntry = '';
+      kpChecking = false;
+      renderKp();
+    }, 650);
+  }
+}
+document.getElementById('kp-grid').addEventListener('click', (e) => {
+  if (e.target.dataset.k) kpInput(e.target.dataset.k);
+});
+
+// ===== 탈출 성공 =====
+function triggerWin() {
+  escaped = true;
+  uiMode = 'win';
+  const sec = Math.round((performance.now() - startTime) / 1000);
+  document.getElementById('win-time').textContent =
+    `걸린 시간: ${Math.floor(sec / 60)}분 ${sec % 60}초`;
+  document.getElementById('win-screen').style.display = 'flex';
+  crosshair.style.display = 'none';
+  inventoryEl.style.display = 'none';
+  controls.unlock();
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.code === 'KeyE' && controls.isLocked && !frozen) {
+    if (hidden) exitWardrobe();      // 숨어 있으면 E로 나오기
+    else if (target) examine(target);
+  }
+  if (e.code === 'Escape' && uiMode === 'keypad') closeKeypad();
+  if (uiMode === 'keypad') {
+    if (/^[0-9]$/.test(e.key)) kpInput(e.key);
+    if (e.key === 'Backspace') kpInput('del');
+  }
+});
+
+// ===== 이동 =====
+const MOVE_SPEED = 3.0;
+function movePlayer(dt) {
+  if (!controls.isLocked || hidden) return; // 장롱 안에서는 못 움직인다
+
+  // 괴물과 눈이 마주치면 발이 얼어붙는다!
+  if (frozen) {
+    moveMsgCooldown -= dt;
+    if ((keys['KeyW'] || keys['KeyA'] || keys['KeyS'] || keys['KeyD']) && moveMsgCooldown <= 0) {
+      moveMsgCooldown = 1.3;
+      showMsg('윽… <b>발이 떼어지지 않는다…!</b>');
+    }
+    return;
+  }
+
+  let forward = (keys['KeyW'] ? 1 : 0) - (keys['KeyS'] ? 1 : 0);
+  let right   = (keys['KeyD'] ? 1 : 0) - (keys['KeyA'] ? 1 : 0);
+  if (forward !== 0 && right !== 0) { forward *= Math.SQRT1_2; right *= Math.SQRT1_2; }
+  controls.moveForward(forward * MOVE_SPEED * dt);
+  controls.moveRight(right * MOVE_SPEED * dt);
+
+  const pos = camera.position;
+  pos.y = EYE_HEIGHT;
+  // 바깥벽
+  pos.x = Math.max(-APT_W / 2 + 0.4, Math.min(APT_W / 2 - 0.4, pos.x));
+  if (pos.z > APT_D / 2 - 0.4) {
+    // 현관문 구멍 (x 5.0~6.0)으로만 나갈 수 있다
+    if (doorOpen && pos.x > 5.15 && pos.x < 5.85) {
+      pos.z = Math.min(pos.z, 6.6);
+      if (!escaped && pos.z > 5.9) triggerWin();
+    } else {
+      pos.z = APT_D / 2 - 0.4;
+    }
+  }
+  pos.z = Math.max(-APT_D / 2 + 0.4, pos.z);
+
+  // 가구·안쪽벽 충돌
+  const R = 0.32;
+  for (const c of colliders) {
+    if (pos.x > c.minX - R && pos.x < c.maxX + R &&
+        pos.z > c.minZ - R && pos.z < c.maxZ + R) {
+      const dw = pos.x - (c.minX - R), de = (c.maxX + R) - pos.x;
+      const dn = pos.z - (c.minZ - R), ds = (c.maxZ + R) - pos.z;
+      const m = Math.min(dw, de, dn, ds);
+      if      (m === dw) pos.x = c.minX - R;
+      else if (m === de) pos.x = c.maxX + R;
+      else if (m === dn) pos.z = c.minZ - R;
+      else               pos.z = c.maxZ + R;
+    }
+  }
+}
+
+// ===== 게임 루프 =====
+const clock = new THREE.Clock();
+const dirVec = new THREE.Vector3();
+// 강제 시선용 더미 카메라 (일반 Object3D는 lookAt 방향이 카메라와 반대라서 카메라를 쓴다)
+const lookHelper = new THREE.PerspectiveCamera();
+const eyePos = new THREE.Vector3();
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.1);
+  movePlayer(dt);
+  updateTarget();
+  if (controls.isLocked || monster.visible) updateMonster(dt);
+
+  // 눈이 마주치면 고개가 저절로 괴물의 눈을 향해 돌아간다
+  if (frozen && monster.visible) {
+    lookHelper.position.copy(camera.position);
+    // 처음엔 눈을, 입이 벌어진 뒤엔 이빨 가득한 입 속을 바라보게 된다
+    const lookY = (monsterState === 'devour' && devourTimer > 1.3) ? 1.8 : 2.03;
+    eyePos.set(monster.position.x, lookY, monster.position.z);
+    lookHelper.lookAt(eyePos);
+    camera.quaternion.slerp(lookHelper.quaternion, Math.min(1, dt * 4));
+  }
+
+  // 손전등이 시선을 따라다닌다
+  flashlight.position.copy(camera.position);
+  camera.getWorldDirection(dirVec);
+  flashlight.target.position.copy(camera.position).addScaledVector(dirVec, 5);
+  if (monsterState === 'devour') {
+    // 잡아먹히는 순간: 손전등 빛도 어둠에 삼켜진다 (깜빡깜빡…)
+    flashlight.intensity = 4 * (0.5 + Math.random() * 0.5);
+  } else {
+    flashlight.intensity = powerOn ? 0 : 42 * (0.96 + Math.random() * 0.08); // 전기 켜지면 손전등 끔
+  }
+
+  // 전기 복구 연출: 형광등이 지지직거리다가 완전히 켜진다
+  if (powerOn) {
+    if (powerFlickerTime > 0) {
+      powerFlickerTime -= dt;
+      const on = Math.random() > 0.4;
+      for (const l of ceilingLights) l.intensity = on ? 9 : 2;
+    } else {
+      for (const l of ceilingLights) l.intensity = 9;
+    }
+  }
+
+  // 문 열림
+  if (doorOpen && doorGroup.rotation.y < 1.8) {
+    doorGroup.rotation.y = Math.min(1.8, doorGroup.rotation.y + dt * 1.6);
+  }
+
+  renderer.render(scene, camera);
+}
+animate();
+
+// 개발·테스트용
+window.game = {
+  camera, controls, colliders, examinables, monster,
+  get hasKey() { return hasKey; },
+  get hasFuse() { return hasFuse; },
+  get powerOn() { return powerOn; },
+  get doorOpen() { return doorOpen; },
+  get hidden() { return hidden; },
+  get monsterState() { return monsterState; },
+  get stalkPhase() { return stalkPhase; },
+  get frozen() { return frozen; },
+  get jawOpen() { return jawOpen; },
+  summon() { monsterState = 'idle'; monsterTimer = 0.1; }, // 테스트용: 괴물 바로 부르기
+  canSee() { return monsterCanSeePlayer(); },              // 테스트용: 시야 검사
+};
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>

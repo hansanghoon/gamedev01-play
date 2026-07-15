@@ -1,0 +1,15 @@
+{
+  "name": "스티커 플래닛",
+  "short_name": "스티커플래닛",
+  "description": "습관을 완료하고 도트 스티커를 모으는 습관 기록 앱",
+  "start_url": "./sticker-planet.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#10142a",
+  "theme_color": "#10142a",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

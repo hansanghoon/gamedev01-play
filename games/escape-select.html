@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>🔐 방탈출 시리즈 — 모드 선택</title>
+<style>
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: radial-gradient(ellipse at 50% 30%, #16121d 0%, #070509 70%);
+    color: #ddd;
+    font-family: sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 40px 16px 60px;
+    box-sizing: border-box;
+  }
+  h1 {
+    color: #c9a84c;
+    font-size: 34px;
+    margin: 10px 0 4px;
+    text-shadow: 0 0 22px rgba(200, 160, 60, 0.35);
+  }
+  .subtitle { color: #776f88; font-size: 15px; margin-bottom: 34px; }
+
+  #cards {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 22px;
+    justify-content: center;
+    max-width: 1000px;
+  }
+  .card {
+    width: 270px;
+    background: #14101a;
+    border: 2px solid #322a44;
+    border-radius: 14px;
+    padding: 22px 22px 18px;
+    text-decoration: none;
+    color: inherit;
+    display: flex;
+    flex-direction: column;
+    transition: transform 0.15s, border-color 0.15s, box-shadow 0.15s;
+  }
+  .card:hover {
+    transform: translateY(-6px);
+    border-color: #c9a84c;
+    box-shadow: 0 10px 34px rgba(0, 0, 0, 0.7);
+  }
+  .card .emoji { font-size: 46px; }
+  .card h2 { font-size: 21px; margin: 10px 0 6px; color: #eee; }
+  .card .desc {
+    color: #918aa0;
+    font-size: 14px;
+    line-height: 1.7;
+    flex: 1;
+    margin-bottom: 14px;
+  }
+  .meter {
+    font-size: 14px;
+    color: #a89a78;
+    line-height: 1.9;
+    border-top: 1px dashed #322a44;
+    padding-top: 10px;
+  }
+  .meter .dim { opacity: 0.22; }
+  .meter .warn {
+    display: block;
+    color: #b05050;
+    font-size: 12.5px;
+    margin-top: 4px;
+  }
+  .play {
+    margin-top: 14px;
+    text-align: center;
+    background: #3a3050;
+    border-radius: 8px;
+    padding: 9px 0;
+    color: #e8dcc0;
+    font-size: 15px;
+  }
+  .card:hover .play { background: #c9a84c; color: #221a08; }
+
+  /* 아직 잠긴 다음 맵 */
+  .card.locked {
+    opacity: 0.55;
+    cursor: default;
+    border-style: dashed;
+  }
+  .card.locked:hover {
+    transform: none;
+    border-color: #322a44;
+    box-shadow: none;
+  }
+  .card.locked .play { background: #241f2e; color: #665f75; }
+
+  .back { margin-top: 36px; }
+  .back a { color: #776f88; font-size: 14px; text-decoration: none; }
+  .back a:hover { color: #c9a84c; }
+</style>
+</head>
+<body>
+
+<h1>🔐 방탈출 시리즈</h1>
+<div class="subtitle">난이도와 공포도를 보고 도전할 방을 고르세요…</div>
+
+<div id="cards">
+
+  <a class="card" href="ghost-library.html">
+    <div class="emoji">🕯️</div>
+    <h2>유령의 도서관</h2>
+    <div class="desc">
+      한밤중 오래된 도서관에 갇혔다.<br>
+      암호 책의 단서로 책을 찾고,<br>
+      그림자 퍼즐을 풀어 탈출하자.<br>
+      <b>진짜 단서는 숫자처럼 들리는 제목뿐!</b>
+    </div>
+    <div class="meter">
+      난이도 ★★<span class="dim">★</span><br>
+      공포도 👻<span class="dim">👻👻</span> — 으스스한 분위기만, 안 무서움
+    </div>
+    <div class="play">▶ 입장하기</div>
+  </a>
+
+  <a class="card" href="dark-apartment.html">
+    <div class="emoji">🏢</div>
+    <h2>어두운 아파트</h2>
+    <div class="desc">
+      정전된 아파트, 손전등 하나.<br>
+      전기를 복구하고 도어락을 열어라.<br>
+      …그런데 <b>이 집엔 뭔가가 산다.</b><br>
+      쿵쿵 소리가 나면 장롱에 숨을 것!
+    </div>
+    <div class="meter">
+      난이도 ★★★<br>
+      공포도 👻👻👻 — 괴물 있음!
+      <span class="warn">⚠️ 잡아먹히면 처음부터 다시!</span>
+    </div>
+    <div class="play">▶ 입장하기</div>
+  </a>
+
+  <a class="card" href="monster-corridor.html">
+    <div class="emoji">🚪</div>
+    <h2>괴물의 복도</h2>
+    <div class="desc">
+      아파트를 탈출한 줄 알았지?<br>
+      <b>진짜 탈출은 복도부터다.</b><br>
+      비상구엔 쇠사슬, 엘리베이터 틈에선<br>
+      그 녀석이 기어나온다…
+    </div>
+    <div class="meter">
+      난이도 ★★★★<br>
+      공포도 👻👻👻👻 — 괴물이 더 자주!
+      <span class="warn">⚠️ 어두운 아파트를 먼저 깨고 오는 걸 추천</span>
+    </div>
+    <div class="play">▶ 입장하기</div>
+  </a>
+
+</div>
+
+<div class="back"><a href="../index.html">← 게임 목록으로 돌아가기</a></div>
+
+</body>
+</html>
