@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>⏱️ 타이머</title>
+<meta name="theme-color" content="#10142a" />
+<meta name="mobile-web-app-capable" content="yes" />
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
+    background: #0b0e1a;
+    color: #eef;
+    min-height: 100vh;
+  }
+
+  /* 폰 화면처럼 가운데 세로로 길게 (스티커 플래닛과 같은 스타일) */
+  .app {
+    max-width: 420px;
+    margin: 0 auto;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    background:
+      radial-gradient(1px 1px at 20% 15%, #fff8, transparent),
+      radial-gradient(1px 1px at 70% 8%, #fff6, transparent),
+      radial-gradient(1.5px 1.5px at 45% 30%, #fff5, transparent),
+      radial-gradient(1px 1px at 85% 45%, #fff7, transparent),
+      radial-gradient(1px 1px at 10% 60%, #fff5, transparent),
+      #10142a;
+  }
+
+  header {
+    padding: 18px 20px 10px;
+    text-align: center;
+  }
+  header h1 { font-size: 20px; }
+
+  main { flex: 1; padding: 8px 20px 40px; }
+
+  /* ---- 항목을 누르면 뜨는 "알림 방식 고르는 창" ---- */
+  .choose {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: #000b;
+    z-index: 20;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .choose.show { display: flex; }
+  .choose-box {
+    width: 100%;
+    max-width: 320px;
+    background: #171c38;
+    border: 1px solid #2a3160;
+    border-radius: 20px;
+    padding: 22px 18px 16px;
+    text-align: center;
+  }
+  .choose-title { font-size: 18px; font-weight: bold; }
+  .choose-q { font-size: 14px; color: #99a; margin: 6px 0 16px; }
+  .choose-box .opt {
+    display: block;
+    width: 100%;
+    background: #232a52;
+    border: 1px solid #3a4370;
+    border-radius: 14px;
+    color: #eef;
+    padding: 14px;
+    font-size: 16px;
+    margin-bottom: 10px;
+    cursor: pointer;
+  }
+  .choose-box .opt:active { background: #2e3766; }
+  .choose-cancel {
+    background: none; border: none;
+    color: #778; font-size: 14px; cursor: pointer;
+    margin-top: 4px; padding: 8px;
+  }
+
+  /* ---- 기본 타이머 카드들 ---- */
+  h2 { font-size: 15px; color: #aab; margin: 6px 0 12px; }
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .preset {
+    background: #1a2040;
+    border: 1px solid #2a3160;
+    border-radius: 16px;
+    padding: 16px 10px;
+    text-align: center;
+    cursor: pointer;
+    transition: transform 0.08s;
+  }
+  .preset:active { transform: scale(0.96); }
+  .preset .emoji { font-size: 34px; display: block; }
+  .preset .name { font-size: 15px; margin-top: 6px; }
+  .preset .time { font-size: 13px; color: #99a; margin-top: 2px; }
+
+  /* ---- 내가 만드는 타이머 (시·분·초) ---- */
+  .custom {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+  }
+  .unit { text-align: center; }
+  .unit button {
+    display: block;
+    width: 64px;
+    background: #232a52;
+    border: 1px solid #3a4370;
+    border-radius: 10px;
+    color: #ccd;
+    font-size: 16px;
+    padding: 8px 0;
+    cursor: pointer;
+  }
+  .unit button:active { background: #2e3766; }
+  .unit .num {
+    width: 64px;
+    text-align: center;
+    background: transparent;
+    border: none;
+    color: #eef;
+    font-family: inherit;
+    font-size: 34px;
+    font-weight: bold;
+    font-variant-numeric: tabular-nums;
+    padding: 8px 0 2px;
+    -moz-appearance: textfield;
+  }
+  .unit .num:focus {
+    outline: none;
+    background: #1a2040;
+    border-radius: 8px;
+    color: #ffd75e;
+  }
+  /* 숫자 입력칸의 위/아래 화살표(스피너) 숨기기 */
+  .unit .num::-webkit-outer-spin-button,
+  .unit .num::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  .unit .unit-label { font-size: 12px; color: #99a; padding-bottom: 8px; }
+  .colon { font-size: 30px; color: #556; padding: 0 2px; align-self: flex-start; margin-top: 30px; }
+
+  .name-input {
+    display: block;
+    width: 100%;
+    background: #1a2040;
+    border: 1px solid #3a4370;
+    border-radius: 12px;
+    color: #eef;
+    padding: 12px 14px;
+    font-size: 15px;
+    margin-bottom: 12px;
+  }
+  .name-input::placeholder { color: #667; }
+
+  .custom-btns { display: flex; gap: 8px; margin-top: 16px; }
+  .custom-btns button {
+    border: none;
+    border-radius: 14px;
+    padding: 14px 0;
+    font-size: 16px;
+    font-weight: bold;
+    cursor: pointer;
+  }
+  .btn-reset { flex: 1; background: #2a3160; color: #ccd; }
+  .btn-save  { flex: 1; background: #3a4370; color: #eef; }
+  .custom-start { flex: 1.4; background: #ffd75e; color: #5a4200; }
+  .custom-start:disabled { background: #2a3160; color: #667; cursor: default; }
+
+  /* 저장된 "내 타이머" 카드의 삭제(×) 버튼 */
+  .preset { position: relative; }
+  .preset .del {
+    position: absolute;
+    top: 4px; right: 6px;
+    background: none; border: none;
+    color: #667; font-size: 18px; line-height: 1;
+    cursor: pointer; padding: 2px 4px;
+  }
+  .preset .del:hover { color: #f88; }
+
+  /* ---- 타이머 실행 화면 (오버레이) ---- */
+  .run {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: #10142a;
+    z-index: 10;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    text-align: center;
+  }
+  .run.show { display: flex; }
+  .run .run-emoji { font-size: 44px; }
+  .run .run-name { font-size: 20px; margin-top: 4px; }
+
+  /* 조리 장면(도트) + 시간 + 진행 막대 */
+  canvas.scene {
+    width: 240px; height: 240px;
+    margin: 6px 0 0;
+    image-rendering: pixelated;
+  }
+  .run-time {
+    font-size: 52px; font-variant-numeric: tabular-nums;
+    font-weight: bold; letter-spacing: 1px; margin-top: 2px;
+  }
+  .progress {
+    width: 220px; height: 8px;
+    background: #232a52; border-radius: 6px;
+    margin: 14px 0 4px; overflow: hidden;
+  }
+  .progress-bar {
+    height: 100%; width: 100%;
+    background: #ffd75e; border-radius: 6px;
+    transition: width 0.25s linear;
+  }
+
+  .run-btns { display: flex; gap: 12px; margin-top: 10px; }
+  .run-btns button {
+    border: none;
+    border-radius: 14px;
+    padding: 14px 22px;
+    font-size: 16px;
+    font-weight: bold;
+    cursor: pointer;
+  }
+  .btn-main { background: #ffd75e; color: #5a4200; }
+  .btn-sub  { background: #2a3160; color: #ccd; }
+
+  .run-back {
+    margin-top: 22px;
+    background: none; border: none;
+    color: #778; font-size: 14px; cursor: pointer;
+  }
+
+  /* 다 됐을 때 "다 됐어요" 글자 보이기 */
+  .done-msg { display: none; font-size: 22px; font-weight: bold; margin-top: 8px; color: #ffd75e; }
+  .run.done .done-msg { display: block; }
+  /* 화면 깜빡임 (깜빡임/소리+깜빡임 모드일 때만 JS로 켬) */
+  .run.flashon { background: #ffd75e; }
+  .run.flashon .run-name,
+  .run.flashon .run-time,
+  .run.flashon .done-msg { color: #5a4200; }
+</style>
+</head>
+<body>
+  <div class="app">
+    <header><h1>⏱️ 타이머</h1></header>
+    <main>
+      <h2>🍜 기본 타이머</h2>
+      <div class="grid" id="presetGrid"></div>
+
+      <h2 id="savedTitle" style="display:none">⭐ 내 타이머</h2>
+      <div class="grid" id="savedGrid"></div>
+
+      <h2>⏱️ 내가 만드는 타이머</h2>
+      <input class="name-input" id="nameInput" placeholder="타이머 이름 (예: 숙제)" maxlength="12" />
+      <div class="custom">
+        <div class="unit" data-unit="h">
+          <button class="up">▲</button>
+          <input class="num" id="numH" inputmode="numeric" value="0" />
+          <div class="unit-label">시</div>
+          <button class="down">▼</button>
+        </div>
+        <div class="colon">:</div>
+        <div class="unit" data-unit="m">
+          <button class="up">▲</button>
+          <input class="num" id="numM" inputmode="numeric" value="04" />
+          <div class="unit-label">분</div>
+          <button class="down">▼</button>
+        </div>
+        <div class="colon">:</div>
+        <div class="unit" data-unit="s">
+          <button class="up">▲</button>
+          <input class="num" id="numS" inputmode="numeric" value="17" />
+          <div class="unit-label">초</div>
+          <button class="down">▼</button>
+        </div>
+      </div>
+      <div class="custom-btns">
+        <button class="btn-reset" id="customReset">↺ 리셋</button>
+        <button class="btn-save" id="customSave">💾 저장</button>
+        <button class="custom-start" id="customStart">▶ 시작</button>
+      </div>
+    </main>
+  </div>
+
+  <!-- 항목을 누르면 뜨는 "알림 방식 고르는 창" -->
+  <div class="choose" id="chooseScreen">
+    <div class="choose-box">
+      <div class="choose-title" id="chooseTitle">🍜 작은 컵라면 · 3분</div>
+      <div class="choose-q">다 되면 어떻게 알릴까요?</div>
+      <button class="opt" data-mode="both">🔔 소리 + 깜빡임</button>
+      <button class="opt" data-mode="sound">🔊 소리만</button>
+      <button class="opt" data-mode="flash">✨ 깜빡임만</button>
+      <button class="choose-cancel" id="chooseCancel">취소</button>
+    </div>
+  </div>
+
+  <!-- 타이머 실행 화면 -->
+  <div class="run" id="runScreen">
+    <div class="run-emoji" id="runEmoji">🍜</div>
+    <div class="run-name" id="runName">타이머</div>
+
+    <canvas class="scene" id="scene" width="240" height="240"></canvas>
+    <div class="run-time" id="ringTime">3:00</div>
+    <div class="progress"><div class="progress-bar" id="progBar"></div></div>
+
+    <div class="done-msg">⏰ 다 됐어요!</div>
+
+    <div class="run-btns">
+      <button class="btn-main" id="btnToggle">멈춤</button>
+      <button class="btn-sub" id="btnReset">다시</button>
+    </div>
+    <button class="run-back" id="btnBack">← 목록으로</button>
+  </div>
+
+<script src="pixel-art.js"></script>
+<script src="timer-scenes.js"></script>
+<script>
+// ===== 기본 타이머 목록 (초 단위) =====
+const PRESETS = [
+  { emoji: '🍜', name: '작은 컵라면', sec: 3 * 60,       scene: 'ramen' },
+  { emoji: '🍜', name: '큰 컵라면',   sec: 4 * 60,       scene: 'ramen' },
+  { emoji: '🍜', name: '봉지라면',    sec: 4 * 60 + 30,  scene: 'ramen' },
+  { emoji: '🍝', name: '짜장·볶음면', sec: 5 * 60,       scene: 'ramen' },
+  { emoji: '🥚', name: '반숙 계란',   sec: 6 * 60 },
+  { emoji: '🥚', name: '완숙 계란',   sec: 10 * 60 },
+  { emoji: '🪥', name: '양치질',      sec: 3 * 60 },
+  { emoji: '🧼', name: '손 씻기',     sec: 30 },
+  { emoji: '☕', name: '티백 우리기', sec: 3 * 60 },
+  { emoji: '😴', name: '낮잠',        sec: 20 * 60 },
+];
+
+let alarmMode = 'both'; // 'both' | 'sound' | 'flash' — 항목 누를 때 창에서 정해짐
+
+// ===== 기본 타이머 카드 만들기 =====
+const grid = document.getElementById('presetGrid');
+PRESETS.forEach(p => {
+  const card = document.createElement('div');
+  card.className = 'preset';
+  card.innerHTML =
+    `<span class="emoji">${p.emoji}</span>` +
+    `<div class="name">${p.name}</div>` +
+    `<div class="time">${fmtDur(p.sec)}</div>`;
+  card.addEventListener('click', () => openChooser(p));
+  grid.appendChild(card);
+});
+
+// ===== 항목을 누르면 뜨는 "알림 방식 고르는 창" =====
+const chooseScreen = document.getElementById('chooseScreen');
+const chooseTitle  = document.getElementById('chooseTitle');
+let pendingPreset = null; // 방식 고르기를 기다리는 타이머
+
+// 90초 -> "1분 30초", 3660초 -> "1시간 1분" 처럼 사람이 읽기 좋게
+function fmtDur(sec) {
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  return [h && `${h}시간`, m && `${m}분`, s && `${s}초`].filter(Boolean).join(' ');
+}
+
+function openChooser(preset) {
+  pendingPreset = preset;
+  chooseTitle.textContent = `${preset.emoji} ${preset.name} · ${fmtDur(preset.sec)}`;
+  chooseScreen.classList.add('show');
+}
+
+chooseScreen.addEventListener('click', (e) => {
+  const opt = e.target.closest('.opt');
+  if (!opt) return;
+  alarmMode = opt.dataset.mode;
+  chooseScreen.classList.remove('show');
+  if (pendingPreset) startTimer(pendingPreset);
+});
+document.getElementById('chooseCancel').addEventListener('click', () => {
+  chooseScreen.classList.remove('show');
+  pendingPreset = null;
+});
+
+// ===== 내가 만드는 타이머 (시·분·초) =====
+const DEFAULT = { h: 0, m: 4, s: 17 }; // 처음/리셋했을 때 값
+const custom = { ...DEFAULT };
+const MAX = { h: 23, m: 59, s: 59 };
+const numEl = { h: document.getElementById('numH'), m: document.getElementById('numM'), s: document.getElementById('numS') };
+const customStart = document.getElementById('customStart');
+const nameInput = document.getElementById('nameInput');
+
+function drawCustom() {
+  numEl.h.value = custom.h;
+  numEl.m.value = String(custom.m).padStart(2, '0');
+  numEl.s.value = String(custom.s).padStart(2, '0');
+  const total = custom.h * 3600 + custom.m * 60 + custom.s;
+  customStart.disabled = total === 0; // 0초면 시작 못 하게
+}
+
+// 숫자칸을 직접 눌러서 타이핑으로 바꾸기
+Object.entries(numEl).forEach(([unit, el]) => {
+  el.addEventListener('focus', () => el.select());
+  el.addEventListener('input', () => {
+    let digits = el.value.replace(/\D/g, '').slice(0, 2); // 숫자만, 두 자리까지
+    let v = digits === '' ? 0 : parseInt(digits, 10);
+    if (v > MAX[unit]) v = MAX[unit];                      // 최대 넘으면 최대로
+    el.value = digits === '' ? '' : String(v);
+    custom[unit] = v;
+    customStart.disabled = customTotal() === 0;
+  });
+  el.addEventListener('blur', drawCustom); // 다 치고 나면 00 모양으로 정리
+});
+
+function step(unit, dir) {
+  let v = custom[unit] + dir;
+  if (v > MAX[unit]) v = 0;        // 최대 넘으면 0으로 (빙글 돌기)
+  if (v < 0) v = MAX[unit];        // 0 밑이면 최대로
+  custom[unit] = v;
+  drawCustom();
+}
+
+// 버튼을 꾹 누르면 빠르게 반복되도록
+function bindHold(btn, fn) {
+  let timer = null, delay = null;
+  const start = (e) => {
+    e.preventDefault();
+    fn();
+    delay = setTimeout(() => { timer = setInterval(fn, 80); }, 400);
+  };
+  const stop = () => { clearTimeout(delay); clearInterval(timer); };
+  btn.addEventListener('pointerdown', start);
+  btn.addEventListener('pointerup', stop);
+  btn.addEventListener('pointerleave', stop);
+  btn.addEventListener('pointercancel', stop);
+}
+
+document.querySelectorAll('.custom .unit').forEach(u => {
+  const unit = u.dataset.unit;
+  bindHold(u.querySelector('.up'),   () => step(unit, +1));
+  bindHold(u.querySelector('.down'), () => step(unit, -1));
+});
+
+function customTotal() {
+  return custom.h * 3600 + custom.m * 60 + custom.s;
+}
+
+customStart.addEventListener('click', () => {
+  const total = customTotal();
+  if (total === 0) return;
+  const name = nameInput.value.trim() || '내 타이머';
+  openChooser({ emoji: '⏱️', name, sec: total });
+});
+
+// 리셋: 이름 비우고 시간을 처음 값(4분 17초)으로
+document.getElementById('customReset').addEventListener('click', () => {
+  Object.assign(custom, DEFAULT);
+  nameInput.value = '';
+  drawCustom();
+});
+
+// ===== 저장된 "내 타이머" 목록 (localStorage에 보관 → 안 사라짐) =====
+const SAVE_KEY = 'timer-custom-v1';
+const savedGrid  = document.getElementById('savedGrid');
+const savedTitle = document.getElementById('savedTitle');
+
+function loadSaved() {
+  try { return JSON.parse(localStorage.getItem(SAVE_KEY)) || []; }
+  catch { return []; }
+}
+function persistSaved() {
+  localStorage.setItem(SAVE_KEY, JSON.stringify(savedList));
+}
+let savedList = loadSaved();
+
+function renderSaved() {
+  savedGrid.innerHTML = '';
+  savedTitle.style.display = savedList.length ? '' : 'none';
+  savedList.forEach(item => {
+    const card = document.createElement('div');
+    card.className = 'preset';
+    card.innerHTML =
+      `<button class="del" title="삭제">×</button>` +
+      `<span class="emoji">${item.emoji}</span>` +
+      `<div class="name">${item.name}</div>` +
+      `<div class="time">${fmtDur(item.sec)}</div>`;
+    card.addEventListener('click', () => openChooser(item));
+    card.querySelector('.del').addEventListener('click', (e) => {
+      e.stopPropagation(); // 카드 시작이 안 눌리게
+      savedList = savedList.filter(x => x.id !== item.id);
+      persistSaved();
+      renderSaved();
+    });
+    savedGrid.appendChild(card);
+  });
+}
+
+// 저장: 이름 + 지금 맞춘 시간을 카드로 저장
+document.getElementById('customSave').addEventListener('click', () => {
+  const total = customTotal();
+  if (total === 0) return;
+  const name = nameInput.value.trim() || '내 타이머';
+  savedList.push({ id: Date.now(), emoji: '⏱️', name, sec: total });
+  persistSaved();
+  renderSaved();
+});
+
+renderSaved();
+drawCustom();
+
+// ===== 타이머 상태 =====
+const runScreen = document.getElementById('runScreen');
+const ringTime  = document.getElementById('ringTime');
+const progBar   = document.getElementById('progBar');
+const runEmoji  = document.getElementById('runEmoji');
+const runName   = document.getElementById('runName');
+const btnToggle = document.getElementById('btnToggle');
+const btnReset  = document.getElementById('btnReset');
+const btnBack   = document.getElementById('btnBack');
+const sctx      = document.getElementById('scene').getContext('2d');
+
+let totalSec = 0;     // 전체 시간
+let remainMs = 0;     // 남은 시간(밀리초)
+let endTime = 0;      // 끝나는 시각
+let running = false;
+let tick = null;      // 화면 갱신 타이머
+let flashTick = null; // 깜빡임 색 뒤집기
+let audioCtx = null;
+let beepTimer = null;
+let sceneType = 'ramen'; // 기다리는 화면 종류 (라면/모래시계/숲)
+let animId = null;       // 도트 애니메이션 루프
+let finished = false;    // 다 됐으면 축하 연출 표시
+
+// 시간을 3:05 같은 글자로
+function fmt(ms) {
+  let s = Math.max(0, Math.ceil(ms / 1000));
+  const h = Math.floor(s / 3600); s %= 3600;
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  const mm = h > 0 ? String(m).padStart(2, '0') : m;
+  const ss = String(sec).padStart(2, '0');
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+function updateView() {
+  ringTime.textContent = fmt(remainMs);
+  const ratio = totalSec > 0 ? remainMs / (totalSec * 1000) : 0;
+  progBar.style.width = (ratio * 100) + '%'; // 남은 시간 = 막대 길이
+}
+
+function startTimer(preset) {
+  totalSec = preset.sec;
+  remainMs = preset.sec * 1000;
+  runEmoji.textContent = preset.emoji;
+  runName.textContent = preset.name;
+  // 라면 종류면 라면 조리, 50분 이상이면 집중의 숲, 그 외엔 모래시계
+  sceneType = preset.scene || (preset.sec >= 50 * 60 ? 'forest' : 'hourglass');
+  finished = false;
+  runScreen.classList.remove('done', 'flashon');
+  runScreen.classList.add('show');
+  updateView();
+  startAnim();
+  resume();
+}
+
+function resume() {
+  running = true;
+  btnToggle.textContent = '멈춤';
+  endTime = Date.now() + remainMs;
+  clearInterval(tick);
+  tick = setInterval(() => {
+    remainMs = endTime - Date.now();
+    if (remainMs <= 0) {
+      remainMs = 0;
+      updateView();
+      finish();
+      return;
+    }
+    updateView();
+  }, 100);
+}
+
+function pause() {
+  running = false;
+  btnToggle.textContent = '계속';
+  clearInterval(tick);
+  remainMs = Math.max(0, endTime - Date.now());
+}
+
+btnToggle.addEventListener('click', () => {
+  if (runScreen.classList.contains('done')) return;
+  running ? pause() : resume();
+});
+
+btnReset.addEventListener('click', () => {
+  stopAlarm();
+  finished = false;
+  runScreen.classList.remove('done', 'flashon');
+  remainMs = totalSec * 1000;
+  updateView();
+  resume();
+});
+
+btnBack.addEventListener('click', () => {
+  stopAlarm();
+  clearInterval(tick);
+  stopAnim();
+  running = false;
+  runScreen.classList.remove('show', 'done', 'flashon');
+});
+
+// ===== 다 됐을 때 =====
+function finish() {
+  clearInterval(tick);
+  running = false;
+  btnToggle.textContent = '계속';
+  finished = true;                 // 축하 연출 켜기
+  runScreen.classList.add('done'); // "다 됐어요" 글자는 어느 모드든 보이게
+  if (alarmMode === 'sound' || alarmMode === 'both') startBeep();
+  if (alarmMode === 'flash' || alarmMode === 'both') {
+    flashTick = setInterval(() => runScreen.classList.toggle('flashon'), 300);
+  }
+}
+
+function stopAlarm() {
+  clearInterval(flashTick);
+  stopBeep();
+  runScreen.classList.remove('flashon');
+}
+
+// ===== 기다리는 도트 장면 (라면이 끓는 과정) =====
+// p = 얼마나 익었나 (0=방금 시작, 1=완성), t = 초 단위 시간 (김·면 흔들림 애니메이션용)
+function startAnim() {
+  cancelAnimationFrame(animId);
+  const loop = (ts) => {
+    const p = totalSec > 0 ? Math.min(1, Math.max(0, 1 - remainMs / (totalSec * 1000))) : 0;
+    sctx.clearRect(0, 0, 240, 240);
+    if (sceneType === 'ramen') drawRamenScene(sctx, p, ts / 1000);
+    else if (sceneType === 'forest') drawForestScene(sctx, p, ts / 1000);
+    else drawHourglassScene(sctx, p, ts / 1000);
+    if (finished) drawCelebration(sctx, ts / 1000); // 다 됐으면 축하 덧그림
+    animId = requestAnimationFrame(loop);
+  };
+  animId = requestAnimationFrame(loop);
+}
+function stopAnim() { cancelAnimationFrame(animId); animId = null; }
+// 각 장면(라면·모래시계·숲)을 그리는 함수는 games/timer-scenes.js 에 있음
+// (미리보기 페이지 timer-scene-preview.html 과 공용).
+
+// ===== 삐삐 소리 (브라우저가 직접 만듦, 음악 파일 필요 없음) =====
+function beepOnce() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const t = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = 'square';
+  osc.frequency.value = 880;
+  gain.gain.setValueAtTime(0.0001, t);
+  gain.gain.exponentialRampToValueAtTime(0.25, t + 0.02);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.25);
+  osc.connect(gain).connect(audioCtx.destination);
+  osc.start(t);
+  osc.stop(t + 0.26);
+}
+function startBeep() {
+  beepOnce();
+  beepTimer = setInterval(beepOnce, 700);
+}
+function stopBeep() {
+  clearInterval(beepTimer);
+  beepTimer = null;
+}
+</script>
+</body>
+</html>
