@@ -1174,7 +1174,7 @@ function toggleHabit(id) {
 
 document.getElementById('add-btn').onclick = addHabit;
 document.getElementById('habit-input').onkeydown = function (e) {
-  if (e.key === 'Enter') addHabit();
+  if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) addHabit();
 };
 function addHabit() {
   const input = document.getElementById('habit-input');

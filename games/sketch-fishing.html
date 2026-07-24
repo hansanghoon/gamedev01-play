@@ -1,0 +1,2032 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>스케치북 낚시 (가제)</title>
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: #7a6a55; }
+  canvas { display: block; }
+  /* 시작 메뉴 (책상 위 작은 스케치북이 뒤에 보임) */
+  #menu {
+    position: fixed; inset: 0;
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: space-between; padding: 6vh 0 8vh;
+    pointer-events: none; transition: opacity 0.6s;
+  }
+  #menu.hidden { opacity: 0; }
+  #menu.hidden button { pointer-events: none; }
+  #menu h1 {
+    margin: 0; font-family: "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+    font-weight: 800; font-size: clamp(30px, 5.5vw, 52px);
+    color: #fdf8ec; text-shadow: 0 3px 0 rgba(0,0,0,0.25);
+    letter-spacing: 2px;
+  }
+  #menu .sub {
+    margin: 6px 0 0; font-family: inherit; font-size: 15px; color: #d8ccb4;
+  }
+  #menu .btns { display: flex; flex-direction: column; gap: 13px; align-items: center; }
+  #menu button {
+    pointer-events: auto; cursor: pointer;
+    font-family: "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+    font-weight: 800; font-size: 20px; color: #7c4f26;
+    background: #fdf8ec; border: 3px solid #a9713a; border-radius: 20px;
+    padding: 11px 46px; box-shadow: 0 4px 0 #5c4326;
+    transition: transform 0.12s;
+  }
+  #menu button:hover { transform: translateY(-2px) rotate(-1deg); }
+  #menu button:active { transform: translateY(2px); box-shadow: 0 1px 0 #5c4326; }
+  #menu #btn-start { font-size: 26px; padding: 14px 64px; background: #ffd23f; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="menu">
+  <div style="text-align:center">
+    <h1 id="m-title">스케치북 낚시</h1>
+    <p class="sub" id="m-sub">(가제 — 진짜 제목은 우리가 정하자!)</p>
+  </div>
+  <div class="btns">
+    <button id="btn-start">시작하기</button>
+    <button id="btn-dex">도감</button>
+    <button id="btn-achv">도전과제</button>
+    <button id="btn-lang">언어 · Language: 한국어</button>
+    <button id="btn-boil">꿈틀거림: 켬</button>
+  </div>
+</div>
+<script>
+// ============================================================
+// 스케치북 낚시 (가제) — 그림체 테스트 버전
+// 컨셉: 스프링 스케치북 위에 어린아이가 크레파스로 그린 호수
+// 핵심 기법:
+//  - crayonPath(): 선을 꼬불꼬불하게 + 크레파스처럼 거칠게 그림
+//  - scribbleFill(): 색칠을 지그재그로 슥슥, 선 밖으로 살짝 삐져나오게
+//  - 라인 보일(line boil): 0.2초마다 살짝 다르게 다시 그려서
+//    손그림이 살아 움직이는 느낌
+// ============================================================
+
+const canvas = document.getElementById('c');
+const screenCtx = canvas.getContext('2d');
+// 배경(스케치북+풍경)은 무거워서 미리 딴 캔버스에 그려두고(캐시),
+// 매 프레임엔 그 그림을 복사한 뒤 움직이는 것만 새로 그린다
+const sceneCanvas = document.createElement('canvas');
+const sctx = sceneCanvas.getContext('2d');
+let ctx = screenCtx;  // 그리기 함수들이 쓰는 붓 — 캐시를 만들 땐 sctx로 바꿔 낀다
+let W = 0, H = 0, DPR = 1;
+
+// 장면의 중요 위치들 (그릴 때 채워짐 — 낚싯대 끝, 찌 위치, 호수 범위)
+const SCENE = {};
+
+// ---------- 시드 랜덤 (같은 시드면 항상 같은 꼬불거림) ----------
+function mulberry32(a) {
+  return function() {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// 라인 보일용: 그릴 때마다 바뀌는 시드 오프셋 (0,1,2 반복)
+let boilSeed = 0;
+
+// ---------- 크레파스 팔레트 ----------
+const C = {
+  paper:     '#fdf8ec',
+  desk:      '#7a6a55',
+  skyBlue:   '#7cc4e8',
+  deepBlue:  '#3f7fc2',
+  navy:      '#2c5d94',
+  green:     '#6fb04c',
+  darkGreen: '#42813a',
+  yellow:    '#ffd23f',
+  orange:    '#ff9633',
+  brown:     '#a9713a',
+  darkBrown: '#7c4f26',
+  gray:      '#9aa0a8',
+  cloud:     '#aeb8c4',
+  red:       '#ff5f4c',
+  redDark:   '#d24638',
+  pink:      '#ff8fb1',
+  skin:      '#ffcf9e',
+};
+
+// ---------- 경로 도우미 ----------
+
+// 점 목록을 일정한 간격(step px)으로 다시 샘플링
+function resample(pts, step) {
+  const out = [pts[0].slice()];
+  let acc = 0;
+  for (let i = 1; i < pts.length; i++) {
+    let [px, py] = out[out.length - 1] ? pts[i - 1] : pts[i - 1];
+    let ax = pts[i - 1][0], ay = pts[i - 1][1];
+    const bx = pts[i][0], by = pts[i][1];
+    let dx = bx - ax, dy = by - ay;
+    let len = Math.hypot(dx, dy);
+    if (len === 0) continue;
+    let t = step - acc;
+    while (t <= len) {
+      out.push([ax + dx * (t / len), ay + dy * (t / len)]);
+      t += step;
+    }
+    acc = len - (t - step);
+  }
+  out.push(pts[pts.length - 1].slice());
+  return out;
+}
+
+// 원(또는 타원) 점 목록 만들기
+function ellipsePts(cx, cy, rx, ry, n = 44) {
+  const pts = [];
+  for (let i = 0; i <= n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    pts.push([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]);
+  }
+  return pts;
+}
+
+// ---------- 크레파스 선 그리기 ----------
+// 꼬불꼬불(저주파 웨이브) + 손떨림(고주파 지터) + 거친 질감(투명도·굵기 변화)
+function crayonPath(pts, opt) {
+  const {
+    color, width = 5, seed = 1, alpha = 0.9,
+    wobble = 3, step = 7, passes = 2,
+  } = opt;
+  const rand = mulberry32((seed * 7919 + boilSeed * 104729) >>> 0);
+  const rs = resample(pts, step);
+  if (rs.length < 2) return;
+
+  // 점마다 진행 방향의 수직 방향으로 꼬불꼬불 오프셋
+  const p1 = rand() * 6.28, p2 = rand() * 6.28;
+  const jittered = rs.map((p, i) => {
+    const prev = rs[Math.max(0, i - 1)], next = rs[Math.min(rs.length - 1, i + 1)];
+    let nx = -(next[1] - prev[1]), ny = next[0] - prev[0];
+    const nl = Math.hypot(nx, ny) || 1;
+    nx /= nl; ny /= nl;
+    const off = Math.sin(i * 0.33 + p1) * wobble * 0.7
+              + Math.sin(i * 0.11 + p2) * wobble
+              + (rand() - 0.5) * 1.6;
+    return [p[0] + nx * off, p[1] + ny * off];
+  });
+
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  if (opt.continuous) {
+    // 색칠용: 끊김 없이 한 번에 슥슥 (크레파스로 문지른 느낌)
+    for (let pass = 0; pass < passes; pass++) {
+      const ox = (rand() - 0.5) * 3, oy = (rand() - 0.5) * 3;
+      ctx.globalAlpha = alpha * (0.7 + rand() * 0.3) / passes * 1.3;
+      ctx.lineWidth = width * (0.85 + rand() * 0.3);
+      ctx.beginPath();
+      ctx.moveTo(jittered[0][0] + ox, jittered[0][1] + oy);
+      for (let i = 1; i < jittered.length; i++) {
+        ctx.lineTo(jittered[i][0] + ox, jittered[i][1] + oy);
+      }
+      ctx.stroke();
+    }
+  } else {
+    for (let pass = 0; pass < passes; pass++) {
+      const ox = (rand() - 0.5) * 2.2, oy = (rand() - 0.5) * 2.2;
+      for (let i = 1; i < jittered.length; i++) {
+        ctx.globalAlpha = alpha * (0.45 + rand() * 0.55) / passes * 1.6;
+        ctx.lineWidth = width * (0.7 + rand() * 0.6);
+        ctx.beginPath();
+        ctx.moveTo(jittered[i - 1][0] + ox, jittered[i - 1][1] + oy);
+        ctx.lineTo(jittered[i][0] + ox, jittered[i][1] + oy);
+        ctx.stroke();
+      }
+    }
+  }
+  ctx.restore();
+}
+
+// ---------- 크레파스 색칠 (지그재그로 슥슥) ----------
+// rows: [{y, x1, x2}] 목록 — 선 밖으로 overshoot만큼 삐져나가기도 함
+function scribbleFill(rows, opt) {
+  const { color, width = 6, seed = 1, alpha = 0.5, overshoot = 8 } = opt;
+  const rand = mulberry32((seed * 6271 + 17) >>> 0);
+  const zig = [];
+  let dir = 1;
+  for (const r of rows) {
+    const o1 = (rand() - 0.3) * overshoot;
+    const o2 = (rand() - 0.3) * overshoot;
+    const a = [r.x1 - o1, r.y + (rand() - 0.5) * 3];
+    const b = [r.x2 + o2, r.y + (rand() - 0.5) * 3];
+    if (dir > 0) zig.push(a, b); else zig.push(b, a);
+    dir *= -1;
+  }
+  if (zig.length < 2) return;
+  crayonPath(zig, { color, width, seed: seed + 3, alpha, wobble: 2, step: 12,
+                    passes: 2, continuous: true });
+}
+
+// 타원 모양 영역의 색칠 rows 만들기
+function ellipseRows(cx, cy, rx, ry, gap) {
+  const rows = [];
+  for (let y = cy - ry + gap * 0.6; y < cy + ry; y += gap) {
+    const t = (y - cy) / ry;
+    const half = rx * Math.sqrt(Math.max(0, 1 - t * t));
+    if (half > 4) rows.push({ y, x1: cx - half, x2: cx + half });
+  }
+  return rows;
+}
+
+// ============================================================
+// 장면 그리기
+// ============================================================
+
+// ---------- 스케치북 (책상 + 종이 + 스프링) ----------
+const SPIRAL_H = 46;  // 스프링이 차지하는 위쪽 영역
+
+function drawSketchbook() {
+  // 책상
+  ctx.fillStyle = C.desk;
+  ctx.fillRect(0, 0, W, H);
+
+  // 종이 (위쪽은 스프링에 걸려 있음)
+  const m = Math.min(W, H) * 0.015;  // 책상이 살짝 보이는 여백
+  const px = m, py = SPIRAL_H * 0.55, pw = W - m * 2, ph = H - py - m;
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.35)';
+  ctx.shadowBlur = 14;
+  ctx.shadowOffsetY = 5;
+  ctx.fillStyle = C.paper;
+  ctx.beginPath();
+  ctx.roundRect(px, py, pw, ph, 6);
+  ctx.fill();
+  ctx.restore();
+
+  // 종이 질감 (고운 점들 — 보일 없이 고정)
+  const rand = mulberry32(20260724);
+  ctx.save();
+  for (let i = 0; i < 900; i++) {
+    const x = px + rand() * pw, y = py + rand() * ph;
+    ctx.globalAlpha = 0.025 + rand() * 0.03;
+    ctx.fillStyle = rand() > 0.5 ? '#b9a98c' : '#ffffff';
+    ctx.fillRect(x, y, 1.6, 1.6);
+  }
+  ctx.restore();
+
+  return { px, py, pw, ph };
+}
+
+function drawSpiral() {
+  // 스프링 제본: 구멍 + 은색 고리
+  const gap = 44;
+  const n = Math.floor(W / gap);
+  const startX = (W - (n - 1) * gap) / 2;
+  for (let i = 0; i < n; i++) {
+    const x = startX + i * gap;
+    // 종이에 뚫린 구멍
+    ctx.fillStyle = 'rgba(60,50,38,0.85)';
+    ctx.beginPath();
+    ctx.ellipse(x, SPIRAL_H * 0.72, 5.5, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 은색 고리 (구멍을 통과해 위로)
+    ctx.strokeStyle = '#c7ccd4';
+    ctx.lineWidth = 4.5;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.ellipse(x, SPIRAL_H * 0.48, 7.5, SPIRAL_H * 0.42, 0.18, Math.PI * 0.15, Math.PI * 1.6);
+    ctx.stroke();
+    // 고리 음영
+    ctx.strokeStyle = '#8d939c';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.ellipse(x + 1, SPIRAL_H * 0.48, 7.5, SPIRAL_H * 0.42, 0.18, Math.PI * 0.55, Math.PI * 1.45);
+    ctx.stroke();
+  }
+}
+
+// ---------- 호수 풍경 (전부 크레파스) ----------
+function drawScene(p) {
+  const { px, py, pw, ph } = p;
+  // 장면 좌표: 종이 안쪽에 여백을 두고 그림
+  const sx = px + pw * 0.06, sy = py + ph * 0.10;
+  const sw = pw * 0.88, sh = ph * 0.84;
+  const X = t => sx + sw * t;
+  const Y = t => sy + sh * t;
+
+  // --- 해 (왼쪽 위) ---
+  const sunX = X(0.1), sunY = Y(0.13), sunR = Math.min(sw, sh) * 0.075;
+  scribbleFill(ellipseRows(sunX, sunY, sunR * 0.85, sunR * 0.85, 7),
+    { color: C.yellow, seed: 11, alpha: 0.65, width: 7 });
+  crayonPath(ellipsePts(sunX, sunY, sunR, sunR),
+    { color: C.orange, width: 5, seed: 12, wobble: 3 });
+  // 햇살 (삐죽삐죽)
+  for (let i = 0; i < 9; i++) {
+    const a = (i / 9) * Math.PI * 2 + 0.3;
+    const r1 = sunR * 1.25, r2 = sunR * (1.6 + (i % 3) * 0.14);
+    crayonPath([
+      [sunX + Math.cos(a) * r1, sunY + Math.sin(a) * r1],
+      [sunX + Math.cos(a) * r2, sunY + Math.sin(a) * r2],
+    ], { color: C.orange, width: 4.5, seed: 20 + i, wobble: 1.5 });
+  }
+
+  // --- 구름 두 개 (작게, 하늘 위쪽에) ---
+  drawCloud(X(0.46), Y(0.07), sw * 0.05, 31);
+  drawCloud(X(0.74), Y(0.14), sw * 0.04, 41);
+
+  // --- 뒤쪽 언덕 (수평선 위 봉긋한 동산 두 개) ---
+  const horizon = Y(0.42);
+  drawHill(X(0.17), horizon, sw * 0.19, sh * 0.11, 51);
+  drawHill(X(0.66), horizon, sw * 0.22, sh * 0.15, 55);
+
+  // --- 호수 크기 먼저 정해두기 (땅 색칠할 때 피해 가야 하니까) ---
+  const lakeCx = X(0.55), lakeCy = Y(0.72);
+  const lakeRx = sw * 0.38, lakeRy = sh * 0.23;
+  SCENE.lake = { cx: lakeCx, cy: lakeCy, rx: lakeRx, ry: lakeRy };
+  SCENE.top = sy;
+
+  // --- 땅 (수평선부터 아래로 연둣빛, 호수 자리는 비워둠) ---
+  const horizonLine = [];
+  for (let i = 0; i <= 20; i++) horizonLine.push([X(i / 20), horizon]);
+  crayonPath(horizonLine, { color: C.darkGreen, width: 4.5, seed: 58, wobble: 2.5 });
+
+  const skipRx = lakeRx * 1.08, skipRy = lakeRy * 1.14;
+  const above = [], left = [], right = [], below = [];
+  for (let y = horizon + 9; y < Y(1.0); y += 13) {
+    const t = (y - lakeCy) / skipRy;
+    if (Math.abs(t) >= 1) {
+      (y < lakeCy ? above : below).push({ y, x1: X(0.01), x2: X(0.99) });
+    } else {
+      const half = skipRx * Math.sqrt(1 - t * t);
+      if (lakeCx - half - X(0.01) > 14) left.push({ y, x1: X(0.01), x2: lakeCx - half });
+      if (X(0.99) - (lakeCx + half) > 14) right.push({ y, x1: lakeCx + half, x2: X(0.99) });
+    }
+  }
+  const groundOpt = { color: C.green, alpha: 0.33, width: 7, overshoot: 4 };
+  scribbleFill(above, { ...groundOpt, seed: 61 });
+  scribbleFill(left,  { ...groundOpt, seed: 62 });
+  scribbleFill(right, { ...groundOpt, seed: 63 });
+  scribbleFill(below, { ...groundOpt, seed: 64 });
+
+  // --- 나무들 (언덕 사이·옆 빈자리, 수평선 위에 서 있게) ---
+  drawTree(X(0.43), horizon + 3, sh * 0.11, 71);
+  drawTree(X(0.93), horizon + 4, sh * 0.09, 81);
+  scribbleFill(ellipseRows(lakeCx, lakeCy, lakeRx * 0.96, lakeRy * 0.94, 11),
+    { color: C.skyBlue, seed: 91, alpha: 0.5, width: 8, overshoot: 10 });
+  crayonPath(ellipsePts(lakeCx, lakeCy, lakeRx, lakeRy, 60),
+    { color: C.deepBlue, width: 5.5, seed: 92, wobble: 4 });
+
+  // 물결 (호수 안 잔잔한 곡선들)
+  const rippleSpots = [
+    [0.35, 0.62], [0.62, 0.58], [0.5, 0.75], [0.3, 0.8], [0.72, 0.78],
+  ];
+  rippleSpots.forEach(([tx, ty], i) => {
+    const rx = X(tx), ry = Y(ty), len = sw * 0.07;
+    const wave = [];
+    for (let k = 0; k <= 10; k++) {
+      wave.push([rx - len / 2 + (len * k) / 10, ry + Math.sin(k * 1.1) * 3]);
+    }
+    crayonPath(wave, { color: C.navy, width: 4, seed: 100 + i, wobble: 1.5, alpha: 0.7 });
+  });
+
+  // --- 앞쪽 풀밭 (호수 아래) ---
+  const grassY = Y(0.97);
+  for (let i = 0; i < 14; i++) {
+    const gx = X(0.03 + (i / 13) * 0.94);
+    const gy = grassY - Math.abs(Math.sin(i * 2.7)) * 6;
+    const gh = sh * (0.035 + (i % 3) * 0.012);
+    crayonPath([[gx - 4, gy], [gx - 1, gy - gh]],
+      { color: C.darkGreen, width: 4, seed: 130 + i, wobble: 1 });
+    crayonPath([[gx + 4, gy], [gx + 2, gy - gh * 0.8]],
+      { color: C.green, width: 4, seed: 150 + i, wobble: 1 });
+  }
+  // 꽃 두어 송이
+  drawFlower(X(0.09), grassY - 10, 8, C.red, 171);
+  drawFlower(X(0.87), grassY - 8, 7, C.pink, 181);
+
+  // --- 낚시하는 아이 (호숫가 왼쪽 풀밭, 찌는 호수 위에) ---
+  drawFisher(X(0.07), Y(0.83), sh * 0.2, Y(0.78));
+}
+
+// 앉아서 낚시하는 아이: fx,fy = 엉덩이 위치, s = 크기, bobY = 찌가 뜨는 물 높이
+function drawFisher(fx, fy, s, bobY) {
+  // 다리 (땅에 앉아 앞으로 쭉 뻗음) + 신발
+  crayonPath([[fx + 0.05 * s, fy - 0.22 * s], [fx + 0.35 * s, fy - 0.08 * s], [fx + 0.6 * s, fy - 0.05 * s]],
+    { color: C.deepBlue, width: 7, seed: 201, wobble: 1.5 });
+  crayonPath([[fx + 0.08 * s, fy - 0.18 * s], [fx + 0.38 * s, fy - 0.03 * s], [fx + 0.64 * s, fy]],
+    { color: C.navy, width: 7, seed: 202, wobble: 1.5 });
+  crayonPath(ellipsePts(fx + 0.65 * s, fy - 0.05 * s, 0.07 * s, 0.05 * s, 12),
+    { color: C.darkBrown, width: 5, seed: 203, wobble: 0.5, alpha: 1 });
+  crayonPath(ellipsePts(fx + 0.69 * s, fy, 0.07 * s, 0.05 * s, 12),
+    { color: C.darkBrown, width: 5, seed: 204, wobble: 0.5, alpha: 1 });
+  // 몸통 (빨간 티셔츠)
+  scribbleFill(ellipseRows(fx, fy - 0.36 * s, 0.17 * s, 0.22 * s, 6),
+    { color: C.red, seed: 205, alpha: 0.6, width: 5 });
+  crayonPath(ellipsePts(fx, fy - 0.36 * s, 0.19 * s, 0.24 * s, 24),
+    { color: C.redDark, width: 4.5, seed: 206, wobble: 1.5 });
+  // 팔 (낚싯대 쪽으로)
+  crayonPath([[fx + 0.06 * s, fy - 0.45 * s], [fx + 0.3 * s, fy - 0.33 * s]],
+    { color: C.skin, width: 5.5, seed: 208, wobble: 1 });
+  // 머리
+  const hx = fx + 0.06 * s, hy = fy - 0.75 * s, hr = 0.17 * s;
+  scribbleFill(ellipseRows(hx, hy, hr * 0.8, hr * 0.8, 5),
+    { color: C.skin, seed: 210, alpha: 0.45, width: 5 });
+  crayonPath(ellipsePts(hx, hy, hr, hr, 24),
+    { color: C.brown, width: 4, seed: 211, wobble: 1.5 });
+  // 주황 야구모자 (속을 채운 반원 + 챙)
+  const capBaseY = hy - 0.5 * hr;
+  const capRows = [];
+  for (let y = capBaseY - hr * 0.6; y < capBaseY - 1; y += 4) {
+    const t = (capBaseY - y) / (hr * 0.65);
+    const half = hr * 1.05 * Math.sqrt(Math.max(0, 1 - t * t));
+    if (half > 3) capRows.push({ y, x1: hx - half, x2: hx + half });
+  }
+  scribbleFill(capRows, { color: C.orange, seed: 212, alpha: 0.6, width: 4, overshoot: 2 });
+  const cap = [];
+  for (let i = 0; i <= 14; i++) {
+    const a = Math.PI - (i / 14) * Math.PI;
+    cap.push([hx + Math.cos(a) * hr * 1.08, capBaseY - Math.sin(a) * hr * 0.65]);
+  }
+  cap.push([hx - hr * 1.08, capBaseY]);  // 아래쪽을 닫아서 잘린 느낌 없애기
+  crayonPath(cap, { color: C.orange, width: 5, seed: 213, wobble: 1.2 });
+  crayonPath([[hx + hr * 0.9, capBaseY + hr * 0.03], [hx + hr * 1.7, capBaseY + hr * 0.15]],
+    { color: C.orange, width: 5, seed: 214, wobble: 1 });
+  // 눈 + 웃는 입 (호수 쪽을 봄)
+  crayonPath([[hx + hr * 0.45, hy - hr * 0.1], [hx + hr * 0.55, hy - hr * 0.1]],
+    { color: C.darkBrown, width: 3.5, seed: 216, wobble: 0.4 });
+  crayonPath([[hx + hr * 0.25, hy + hr * 0.35], [hx + hr * 0.45, hy + hr * 0.45], [hx + hr * 0.65, hy + hr * 0.3]],
+    { color: C.darkBrown, width: 3, seed: 217, wobble: 0.4 });
+  // 낚싯대 (손에서 호수 위로 길게, 살짝 휘어짐)
+  const tipX = fx + 1.45 * s, tipY = fy - 0.95 * s;
+  crayonPath([[fx + 0.3 * s, fy - 0.33 * s], [fx + 0.9 * s, fy - 0.72 * s], [tipX, tipY]],
+    { color: C.darkBrown, width: 4.5, seed: 220, wobble: 2 });
+  // 낚싯줄과 찌는 움직여야 하니까 배경에 안 그리고 위치만 기억해둔다
+  SCENE.rodTip = { x: tipX, y: tipY };
+  SCENE.bobberHome = { x: tipX + 0.06 * s, y: bobY };
+}
+
+function drawHill(cx, baseY, rx, h, seed) {
+  // 봉긋한 반원 동산: 색칠 먼저, 그 위에 외곽선
+  const rows = [];
+  for (let y = baseY - h + 6; y < baseY - 2; y += 9) {
+    const t = (baseY - y) / h;
+    const half = rx * Math.sqrt(Math.max(0, 1 - t * t));
+    if (half > 8) rows.push({ y, x1: cx - half, x2: cx + half });
+  }
+  scribbleFill(rows, { color: C.green, seed: seed + 1, alpha: 0.45, width: 7, overshoot: 6 });
+  const outline = [];
+  for (let i = 0; i <= 22; i++) {
+    const a = Math.PI - (i / 22) * Math.PI;
+    outline.push([cx + Math.cos(a) * rx, baseY - Math.sin(a) * h]);
+  }
+  crayonPath(outline, { color: C.darkGreen, width: 5, seed, wobble: 3 });
+}
+
+function drawCloud(cx, cy, r, seed) {
+  const pts = [];
+  const n = 26;
+  for (let i = 0; i <= n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    const bump = 1 + Math.sin(a * 3 + seed) * 0.18 + Math.sin(a * 5) * 0.1;
+    pts.push([cx + Math.cos(a) * r * 1.5 * bump, cy + Math.sin(a) * r * 0.75 * bump]);
+  }
+  scribbleFill(ellipseRows(cx, cy + r * 0.1, r * 1.2, r * 0.45, 8),
+    { color: C.cloud, seed: seed + 1, alpha: 0.22, width: 6 });
+  crayonPath(pts, { color: C.cloud, width: 4, seed, wobble: 2 });
+}
+
+function drawTree(bx, by, size, seed) {
+  // 기둥
+  crayonPath([[bx, by], [bx, by - size * 0.85]],
+    { color: C.brown, width: 6, seed, wobble: 1.5 });
+  // 수풀 (동글동글)
+  const cy = by - size * 1.15;
+  scribbleFill(ellipseRows(bx, cy, size * 0.55, size * 0.5, 7),
+    { color: C.green, seed: seed + 1, alpha: 0.55, width: 6 });
+  crayonPath(ellipsePts(bx, cy, size * 0.62, size * 0.55, 30),
+    { color: C.darkGreen, width: 4.5, seed: seed + 2, wobble: 3 });
+}
+
+function drawFlower(cx, cy, r, color, seed) {
+  crayonPath([[cx, cy + r * 1.8], [cx, cy + r * 0.6]],
+    { color: C.darkGreen, width: 3.5, seed, wobble: 1 });
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2 - Math.PI / 2;
+    crayonPath(ellipsePts(cx + Math.cos(a) * r * 0.7, cy + Math.sin(a) * r * 0.7,
+      r * 0.45, r * 0.45, 12),
+      { color, width: 3, seed: seed + 1 + i, wobble: 1, alpha: 0.85 });
+  }
+  crayonPath(ellipsePts(cx, cy, r * 0.3, r * 0.3, 10),
+    { color: C.yellow, width: 3, seed: seed + 9, wobble: 0.8 });
+}
+
+// ============================================================
+// 게임 상태 (기다림 → 입질! → 타이밍 클릭 3연속 → 잡음/놓침)
+// ============================================================
+// ============================================================
+// 저장 — 잡은 기록은 절대 사라지면 안 됨! (구조 바꿀 땐 마이그레이션 필수)
+// ============================================================
+const SAVE_KEY = 'sketch-fishing-save-v1';
+let save;
+try { save = JSON.parse(localStorage.getItem(SAVE_KEY)) || {}; } catch (e) { save = {}; }
+save.caught = save.caught || {};   // { 물고기id: 잡은 수 }
+save.missed = save.missed || 0;
+let DEV_FAKE = false;              // 개발용 가짜 데이터 모드 (#dex) — 절대 저장 안 함
+function persistSave() {
+  if (DEV_FAKE) return;
+  localStorage.setItem(SAVE_KEY, JSON.stringify(save));
+}
+const totalCaught = () => Object.values(save.caught).reduce((a, n) => a + n, 0);
+const caughtKinds = () => FISH.filter(f => save.caught[f.id] > 0).length;
+save.achieved = save.achieved || {};   // { 도전과제id: true }
+save.perfect = save.perfect || 0;      // "딱 맞았어!!"만으로 잡은 횟수
+
+// ============================================================
+// 도전과제 — 이름은 아드님 작명! parts의 fishId가 null이면 아직 안 나온 물고기
+// ============================================================
+const ACHV = [
+  { id: 'a4', name: { ko: 'A4용지', en: 'A4 Paper' },
+    desc: { ko: '클립멸치 100마리 (= 종이 한 장!)', en: '100 Clip Anchovies (= one sheet!)' },
+    parts: [{ fishId: 'clip-anchovy', need: 100 }] },
+  { id: 'blank-page', name: { ko: '백지', en: 'Blank Page' },
+    desc: { ko: '지우개상어 12마리 (그림이 다 지워졌다!)', en: '12 Eraser Sharks (all erased!)' },
+    parts: [{ fishId: 'eraser-shark', need: 12 }] },
+  { id: 'omakase', name: { ko: '오마카세', en: 'Omakase' },
+    desc: { ko: '연필장어·물감참치·책받침광어 각 5마리', en: '5 each: Eel, Paint Tuna, Desk Pad Flounder' },
+    parts: [{ fishId: 'pencil-eel', need: 5 }, { fishId: 'paint-tuna', need: 5 }, { fishId: 'deskpad-flounder', need: 5 }] },
+  { id: 'crayon-set', name: { ko: '12색 세트', en: '12-Color Set' },
+    desc: { ko: '크레용잉어 12마리 (크레파스 한 세트!)', en: '12 Crayon Carps (a full set!)' },
+    parts: [{ fishId: 'crayon-carp', need: 12 }] },
+  { id: 'pencil-stub', name: { ko: '몽당연필', en: 'Pencil Stub' },
+    desc: { ko: '연필장어 30마리 (깎다 보니 몽당연필…)', en: '30 Pencil Eels (down to a stub…)' },
+    parts: [{ fishId: 'pencil-eel', need: 30 }] },
+  { id: 'pencil-case', name: { ko: '필통 정리', en: 'Tidy Pencil Case' },
+    desc: { ko: '필통 3총사 각 5마리', en: 'The pencil-case trio, 5 each' },
+    parts: [{ fishId: 'pencil-eel', need: 5 }, { fishId: 'marker-pike', need: 5 }, { fishId: 'eraser-shark', need: 5 }] },
+  { id: 'paint-wall', name: { ko: '벽에 튄 물감', en: 'Paint on the Wall' },
+    desc: { ko: '물감퉁퉁이 20마리 (사방에 물감이…)', en: '20 Paint Puffers (paint everywhere…)' },
+    parts: [{ fishId: 'paint-puffer', need: 20 }] },
+  { id: 'origami-fest', name: { ko: '종이접기 축제', en: 'Origami Festival' },
+    desc: { ko: '색종이가오리 10마리', en: '10 Origami Rays' },
+    parts: [{ fishId: 'paper-ray', need: 10 }] },
+  { id: 'legend-page', name: { ko: '전설의 한 페이지', en: 'A Legendary Page' },
+    desc: { ko: '스케치북고래 잡기 (전설을 낚다!)', en: 'Catch the Sketchbook Whale!' },
+    parts: [{ fishId: 'sketchbook-whale', need: 1 }] },
+  { id: 'art-supplies', name: { ko: '미술 준비물 끝!', en: 'Art Supplies Ready!' },
+    desc: { ko: '도감의 물고기 전부 잡기', en: 'Complete the whole collection' },
+    prog: () => [{ label: LANG === 'ko' ? '도감' : 'Collection', have: caughtKinds(), need: FISH.length }] },
+  { id: 'painter-hand', name: { ko: '화가의 손', en: "Painter's Hands" },
+    desc: { ko: '"딱 맞았어!!"만으로 물고기 잡기', en: 'Catch a fish with only PERFECT hits' },
+    prog: () => [{ label: LANG === 'ko' ? '퍼펙트 캐치' : 'Perfect catch', have: Math.min(save.perfect || 0, 1), need: 1 }] },
+  { id: 'release-master', name: { ko: '방생의 달인', en: 'Master of Release' },
+    desc: { ko: '물고기 50번 놓아주기 (…놓치기)', en: 'Let 50 fish go (…accidentally)' },
+    prog: () => [{ label: LANG === 'ko' ? '놓아준 물고기' : 'Released', have: Math.min(save.missed, 50), need: 50 }] },
+];
+
+function achvProgress(a) {
+  if (a.prog) {
+    const parts = a.prog();
+    return { parts, done: parts.every(p => p.have >= p.need) };
+  }
+  const parts = a.parts.map(p => {
+    const fish = p.fishId ? FISH.find(f => f.id === p.fishId) : null;
+    return {
+      label: fish ? fish.name[LANG] : '???',
+      have: fish ? Math.min(save.caught[p.fishId] || 0, p.need) : 0,
+      need: p.need,
+    };
+  });
+  const done = a.parts.every(p => p.fishId && (save.caught[p.fishId] || 0) >= p.need);
+  return { parts, done };
+}
+const achievedCount = () => ACHV.filter(a => save.achieved[a.id] || achvProgress(a).done).length;
+
+// 잡을 때마다 확인해서, 새로 달성한 과제는 축하 배너를 띄운다
+function checkAchievements() {
+  for (const a of ACHV) {
+    if (save.achieved[a.id]) continue;
+    if (achvProgress(a).done) {
+      save.achieved[a.id] = true;
+      persistSave();
+      game.achvQueue.push(a);
+    }
+  }
+}
+
+const game = {
+  state: 'menu',      // menu | zoom(확대 연출) | waiting | minigame | result | dex(도감)
+  zoomStart: 0,       // 확대 연출 시작 시각
+  fish: null,         // 이번에 문 물고기
+  dexReturn: 'menu',  // 도감을 닫으면 어디로 돌아갈지
+  dexDetail: null,    // 도감에서 클릭한 물고기 (상세 카드)
+  dexPage: 0,         // 도감 현재 페이지
+  achvQueue: [],      // 방금 달성해서 배너로 보여줄 도전과제들
+  achvBanner: null,   // 지금 보여주는 중인 배너
+  achvBannerUntil: 0,
+  biteAt: 0,          // 입질이 올 시각
+  ci: 0,              // 지금 몇 번째 동그라미인지 (0~2)
+  circle: null,       // 지금 줄어들고 있는 동그라미
+  nextAt: 0,          // 다음 동그라미가 나올 시각
+  result: '',         // catch | escape
+  resultAt: 0,
+  resultMsg: '',
+  caught: 0, missed: 0,   // 화면 표시용 (시작할 때 저장에서 불러옴)
+  judgeText: '', judgeUntil: 0, judgeX: 0, judgeY: 0,
+  shushUntil: 0,      // 기다리는 중에 클릭했을 때 "쉿!" 보여주는 시간
+  biteFxUntil: 0,     // 입질 물튀김 효과 시간
+};
+game.caught = totalCaught();   // 점수는 지금까지의 평생 기록으로 표시
+game.missed = save.missed;
+
+// 자동 시범 모드: 주소 뒤에 #auto를 붙이면 컴퓨터가 알아서 낚시하는 걸 구경할 수 있다
+const AUTO_DEMO = location.hash === '#auto';
+
+const CIRCLE_DUR = [1300, 1100, 900, 800];  // 뒤로 갈수록 빨라짐
+const TARGET_R = 27;                   // 목표 원 크기
+const START_MUL = 3.2;                 // 시작은 목표의 3.2배 크기에서 줄어듦
+
+// ============================================================
+// 언어 (한국어/English) — 메뉴에서 바꿀 수 있고 저장됨
+// ============================================================
+let LANG = localStorage.getItem('sketch-fishing-lang') === 'en' ? 'en' : 'ko';
+const T = {
+  ko: {
+    waiting: '물고기를 기다리는 중…', shush: '(쉿! 조용히 기다리자)',
+    hint: '주황 원이 줄어들어 목표 원과 겹칠 때 클릭!', bite: '입질이다!!',
+    perfect: '딱 맞았어!!', nice: '좋아!',
+    tooFast: '너무 빨랐어! 도망갔다…', tooSlow: '너무 늦었어! 도망갔다…',
+    ignored: '앗, 그냥 보냈다! 도망갔다…',
+    again: '클릭하면 다시 낚시!',
+    score: (c, m) => `잡음 ${c} · 놓침 ${m}`,
+    caught: f => `${f.name.ko}${eulReul(f.name.ko)} 잡았다!`,
+    title: '스케치북 낚시', sub: '(가제 — 진짜 제목은 우리가 정하자!)',
+    start: '시작하기', boilOn: '꿈틀거림: 켬', boilOff: '꿈틀거림: 끔',
+    dex: '도감', dexTitle: (k, n) => `물고기 도감  ${k} / ${n}`,
+    dexClose: '(물고기 클릭: 자세히 보기 · 빈 곳 클릭: 닫기)',
+    dexCount: n => `잡은 횟수: ${n}마리`,
+    achv: '도전과제', achvTitle: (k, n) => `도전과제  ${k} / ${n}`,
+    achvGet: '도전과제 달성!', achvDone: '달성!',
+    achvClose: '(아무 데나 클릭하면 닫혀요)',
+  },
+  en: {
+    waiting: 'Waiting for a fish…', shush: '(Shh! Stay quiet…)',
+    hint: 'Click when the orange ring meets the target!', bite: 'A bite!!',
+    perfect: 'PERFECT!!', nice: 'Nice!',
+    tooFast: 'Too fast! It got away…', tooSlow: 'Too slow! It got away…',
+    ignored: 'Oops, it slipped away…',
+    again: 'Click to fish again!',
+    score: (c, m) => `Caught ${c} · Missed ${m}`,
+    caught: f => `You caught a ${f.name.en}!`,
+    title: 'Sketchbook Fishing', sub: "(working title — let's pick a real one!)",
+    start: 'Start', boilOn: 'Wiggle: ON', boilOff: 'Wiggle: OFF',
+    dex: 'Collection', dexTitle: (k, n) => `Fish Collection  ${k} / ${n}`,
+    dexClose: '(Click a fish for details · empty space to close)',
+    dexCount: n => `Caught: ${n}`,
+    achv: 'Achievements', achvTitle: (k, n) => `Achievements  ${k} / ${n}`,
+    achvGet: 'Achievement unlocked!', achvDone: 'DONE!',
+    achvClose: '(Click anywhere to close)',
+  },
+};
+const tr = key => T[LANG][key];
+
+// ============================================================
+// 물고기 도감 — 스케치북 세상이라 전부 그림 도구에서 태어났다!
+// 목표는 100마리, 10마리씩 늘려가는 중 (지금 10마리)
+// weight: 클수록 잘 잡힘 / speed: 작을수록 원이 빨리 줄어듦 / circles: 클릭 횟수
+// ============================================================
+const FISH = [
+  { id: 'kkobulchi', name: { ko: '꼬불치', en: 'Squigglefish' }, weight: 24, speed: 1.0, circles: 3,
+    gags: { ko: ['삐뚤빼뚤해도 물고기는 물고기라고!', '오늘도 꼬불꼬불 헤엄쳤답니다'],
+            en: ['Wobbly lines are still a fish!', 'It swam squiggly all day long.'] } },
+  { id: 'clip-anchovy', name: { ko: '클립멸치', en: 'Clip Anchovy' }, weight: 20, speed: 1.05, circles: 3,
+    gags: { ko: ['서류 사이에 끼어 있다가 왔대요', '백 마리 모아도 종이 한 장 무게!'],
+            en: ['It was hiding between papers!', 'A hundred weigh less than one page!'] },
+    gagWeights: [35, 65] },  // "종이 한 장" 개그가 65%로 더 자주 나옴 (아드님 요청)
+  { id: 'pencil-eel', name: { ko: '연필장어', en: 'Pencil Eel' }, weight: 14, speed: 0.92, circles: 3,
+    gags: { ko: ['필통에서 탈출한 지 3일째래요', '깎을수록 짧아지니까 아껴 쓰자'],
+            en: ['Escaped its pencil case 3 days ago.', 'It gets shorter every sharpening!'] } },
+  { id: 'crayon-carp', name: { ko: '크레용잉어', en: 'Crayon Carp' }, weight: 11, speed: 0.86, circles: 3,
+    gags: { ko: ['만지면 손에 색이 묻으니까 조심!', '오늘은 무슨 색으로 헤엄칠까~?'],
+            en: ['Careful, it colors your hands!', 'What color will it swim today?'] } },
+  { id: 'marker-pike', name: { ko: '사인펜꽁치', en: 'Marker Pike' }, weight: 9, speed: 0.83, circles: 3,
+    gags: { ko: ['뚜껑을 안 닫으면 말라버리니 조심!', '냄새 맡지 마! 사인펜이니까!'],
+            en: ['Cap it or it dries out!', "Don't sniff it! It's a marker!"] } },
+  { id: 'brush-goldfish', name: { ko: '붓꼬리금붕어', en: 'Brushtail Goldfish' }, weight: 8, speed: 0.82, circles: 3,
+    gags: { ko: ['헤엄칠 때마다 물에 그림을 그린대요', '꼬리가 마르기 전에 놓아주자'],
+            en: ['It paints the water as it swims.', 'Release it before its tail dries!'] } },
+  { id: 'eraser-shark', name: { ko: '지우개상어', en: 'Eraser Shark' }, weight: 6, speed: 0.8, circles: 3,
+    gags: { ko: ['앗!! 내 그림 먹지 마!!', '실수를 먹고 사는 착한 상어래요'],
+            en: ['Hey!! Stop eating my drawing!!', 'A kind shark that eats mistakes.'] } },
+  { id: 'paint-puffer', name: { ko: '물감퉁퉁이', en: 'Paint Puffer' }, weight: 4, speed: 0.77, circles: 3,
+    gags: { ko: ['화나면 퉁퉁 불어서 물감이 튀어요!', '짜면 안 돼! 진짜로 짜면 안 돼!'],
+            en: ['It puffs up and splatters paint!', "Don't squeeze it! Really, don't!"] } },
+  { id: 'paper-ray', name: { ko: '색종이가오리', en: 'Origami Ray' }, weight: 3, speed: 0.75, circles: 3,
+    gags: { ko: ['반으로 접으면 반쪽이 되는 걸까?', '비 오는 날엔 눅눅해져서 쉰대요'],
+            en: ['Fold it in half… half a ray?', 'It gets soggy on rainy days.'] } },
+  { id: 'sketchbook-whale', name: { ko: '스케치북고래', en: 'Sketchbook Whale' }, weight: 1, speed: 0.7, circles: 4,
+    gags: { ko: ['이건 낚은 게 아니라 그냥 그린 거 아니야?', '스케치북보다 큰 고래를 낚다니!'],
+            en: ['Did you catch it or draw it?', 'Bigger than the sketchbook itself!'] } },
+  // --- 오마카세 물고기들 (도전과제 "오마카세"용) ---
+  { id: 'deskpad-flounder', name: { ko: '책받침광어', en: 'Desk Pad Flounder' }, weight: 6, speed: 0.84, circles: 3,
+    gags: { ko: ['납작한 건 책받침이라서 그렇대요', '깔고 앉지 말아 줄래?'],
+            en: ["Flat because it's a desk pad!", "Please don't sit on me!"] } },
+  { id: 'paint-tuna', name: { ko: '물감참치', en: 'Paint Tuna' }, weight: 30, speed: 0.72, circles: 3,
+    gags: { ko: ['배 속에 빨강·분홍 물감이 부위별로 들었대요', '오마카세의 꽃은 나야 나!'],
+            en: ['Red & pink paint inside, sorted by cut!', "I'm the star of the omakase!"] } },
+  // --- 2차분 나머지 (민물·바다·관상어 자료 기반) ---
+  { id: 'foil-mackerel', name: { ko: '은박지고등어', en: 'Foil Mackerel' }, weight: 13, speed: 0.9, circles: 3,
+    gags: { ko: ['반짝이는 건 은박지 비늘 덕분!', '바다의 보리? 아니, 바다의 은박지!'],
+            en: ['Shiny thanks to its foil scales!', 'The foil of the sea!'] } },
+  { id: 'glitter-guppy', name: { ko: '반짝이풀구피', en: 'Glitter Glue Guppy' }, weight: 11, speed: 0.97, circles: 3,
+    gags: { ko: ['꼬리에 반짝이풀을 발랐대요', '어항 말고 필통에서 키워 주세요'],
+            en: ['Glitter glue on its tail!', 'Keep it in a pencil case, not a tank.'] } },
+  { id: 'eraser-shrimp', name: { ko: '지우개새우', en: 'Eraser Shrimp' }, weight: 10, speed: 0.95, circles: 3,
+    gags: { ko: ['실수를 등에 지고 다니는 새우래요', '진짜 지우개인 줄 알고 깜빡 속았지?'],
+            en: ['It carries mistakes on its back.', 'Fooled you — not a real eraser!'] } },
+  { id: 'glue-loach', name: { ko: '풀미꾸라지', en: 'Glue Loach' }, weight: 9, speed: 0.8, circles: 3,
+    gags: { ko: ['미끌미끌한 건 물풀 때문이래요', '잡았다고? 손에서 스르륵~'],
+            en: ['Slippery because of liquid glue!', 'Caught it? It slips right out~'] } },
+  { id: 'redpen-snapper', name: { ko: '빨간펜도미', en: 'Red-Pen Snapper' }, weight: 8, speed: 0.85, circles: 3,
+    gags: { ko: ['백 점짜리 물고기래요! 참 잘했어요 쾅!', '선생님 빨간펜에서 태어났대요'],
+            en: ['A 100-point fish! Great job!', "Born from the teacher's red pen."] } },
+  { id: 'scissor-cutlass', name: { ko: '가위갈치', en: 'Scissor Cutlassfish' }, weight: 7, speed: 0.82, circles: 3,
+    gags: { ko: ['종이만 보면 자르고 싶어진대요', '헤엄칠 때 사각사각 소리가 나요'],
+            en: ['It wants to cut every paper it sees.', 'Snip-snip when it swims!'] } },
+  { id: 'bucket-catfish', name: { ko: '물통메기', en: 'Paint-Cup Catfish' }, weight: 7, speed: 0.83, circles: 3,
+    gags: { ko: ['붓 씻은 물을 제일 좋아한대요', '수염은 사실 붓털이래요'],
+            en: ['It loves brush-washing water best.', 'Its whiskers are brush hairs.'] } },
+  { id: 'highlighter-sweetfish', name: { ko: '형광펜은어', en: 'Highlighter Sweetfish' }, weight: 6, speed: 0.8, circles: 3,
+    gags: { ko: ['수박 향 대신 형광펜 향이 나요', '중요한 물고기라서 형광펜으로 칠해뒀지!'],
+            en: ['Smells like highlighter, not watermelon.', "Important fish get highlighted!"] } },
+  // --- 3차분 (마지막 10마리, 총 30마리 완성!) ---
+  { id: 'notebook-crucian', name: { ko: '공책붕어', en: 'Notebook Crucian' }, weight: 18, speed: 0.95, circles: 3,
+    gags: { ko: ['몸에 줄이 그어져 있어서 글씨 연습하기 좋대요', '낚시꾼의 영원한 친구!'],
+            en: ['Ruled lines — great for handwriting!', "Every angler's oldest friend!"] } },
+  { id: 'ruler-minnow', name: { ko: '자피라미', en: 'Ruler Minnow' }, weight: 16, speed: 1.0, circles: 3,
+    gags: { ko: ['몸에 눈금이 있어서 길이 재기 편해요', '떼로 다니면 30cm 자가 된대요'],
+            en: ['It has centimeter marks on its side!', 'A school of them makes a 30cm ruler!'] } },
+  { id: 'tape-salmon', name: { ko: '테이프연어', en: 'Tape Salmon' }, weight: 10, speed: 0.85, circles: 3,
+    gags: { ko: ['테이프처럼 강을 되감으며 올라간대요', '초밥집에서 제일 인기 많은 몸이래요'],
+            en: ['It rewinds up the river like tape!', 'The most popular one at the sushi bar!'] } },
+  { id: 'ballpoint-rockfish', name: { ko: '볼펜우럭', en: 'Ballpoint Rockfish' }, weight: 9, speed: 0.86, circles: 3,
+    gags: { ko: ['가끔 볼펜 똥처럼 잉크가 뭉친대요', '회로도 매운탕으로도 인기 만점!'],
+            en: ['Sometimes its ink clumps up!', 'Great as sashimi or spicy stew!'] } },
+  { id: 'nametag-pollock', name: { ko: '이름표명태', en: 'Name-Tag Pollock' }, weight: 9, speed: 0.88, circles: 3,
+    gags: { ko: ['이름이 너무 많아서 이름표를 달고 다녀요', '얼면 동태, 마르면 북어, 지금은 명태!'],
+            en: ['So many names, it wears name tags!', 'Frozen or dried, always a pollock!'] } },
+  { id: 'pencil-trout', name: { ko: '색연필송어', en: 'Colored-Pencil Trout' }, weight: 8, speed: 0.82, circles: 3,
+    gags: { ko: ['속살이 색연필 심처럼 발그스름해요', '깨끗한 물에만 사는 깔끔쟁이!'],
+            en: ['Pink inside, like a pencil core!', 'It only lives in clean water!'] } },
+  { id: 'glue-yellowtail', name: { ko: '풀방어', en: 'Glue-Stick Yellowtail' }, weight: 7, speed: 0.8, circles: 3,
+    gags: { ko: ['풀로 몸을 지켜서 방어라는 이름이 붙었대요(?)', '겨울이 제철이라 지금은 준비 운동 중!'],
+            en: ['It defends itself with glue (…maybe)!', 'Winter is its season — warming up now!'] } },
+  { id: 'ink-snakehead', name: { ko: '먹물가물치', en: 'Ink Snakehead' }, weight: 6, speed: 0.75, circles: 3,
+    gags: { ko: ['먹물처럼 새까매서 밤엔 안 보여요', '먹물 리필용은 아니래요'],
+            en: ['Ink-black — invisible at night!', 'Not actually good for ink refills.'] } },
+  { id: 'thumbtack-urchin', name: { ko: '압정성게', en: 'Thumbtack Urchin' }, weight: 5, speed: 0.78, circles: 3,
+    gags: { ko: ['가시가 전부 압정이라 밟으면 큰일!', '속은 노란 물감으로 가득!'],
+            en: ['Its spikes are thumbtacks — careful!', 'Full of yellow paint inside!'] } },
+  { id: 'marker-skate', name: { ko: '매직홍어', en: 'Magic-Marker Skate' }, weight: 5, speed: 0.76, circles: 3,
+    gags: { ko: ['지독한 냄새의 정체는 매직 냄새였어!', '전라도에서 제일 유명한 손님!'],
+            en: ['That smell? Marker fumes!', 'The most famous guest in Jeolla-do!'] } },
+];
+
+function pickFish() {
+  let r = Math.random() * FISH.reduce((a, f) => a + f.weight, 0);
+  for (const f of FISH) { r -= f.weight; if (r < 0) return f; }
+  return FISH[0];
+}
+
+// 개그 뽑기 — gagWeights가 있으면 그 비율대로 (예: 클립멸치는 [35, 65])
+function pickGag(fish) {
+  const gags = fish.gags[LANG];
+  const w = fish.gagWeights;
+  if (!w) return gags[Math.floor(Math.random() * gags.length)];
+  let r = Math.random() * w.reduce((a, b) => a + b, 0);
+  for (let i = 0; i < gags.length; i++) { r -= w[i]; if (r < 0) return gags[i]; }
+  return gags[gags.length - 1];
+}
+
+// 받침이 있으면 '을', 없으면 '를'
+function eulReul(word) {
+  const code = word.charCodeAt(word.length - 1) - 44032;
+  if (code < 0 || code > 11171) return '을(를)';
+  return code % 28 ? '을' : '를';
+}
+
+function circleRadius(c, t) {
+  const p = Math.min(1, (t - c.start) / c.dur);
+  return TARGET_R * (START_MUL - (START_MUL - 0.2) * p);
+}
+
+function newCircle(t, idx) {
+  // 호수 안 아무 데나 (가장자리는 피해서)
+  const L = SCENE.lake;
+  const a = Math.random() * Math.PI * 2;
+  const rr = Math.sqrt(Math.random()) * 0.6;
+  return {
+    x: L.cx + Math.cos(a) * L.rx * rr,
+    y: L.cy + Math.sin(a) * L.ry * rr,
+    start: t,
+    dur: CIRCLE_DUR[Math.min(idx, CIRCLE_DUR.length - 1)] * game.fish.speed,
+  };
+}
+
+function startWaiting(t) {
+  game.state = 'waiting';
+  game.biteAt = t + (AUTO_DEMO ? 800 : 2500 + Math.random() * 3500);
+}
+
+function startMinigame(t) {
+  game.state = 'minigame';
+  game.fish = pickFish();   // 어떤 물고기가 물었는지 미리 정해둠 (잡기 전엔 비밀!)
+  game.roundPerfect = true; // 전부 "딱 맞았어!!"로 잡는지 (화가의 손 과제)
+  game.ci = 0;
+  game.circle = null;
+  game.nextAt = t + 500;      // 찌가 쑥 들어가는 걸 볼 시간
+  game.biteFxUntil = t + 600;
+}
+
+function endRound(t, ok, msg) {
+  game.state = 'result';
+  game.result = ok ? 'catch' : 'escape';
+  game.resultMsg = msg;
+  game.resultAt = t;
+  game.circle = null;
+  if (ok) {
+    game.caught++;
+    // 잡은 물고기의 전용 개그 한마디 (모여봐요 동물의숲처럼!)
+    game.gag = pickGag(game.fish);
+    if (!AUTO_DEMO) {  // 자동 시범은 기록에 안 남김
+      save.caught[game.fish.id] = (save.caught[game.fish.id] || 0) + 1;
+      if (game.roundPerfect) save.perfect++;
+      persistSave();
+      checkAchievements();
+    }
+  } else {
+    game.missed++;
+    if (!AUTO_DEMO) { save.missed++; persistSave(); checkAchievements(); }
+  }
+}
+
+// 게임 중 도감 버튼 (왼쪽 위) — 언어에 따라 폭이 달라짐
+function dexBtnRect() {
+  return { x: 24, y: SPIRAL_H + 14, w: LANG === 'ko' ? 88 : 128, h: 38 };
+}
+
+function onTap(t, px, py) {
+  if (game.state === 'achv') {
+    closeAchv();
+  } else if (game.state === 'dex') {
+    if (game.dexDetail) {  // 상세 카드가 열려 있으면 → 카드만 닫고 도감으로
+      game.dexDetail = null;
+      renderDexToCache();
+      return;
+    }
+    if (px !== undefined) {
+      const L = dexLayout();
+      const inRect = b => px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h;
+      // 페이지 넘김 화살표
+      if (L.pages > 1) {
+        if (inRect(L.prev) && game.dexPage > 0) { game.dexPage--; renderDexToCache(); return; }
+        if (inRect(L.next) && game.dexPage < L.pages - 1) { game.dexPage++; renderDexToCache(); return; }
+      }
+      // 잡은 물고기 칸을 클릭하면 → 상세 카드
+      const cell = L.cells.find(inRect);
+      if (cell && (save.caught[cell.f.id] || 0) > 0) {
+        game.dexDetail = cell.f;
+        renderDexToCache();
+        return;
+      }
+    }
+    closeDex(t);
+  } else if (game.state === 'waiting') {
+    const b = dexBtnRect();
+    if (px !== undefined && px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h) {
+      openDex('waiting');
+      return;
+    }
+    game.shushUntil = t + 1000;
+  } else if (game.state === 'minigame' && game.circle) {
+    const r = circleRadius(game.circle, t);
+    const diff = Math.abs(r - TARGET_R);
+    if (diff <= TARGET_R * 0.22) {
+      hitCircle(t, tr('perfect'));
+    } else if (diff <= TARGET_R * 0.55) {
+      game.roundPerfect = false;
+      hitCircle(t, tr('nice'));
+    } else {
+      endRound(t, false, r > TARGET_R ? tr('tooFast') : tr('tooSlow'));
+    }
+  } else if (game.state === 'result' && t - game.resultAt > 500) {
+    startWaiting(t);
+  }
+}
+
+function hitCircle(t, text) {
+  game.judgeText = text;
+  game.judgeUntil = t + 550;
+  game.judgeX = game.circle.x;
+  game.judgeY = game.circle.y - TARGET_R - 14;
+  game.circle = null;
+  game.ci++;
+  if (game.ci >= game.fish.circles) {
+    endRound(t, true, '낚았다!!');
+  } else {
+    game.nextAt = t + 300;
+  }
+}
+
+canvas.addEventListener('pointerdown', e => onTap(performance.now(), e.clientX, e.clientY));
+window.addEventListener('keydown', e => {
+  if (e.code === 'Space' || e.code === 'Enter') { e.preventDefault(); onTap(performance.now()); }
+  if (e.code === 'Escape' && game.state === 'dex') {
+    if (game.dexDetail) { game.dexDetail = null; renderDexToCache(); }
+    else closeDex(performance.now());
+  }
+  if (e.code === 'Escape' && game.state === 'achv') closeAchv();
+});
+
+// ============================================================
+// 그리기 — 배경 캐시 + 움직이는 것들
+// ============================================================
+function renderSceneToCache() {
+  sceneCanvas.width = canvas.width;
+  sceneCanvas.height = canvas.height;
+  sctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx = sctx;                      // 붓을 캐시 캔버스로 바꿔 끼고
+  const p = drawSketchbook();
+  drawScene(p);
+  drawSpiral();
+  ctx = screenCtx;                 // 다시 화면 붓으로
+}
+
+// ---------- 도감 화면 (무거우니 열 때 캐시에 그려두고 복사) ----------
+const dexCanvas = document.createElement('canvas');
+const dctx = dexCanvas.getContext('2d');
+
+// 도감 칸 배치 계산 — 그릴 때와 클릭 판정할 때 같은 값을 쓴다
+// 가로 4칸 × 세로 3칸 = 한 페이지 12마리, ◀▶로 페이지 넘김
+const DEX_COLS = 4, DEX_ROWS = 3, DEX_PER_PAGE = DEX_COLS * DEX_ROWS;
+
+function dexLayout() {
+  const bw = Math.min(960, W * 0.94), bh = Math.min(580, H * 0.86);
+  const x0 = W / 2 - bw / 2, y0 = H / 2 - bh / 2;
+  const pages = Math.ceil(FISH.length / DEX_PER_PAGE);
+  const cw = bw / DEX_COLS, chh = (bh - 134) / DEX_ROWS;
+  const start = game.dexPage * DEX_PER_PAGE;
+  const cells = FISH.slice(start, start + DEX_PER_PAGE).map((f, i) => {
+    const left = x0 + cw * (i % DEX_COLS), top = y0 + 62 + chh * Math.floor(i / DEX_COLS);
+    return { f, x: left + 8, y: top + 2, w: cw - 16, h: chh - 8,
+             cx: left + cw / 2, cy: top + chh / 2 - 8 };
+  });
+  const prev = { x: x0 + 28, y: y0 + bh - 54, w: 48, h: 36 };
+  const next = { x: x0 + bw - 76, y: y0 + bh - 54, w: 48, h: 36 };
+  return { bw, bh, x0, y0, chh, cells, pages, prev, next };
+}
+
+function renderDexToCache() {
+  dexCanvas.width = canvas.width;
+  dexCanvas.height = canvas.height;
+  dctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx = dctx;
+  // 뒤를 살짝 어둡게
+  ctx.fillStyle = 'rgba(60,50,38,0.35)';
+  ctx.fillRect(0, 0, W, H);
+  // 도감 종이
+  const L = dexLayout();
+  ctx.fillStyle = '#fdf8ec';
+  ctx.beginPath();
+  ctx.roundRect(L.x0, L.y0, L.bw, L.bh, 16);
+  ctx.fill();
+  crayonPath([[L.x0, L.y0], [L.x0 + L.bw, L.y0], [L.x0 + L.bw, L.y0 + L.bh], [L.x0, L.y0 + L.bh], [L.x0, L.y0]],
+    { color: C.orange, width: 5, seed: 610, wobble: 2.5 });
+  crayonText(T[LANG].dexTitle(caughtKinds(), FISH.length), W / 2, L.y0 + 42, 26, C.darkBrown);
+  // 물고기 칸들 (테두리 네모 + 그림)
+  L.cells.forEach((cell, i) => {
+    const { f, cx, cy } = cell;
+    const n = save.caught[f.id] || 0;
+    // 칸 테두리: 잡은 칸은 주황, 아직인 칸은 회색
+    ctx.save();
+    ctx.globalAlpha = 0.6;
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.roundRect(cell.x, cell.y, cell.w, cell.h, 10);
+    ctx.fill();
+    ctx.restore();
+    crayonPath([[cell.x, cell.y], [cell.x + cell.w, cell.y], [cell.x + cell.w, cell.y + cell.h], [cell.x, cell.y + cell.h], [cell.x, cell.y]],
+      { color: n > 0 ? C.orange : C.gray, width: 3.5, seed: 611 + i + game.dexPage * 12, wobble: 1.5, alpha: n > 0 ? 0.95 : 0.6 });
+    if (n > 0) {
+      ctx.save();
+      ctx.translate(cx, cy - 10);
+      ctx.scale(0.78, 0.78);
+      ctx.translate(-cx, -(cy - 10));
+      drawFish(f, cx, cy - 10);
+      ctx.restore();
+      crayonText(f.name[LANG], cx, cy + L.chh / 2 - 30, 15, C.darkBrown);
+      crayonText('×' + n, cx, cy + L.chh / 2 - 12, 14, C.gray);
+    } else {
+      crayonText('?', cx, cy + 4, 44, C.gray);
+      crayonText('???', cx, cy + L.chh / 2 - 30, 15, C.gray);
+    }
+  });
+  crayonText(tr('dexClose'), W / 2, L.y0 + L.bh - 62, 14, C.gray);
+  // 페이지 넘김 (◀ 페이지 ▶)
+  if (L.pages > 1) {
+    [[L.prev, game.dexPage > 0, -1], [L.next, game.dexPage < L.pages - 1, 1]].forEach(([b, on, dir], i) => {
+      crayonPath([[b.x, b.y], [b.x + b.w, b.y], [b.x + b.w, b.y + b.h], [b.x, b.y + b.h], [b.x, b.y]],
+        { color: on ? C.brown : C.gray, width: 3, seed: 1101 + i, wobble: 1, alpha: on ? 0.9 : 0.35 });
+      const mx = b.x + b.w / 2, my = b.y + b.h / 2;
+      crayonPath([[mx - dir * 6, my - 8], [mx + dir * 6, my], [mx - dir * 6, my + 8]],
+        { color: on ? C.darkBrown : C.gray, width: 3.5, seed: 1103 + i, wobble: 0.5, alpha: on ? 1 : 0.4 });
+    });
+    crayonText(`${game.dexPage + 1} / ${L.pages}`, W / 2, L.y0 + L.bh - 30, 17, C.darkBrown);
+  }
+
+  // 물고기 상세 카드 (진짜 도감처럼: 큰 그림 + 잡은 횟수 + 개그 모음)
+  if (game.dexDetail) {
+    const f = game.dexDetail, n = save.caught[f.id] || 0;
+    ctx.fillStyle = 'rgba(60,50,38,0.3)';
+    ctx.fillRect(0, 0, W, H);
+    const dw = Math.min(560, W * 0.82), dh = 302;
+    const dx = W / 2 - dw / 2, dy = H / 2 - dh / 2;
+    ctx.fillStyle = '#fffdf2';
+    ctx.beginPath();
+    ctx.roundRect(dx, dy, dw, dh, 16);
+    ctx.fill();
+    crayonPath([[dx, dy], [dx + dw, dy], [dx + dw, dy + dh], [dx, dy + dh], [dx, dy]],
+      { color: C.orange, width: 5, seed: 630, wobble: 2.5 });
+    ctx.save();
+    ctx.translate(W / 2, dy + 88);
+    ctx.scale(1.25, 1.25);
+    ctx.translate(-W / 2, -(dy + 88));
+    drawFish(f, W / 2, dy + 88);
+    ctx.restore();
+    crayonText(f.name[LANG], W / 2, dy + 172, 28, C.darkBrown);
+    crayonText(T[LANG].dexCount(n), W / 2, dy + 204, 18, C.redDark);
+    f.gags[LANG].forEach((g, i) => {
+      crayonText(`“${g}”`, W / 2, dy + 236 + i * 26, 16, C.deepBlue);
+    });
+  }
+  ctx = screenCtx;
+}
+
+// ---------- 도전과제 화면 ----------
+const achvCanvas = document.createElement('canvas');
+const actx = achvCanvas.getContext('2d');
+
+function renderAchvToCache() {
+  achvCanvas.width = canvas.width;
+  achvCanvas.height = canvas.height;
+  actx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx = actx;
+  ctx.fillStyle = 'rgba(60,50,38,0.35)';
+  ctx.fillRect(0, 0, W, H);
+  const bw = Math.min(980, W * 0.95), bh = Math.min(590, H * 0.87);
+  const x0 = W / 2 - bw / 2, y0 = H / 2 - bh / 2;
+  ctx.fillStyle = '#fdf8ec';
+  ctx.beginPath();
+  ctx.roundRect(x0, y0, bw, bh, 16);
+  ctx.fill();
+  crayonPath([[x0, y0], [x0 + bw, y0], [x0 + bw, y0 + bh], [x0, y0 + bh], [x0, y0]],
+    { color: C.orange, width: 5, seed: 650, wobble: 2.5 });
+  crayonText(T[LANG].achvTitle(achievedCount(), ACHV.length), W / 2, y0 + 40, 25, C.darkBrown);
+
+  // 2열 그리드 (12개까지 한 화면에)
+  const rows = Math.ceil(ACHV.length / 2);
+  const cellW = (bw - 60) / 2;
+  const cellH = Math.min(84, (bh - 96) / rows);
+  ACHV.forEach((a, i) => {
+    const cx0 = x0 + 20 + (i % 2) * (cellW + 20);
+    const cy0 = y0 + 58 + Math.floor(i / 2) * cellH;
+    const p = achvProgress(a);
+    const done = save.achieved[a.id] || p.done;
+    crayonPath([[cx0, cy0], [cx0 + cellW, cy0], [cx0 + cellW, cy0 + cellH - 8], [cx0, cy0 + cellH - 8], [cx0, cy0]],
+      { color: done ? C.orange : C.gray, width: 3, seed: 651 + i, wobble: 1.2, alpha: done ? 0.95 : 0.55 });
+    crayonText(a.name[LANG], cx0 + 14, cy0 + 23, 17, done ? C.redDark : C.darkBrown, 'left');
+    crayonText(a.desc[LANG], cx0 + 14, cy0 + 43, 12, C.gray, 'left');
+    const progressText = p.parts.map(pp => `${pp.label} ${pp.have}/${pp.need}`).join(' · ');
+    crayonText(progressText, cx0 + 14, cy0 + 61, 12, done ? C.redDark : C.deepBlue, 'left');
+    if (done) {
+      // 달성 도장!
+      const sx = cx0 + cellW - 46, sy = cy0 + cellH / 2 - 5;
+      crayonPath(ellipsePts(sx, sy, 30, 19, 18),
+        { color: C.redDark, width: 3, seed: 680 + i, wobble: 1.5 });
+      crayonText(tr('achvDone'), sx, sy + 5, 14, C.redDark);
+    }
+  });
+  crayonText(tr('achvClose'), W / 2, y0 + bh - 16, 14, C.gray);
+  ctx = screenCtx;
+}
+
+function openAchv() {
+  game.state = 'achv';
+  menuEl.classList.add('hidden');
+  renderAchvToCache();
+}
+
+function closeAchv() {
+  game.state = 'menu';
+  menuEl.classList.remove('hidden');
+}
+
+function openDex(from) {
+  game.dexReturn = from;
+  game.dexPage = 0;
+  game.state = 'dex';
+  if (from === 'menu') menuEl.classList.add('hidden');
+  renderDexToCache();
+}
+
+function closeDex(t) {
+  game.dexDetail = null;
+  if (game.dexReturn === 'menu') {
+    game.state = 'menu';
+    menuEl.classList.remove('hidden');
+  } else {
+    startWaiting(t);  // 도감 보는 동안 입질 시간이 지나버렸을 수 있으니 새로 기다림
+  }
+}
+
+function crayonText(str, x, y, size, color, align = 'center') {
+  ctx.save();
+  ctx.font = `700 ${size}px "Apple SD Gothic Neo", "Malgun Gothic", sans-serif`;
+  ctx.fillStyle = color;
+  ctx.textAlign = align;
+  ctx.globalAlpha = 0.85;
+  ctx.fillText(str, x, y);
+  ctx.restore();
+}
+
+// ============================================================
+// 물고기 크레파스 그림들 (x,y = 중심)
+// ============================================================
+function fishEyeMouth(x, y, seed, color) {
+  // 공용: 동그란 눈 + 웃는 입
+  crayonPath(ellipsePts(x, y, 3.5, 3.5, 10),
+    { color, width: 3.5, seed, wobble: 0.5, alpha: 1 });
+  crayonPath([[x + 3, y + 8], [x + 8, y + 11], [x + 13, y + 8]],
+    { color, width: 2.5, seed: seed + 1, wobble: 0.5 });
+}
+
+function drawFish(fish, x, y) {
+  const d = {
+    'kkobulchi': () => {  // 유난히 꼬불꼬불한 동글이
+      const s = 34;
+      scribbleFill(ellipseRows(x, y, s * 0.75, s * 0.5, 6),
+        { color: C.skyBlue, seed: 401, alpha: 0.5, width: 5 });
+      crayonPath(ellipsePts(x, y, s * 0.8, s * 0.55, 26),
+        { color: C.deepBlue, width: 4, seed: 402, wobble: 5 });
+      crayonPath([[x + s * 0.7, y], [x + s * 1.2, y - s * 0.4], [x + s * 1.2, y + s * 0.4], [x + s * 0.7, y]],
+        { color: C.deepBlue, width: 4, seed: 403, wobble: 3 });
+      fishEyeMouth(x - s * 0.35, y - s * 0.1, 404, C.navy);
+    },
+    'pencil-eel': () => {  // 연필처럼 길쭉 + 지우개 꼬리
+      const s = 30;
+      scribbleFill(ellipseRows(x, y, s * 1.25, s * 0.24, 5),
+        { color: C.yellow, seed: 411, alpha: 0.6, width: 5 });
+      crayonPath([[x - s * 1.3, y - s * 0.25], [x + s * 1.2, y - s * 0.25]],
+        { color: C.orange, width: 4, seed: 412, wobble: 1.5 });
+      crayonPath([[x - s * 1.3, y + s * 0.25], [x + s * 1.2, y + s * 0.25]],
+        { color: C.orange, width: 4, seed: 413, wobble: 1.5 });
+      // 연필심 얼굴 (왼쪽이 뾰족)
+      crayonPath([[x - s * 1.3, y - s * 0.25], [x - s * 1.85, y], [x - s * 1.3, y + s * 0.25]],
+        { color: C.skin, width: 4, seed: 414, wobble: 1 });
+      crayonPath(ellipsePts(x - s * 1.8, y, 3, 3, 8),
+        { color: C.darkBrown, width: 4, seed: 415, wobble: 0.5, alpha: 1 });
+      // 지우개 꼬리 (분홍)
+      scribbleFill(ellipseRows(x + s * 1.45, y, s * 0.28, s * 0.3, 5),
+        { color: C.pink, seed: 416, alpha: 0.8, width: 5 });
+      crayonPath([[x + s * 1.2, y - s * 0.3], [x + s * 1.7, y - s * 0.28], [x + s * 1.7, y + s * 0.28], [x + s * 1.2, y + s * 0.3], [x + s * 1.2, y - s * 0.3]],
+        { color: C.redDark, width: 3.5, seed: 417, wobble: 1 });
+      fishEyeMouth(x - s * 0.9, y - s * 0.02, 418, C.darkBrown);
+    },
+    'crayon-carp': () => {  // 무지개 줄무늬 잉어
+      const s = 34;
+      crayonPath(ellipsePts(x, y, s * 0.95, s * 0.55, 26),
+        { color: C.darkBrown, width: 4, seed: 421, wobble: 2.5 });
+      const stripes = [C.red, C.orange, C.yellow, C.green, C.deepBlue];
+      stripes.forEach((col, i) => {
+        const sx = x - s * 0.5 + i * s * 0.25;
+        const h = Math.sqrt(Math.max(0.1, 1 - ((sx - x) / (s * 0.95)) ** 2)) * s * 0.45;
+        crayonPath([[sx, y - h], [sx - s * 0.08, y + h]],
+          { color: col, width: 6, seed: 422 + i, wobble: 1.5, alpha: 0.8 });
+      });
+      crayonPath([[x + s * 0.85, y], [x + s * 1.35, y - s * 0.4], [x + s * 1.35, y + s * 0.4], [x + s * 0.85, y]],
+        { color: C.red, width: 4, seed: 428, wobble: 2 });
+      // 잉어 수염
+      crayonPath([[x - s * 0.8, y + s * 0.15], [x - s * 1.05, y + s * 0.3]],
+        { color: C.darkBrown, width: 2.5, seed: 429, wobble: 1 });
+      fishEyeMouth(x - s * 0.55, y - s * 0.15, 430, C.darkBrown);
+    },
+    'eraser-shark': () => {  // 지우개처럼 생긴 상어 (앞은 파랑, 뒤는 분홍)
+      const s = 36;
+      scribbleFill(ellipseRows(x + s * 0.25, y, s * 0.7, s * 0.42, 6),
+        { color: C.pink, seed: 441, alpha: 0.6, width: 5 });
+      scribbleFill(ellipseRows(x - s * 0.6, y, s * 0.35, s * 0.4, 6),
+        { color: C.deepBlue, seed: 442, alpha: 0.5, width: 5 });
+      crayonPath(ellipsePts(x, y, s * 1.0, s * 0.45, 26),
+        { color: C.redDark, width: 4, seed: 443, wobble: 2 });
+      // 등지느러미 + 꼬리
+      crayonPath([[x - s * 0.1, y - s * 0.42], [x + s * 0.15, y - s * 0.85], [x + s * 0.35, y - s * 0.42]],
+        { color: C.redDark, width: 4, seed: 444, wobble: 1.5 });
+      crayonPath([[x + s * 0.95, y], [x + s * 1.4, y - s * 0.45], [x + s * 1.3, y], [x + s * 1.4, y + s * 0.45], [x + s * 0.95, y]],
+        { color: C.redDark, width: 4, seed: 445, wobble: 1.5 });
+      // 뾰족 이빨 (지그재그 입)
+      crayonPath([[x - s * 0.95, y + s * 0.1], [x - s * 0.8, y + s * 0.22], [x - s * 0.65, y + s * 0.1], [x - s * 0.5, y + s * 0.22]],
+        { color: C.navy, width: 2.5, seed: 446, wobble: 0.5 });
+      crayonPath(ellipsePts(x - s * 0.6, y - s * 0.15, 3.5, 3.5, 10),
+        { color: C.navy, width: 3.5, seed: 447, wobble: 0.5, alpha: 1 });
+    },
+    'paper-ray': () => {  // 종이접기 가오리 (일부러 선이 반듯!)
+      const s = 36;
+      scribbleFill(ellipseRows(x, y, s * 0.8, s * 0.45, 7),
+        { color: C.orange, seed: 451, alpha: 0.45, width: 6 });
+      crayonPath([[x - s * 1.05, y], [x, y - s * 0.62], [x + s * 1.05, y], [x, y + s * 0.62], [x - s * 1.05, y]],
+        { color: C.redDark, width: 4, seed: 452, wobble: 0.8 });
+      // 접은 자국 (가운데 세로선)
+      crayonPath([[x, y - s * 0.55], [x, y + s * 0.55]],
+        { color: C.redDark, width: 2.5, seed: 453, wobble: 0.5, alpha: 0.6 });
+      // 가느다란 꼬리
+      crayonPath([[x + s * 1.0, y], [x + s * 1.6, y + s * 0.25]],
+        { color: C.redDark, width: 2.5, seed: 454, wobble: 2 });
+      // 눈 두 개 (가오리는 위에서 본 모습!)
+      crayonPath(ellipsePts(x - s * 0.18, y - s * 0.1, 3, 3, 8),
+        { color: C.navy, width: 3, seed: 455, wobble: 0.5, alpha: 1 });
+      crayonPath(ellipsePts(x + s * 0.18, y - s * 0.1, 3, 3, 8),
+        { color: C.navy, width: 3, seed: 456, wobble: 0.5, alpha: 1 });
+    },
+    'clip-anchovy': () => {  // 클립처럼 생긴 은색 꼬마
+      const s = 28;
+      crayonPath(ellipsePts(x, y, s * 1.05, s * 0.32, 22),
+        { color: C.gray, width: 4, seed: 501, wobble: 1.2 });
+      // 클립 속 겹친 선
+      crayonPath(ellipsePts(x + s * 0.15, y, s * 0.65, s * 0.16, 18),
+        { color: C.gray, width: 3, seed: 502, wobble: 1, alpha: 0.8 });
+      crayonPath([[x + s * 0.8, y], [x + s * 1.25, y - s * 0.3], [x + s * 1.25, y + s * 0.3], [x + s * 0.8, y]],
+        { color: C.gray, width: 3.5, seed: 503, wobble: 1.5 });
+      crayonPath(ellipsePts(x - s * 0.6, y - s * 0.06, 2.5, 2.5, 8),
+        { color: C.navy, width: 3, seed: 504, wobble: 0.4, alpha: 1 });
+    },
+    'marker-pike': () => {  // 사인펜 꽁치 (꼬리가 뚜껑!)
+      const s = 30;
+      scribbleFill(ellipseRows(x - s * 0.2, y, s * 1.0, s * 0.2, 5),
+        { color: C.pink, seed: 511, alpha: 0.6, width: 5 });
+      crayonPath([[x - s * 1.2, y - s * 0.22], [x + s * 0.8, y - s * 0.22], [x + s * 0.8, y + s * 0.22], [x - s * 1.2, y + s * 0.22], [x - s * 1.2, y - s * 0.22]],
+        { color: C.redDark, width: 3.5, seed: 512, wobble: 1 });
+      // 둥근 펜촉 머리
+      crayonPath([[x - s * 1.2, y - s * 0.22], [x - s * 1.55, y - s * 0.08], [x - s * 1.55, y + s * 0.08], [x - s * 1.2, y + s * 0.22]],
+        { color: C.redDark, width: 3.5, seed: 513, wobble: 1 });
+      // 뚜껑 꼬리 (진한 색 + 클립)
+      scribbleFill(ellipseRows(x + s * 1.15, y, s * 0.32, s * 0.26, 5),
+        { color: C.deepBlue, seed: 514, alpha: 0.6, width: 5 });
+      crayonPath([[x + s * 0.8, y - s * 0.26], [x + s * 1.5, y - s * 0.26], [x + s * 1.5, y + s * 0.26], [x + s * 0.8, y + s * 0.26], [x + s * 0.8, y - s * 0.26]],
+        { color: C.navy, width: 3.5, seed: 515, wobble: 1 });
+      crayonPath([[x + s * 1.42, y - s * 0.26], [x + s * 1.42, y - s * 0.55]],
+        { color: C.navy, width: 3, seed: 516, wobble: 0.8 });
+      fishEyeMouth(x - s * 1.0, y - s * 0.02, 517, C.navy);
+    },
+    'brush-goldfish': () => {  // 꼬리가 붓인 금붕어
+      const s = 32;
+      scribbleFill(ellipseRows(x - s * 0.2, y, s * 0.6, s * 0.45, 6),
+        { color: C.orange, seed: 521, alpha: 0.6, width: 5 });
+      crayonPath(ellipsePts(x - s * 0.2, y, s * 0.65, s * 0.5, 24),
+        { color: C.red, width: 4, seed: 522, wobble: 2.5 });
+      // 위 지느러미 (하늘하늘)
+      crayonPath([[x - s * 0.4, y - s * 0.45], [x - s * 0.2, y - s * 0.8], [x + s * 0.05, y - s * 0.45]],
+        { color: C.red, width: 3.5, seed: 523, wobble: 2 });
+      // 붓 꼬리: 손잡이 + 색이 묻은 붓끝
+      crayonPath([[x + s * 0.45, y], [x + s * 0.95, y]],
+        { color: C.brown, width: 5, seed: 524, wobble: 1 });
+      [C.red, C.deepBlue, C.green].forEach((col, i) => {
+        crayonPath([[x + s * 0.95, y + (i - 1) * 4], [x + s * 1.5, y + (i - 1) * 9]],
+          { color: col, width: 4, seed: 525 + i, wobble: 2, alpha: 0.9 });
+      });
+      fishEyeMouth(x - s * 0.55, y - s * 0.1, 529, C.redDark);
+    },
+    'paint-puffer': () => {  // 물감 방울 복어 (콕콕 찌르면 물감이 튄다!)
+      const s = 30;
+      scribbleFill(ellipseRows(x, y, s * 0.72, s * 0.68, 6),
+        { color: C.green, seed: 531, alpha: 0.45, width: 5 });
+      crayonPath(ellipsePts(x, y, s * 0.78, s * 0.74, 26),
+        { color: C.darkGreen, width: 4, seed: 532, wobble: 2.5 });
+      // 복어 가시 (짧은 선들 사방으로)
+      for (let i = 0; i < 10; i++) {
+        const a = (i / 10) * Math.PI * 2 + 0.3;
+        crayonPath([[x + Math.cos(a) * s * 0.8, y + Math.sin(a) * s * 0.76],
+                    [x + Math.cos(a) * s * 1.02, y + Math.sin(a) * s * 0.97]],
+          { color: C.darkGreen, width: 3, seed: 533 + i, wobble: 0.8 });
+      }
+      // 물감 얼룩들
+      [[C.red, -0.3, -0.25], [C.yellow, 0.25, -0.1], [C.deepBlue, -0.05, 0.3]].forEach(([col, dx, dy], i) => {
+        crayonPath(ellipsePts(x + s * dx, y + s * dy, s * 0.13, s * 0.11, 10),
+          { color: col, width: 4, seed: 543 + i, wobble: 1, alpha: 0.9 });
+      });
+      fishEyeMouth(x - s * 0.3, y - s * 0.12, 547, C.navy);
+    },
+    'deskpad-flounder': () => {  // 초록 반투명 네모 책받침 광어 (눈 두 개가 위쪽에!)
+      const s = 38;
+      // 네모난 몸통 색칠 (반투명 플라스틱 느낌으로 연하게)
+      const rows = [];
+      for (let ry = y - s * 0.32; ry < y + s * 0.38; ry += 8) {
+        rows.push({ y: ry, x1: x - s * 1.0, x2: x + s * 0.85 });
+      }
+      scribbleFill(rows, { color: C.green, seed: 561, alpha: 0.28, width: 7, overshoot: 3 });
+      // 반듯한 네모 외곽선 (책받침이니까 일부러 안 꼬불거리게)
+      crayonPath([[x - s * 1.1, y - s * 0.42], [x + s * 0.95, y - s * 0.42], [x + s * 0.95, y + s * 0.45], [x - s * 1.1, y + s * 0.45], [x - s * 1.1, y - s * 0.42]],
+        { color: C.darkGreen, width: 4, seed: 562, wobble: 0.7 });
+      // 꼬리
+      crayonPath([[x + s * 0.95, y], [x + s * 1.35, y - s * 0.24], [x + s * 1.35, y + s * 0.24], [x + s * 0.95, y]],
+        { color: C.darkGreen, width: 3.5, seed: 563, wobble: 1 });
+      // 플라스틱 반짝 (비스듬한 빛 줄 두 개)
+      crayonPath([[x - s * 0.75, y - s * 0.1], [x - s * 0.35, y - s * 0.3]],
+        { color: '#ffffff', width: 4, seed: 564, wobble: 0.6, alpha: 0.95 });
+      crayonPath([[x - s * 0.5, y + s * 0.05], [x - s * 0.2, y - s * 0.1]],
+        { color: '#ffffff', width: 3, seed: 568, wobble: 0.6, alpha: 0.8 });
+      // 광어 눈 두 개 (위쪽에 몰려 있음)
+      crayonPath(ellipsePts(x - s * 0.55, y - s * 0.14, 3.5, 3.5, 10),
+        { color: C.darkGreen, width: 3.5, seed: 565, wobble: 0.4, alpha: 1 });
+      crayonPath(ellipsePts(x - s * 0.33, y - s * 0.22, 3.5, 3.5, 10),
+        { color: C.darkGreen, width: 3.5, seed: 566, wobble: 0.4, alpha: 1 });
+      // 웃는 입
+      crayonPath([[x - s * 0.65, y + 6], [x - s * 0.55, y + 10], [x - s * 0.43, y + 6]],
+        { color: C.darkGreen, width: 2.5, seed: 567, wobble: 0.4 });
+    },
+    'paint-tuna': () => {  // 부위별 물감이 든 참치 (등=남색, 아카미·주토로·오토로)
+      const s = 36;
+      // 등 (남색) / 아카미 (빨강) / 주토로 (분홍) — 아래는 흰 종이 그대로 (오토로!)
+      scribbleFill(ellipseRows(x, y - s * 0.22, s * 0.85, s * 0.2, 6),
+        { color: C.navy, seed: 571, alpha: 0.5, width: 6 });
+      scribbleFill(ellipseRows(x, y + 0, s * 0.9, s * 0.15, 6),
+        { color: C.red, seed: 572, alpha: 0.5, width: 6 });
+      scribbleFill(ellipseRows(x, y + s * 0.2, s * 0.8, s * 0.12, 6),
+        { color: C.pink, seed: 573, alpha: 0.55, width: 6 });
+      crayonPath(ellipsePts(x, y, s * 1.05, s * 0.5, 28),
+        { color: C.navy, width: 4, seed: 574, wobble: 2 });
+      // 초승달 꼬리 (참치답게 날렵!)
+      crayonPath([[x + s * 1.0, y], [x + s * 1.45, y - s * 0.45], [x + s * 1.2, y], [x + s * 1.45, y + s * 0.45], [x + s * 1.0, y]],
+        { color: C.navy, width: 4, seed: 575, wobble: 1.5 });
+      // 노란 지느러미 (참치 특징!)
+      crayonPath([[x + s * 0.1, y - s * 0.48], [x + s * 0.3, y - s * 0.72], [x + s * 0.45, y - s * 0.45]],
+        { color: C.yellow, width: 3.5, seed: 576, wobble: 1 });
+      fishEyeMouth(x - s * 0.6, y - s * 0.14, 577, C.navy);
+    },
+    'foil-mackerel': () => {  // 은박지 비늘 고등어
+      const s = 34;
+      scribbleFill(ellipseRows(x, y, s * 1.0, s * 0.3, 6),
+        { color: C.gray, seed: 701, alpha: 0.4, width: 6 });
+      crayonPath(ellipsePts(x, y, s * 1.1, s * 0.35, 26),
+        { color: C.navy, width: 4, seed: 702, wobble: 1.5 });
+      // 등 무늬 (고등어 특유의 구불구불)
+      for (let i = 0; i < 4; i++) {
+        const wx = x - s * 0.7 + i * s * 0.42;
+        crayonPath([[wx, y - s * 0.22], [wx + s * 0.12, y - s * 0.1], [wx + s * 0.24, y - s * 0.22]],
+          { color: C.navy, width: 2.5, seed: 703 + i, wobble: 0.8 });
+      }
+      // 은박지 반짝
+      crayonPath([[x - s * 0.5, y + s * 0.08], [x + s * 0.4, y + s * 0.05]],
+        { color: '#ffffff', width: 3.5, seed: 708, wobble: 1, alpha: 0.95 });
+      crayonPath([[x + s * 1.05, y], [x + s * 1.4, y - s * 0.3], [x + s * 1.35, y + s * 0.3], [x + s * 1.05, y]],
+        { color: C.navy, width: 3.5, seed: 709, wobble: 1 });
+      fishEyeMouth(x - s * 0.7, y - s * 0.05, 710, C.navy);
+    },
+    'glitter-guppy': () => {  // 꼬리에 반짝이풀 바른 구피
+      const s = 30;
+      scribbleFill(ellipseRows(x - s * 0.3, y, s * 0.4, s * 0.28, 5),
+        { color: C.orange, seed: 721, alpha: 0.6, width: 5 });
+      crayonPath(ellipsePts(x - s * 0.3, y, s * 0.45, s * 0.32, 20),
+        { color: C.red, width: 3.5, seed: 722, wobble: 1.5 });
+      // 커다란 부채꼴 꼬리 (색색으로)
+      const tailCols = [C.pink, C.skyBlue, C.yellow, C.pink, C.skyBlue];
+      tailCols.forEach((col, i) => {
+        const a = -0.7 + i * 0.35;
+        crayonPath([[x + s * 0.1, y], [x + s * 0.1 + Math.cos(a) * s * 0.95, y + Math.sin(a) * s * 0.85]],
+          { color: col, width: 5.5, seed: 723 + i, wobble: 1.5, alpha: 0.85 });
+      });
+      // 반짝이 (작은 십자 반짝)
+      for (let i = 0; i < 5; i++) {
+        const gx = x + s * (0.4 + (i % 3) * 0.25), gy = y - s * 0.35 + (i * 37 % 3) * s * 0.35;
+        crayonPath([[gx - 3, gy], [gx + 3, gy]], { color: C.yellow, width: 2, seed: 730 + i, wobble: 0.3, alpha: 1 });
+        crayonPath([[gx, gy - 3], [gx, gy + 3]], { color: C.yellow, width: 2, seed: 735 + i, wobble: 0.3, alpha: 1 });
+      }
+      fishEyeMouth(x - s * 0.55, y - s * 0.06, 741, C.redDark);
+    },
+    'eraser-shrimp': () => {  // 분홍 지우개 단새우
+      const s = 30;
+      // 구부러진 몸통 (두툼한 호)
+      const body = [];
+      for (let i = 0; i <= 12; i++) {
+        const a = -0.4 + (i / 12) * 2.6;
+        body.push([x - Math.cos(a) * s * 0.62, y - s * 0.05 - Math.sin(a) * s * 0.55]);
+      }
+      crayonPath(body, { color: C.pink, width: 13, seed: 751, wobble: 1, alpha: 0.85, passes: 2 });
+      crayonPath(body, { color: C.redDark, width: 3, seed: 752, wobble: 1.2 });
+      // 마디 줄 + 파란 지우개 띠
+      for (let i = 3; i <= 9; i += 2) {
+        const a = -0.4 + (i / 12) * 2.6;
+        const bx2 = x - Math.cos(a) * s * 0.62, by2 = y - s * 0.05 - Math.sin(a) * s * 0.55;
+        crayonPath([[bx2 - 4, by2 - 5], [bx2 + 4, by2 + 5]],
+          { color: C.redDark, width: 2, seed: 753 + i, wobble: 0.5, alpha: 0.7 });
+      }
+      crayonPath([[x + s * 0.5, y + s * 0.2], [x + s * 0.68, y + s * 0.42]],
+        { color: C.deepBlue, width: 6, seed: 760, wobble: 0.5, alpha: 0.8 });
+      // 더듬이 + 눈
+      crayonPath([[x - s * 0.62, y - s * 0.5], [x - s * 1.15, y - s * 0.75]],
+        { color: C.redDark, width: 2, seed: 761, wobble: 1.5 });
+      crayonPath([[x - s * 0.6, y - s * 0.45], [x - s * 1.05, y - s * 0.5]],
+        { color: C.redDark, width: 2, seed: 762, wobble: 1.5 });
+      crayonPath(ellipsePts(x - s * 0.55, y - s * 0.4, 2.8, 2.8, 8),
+        { color: C.navy, width: 3, seed: 763, wobble: 0.3, alpha: 1 });
+    },
+    'glue-loach': () => {  // 물풀처럼 미끈미끈 미꾸라지
+      const s = 34;
+      const body = [];
+      for (let i = 0; i <= 14; i++) {
+        const t2 = i / 14;
+        body.push([x - s * 1.2 + t2 * s * 2.4, y + Math.sin(t2 * Math.PI * 2.2) * s * 0.22]);
+      }
+      crayonPath(body, { color: C.brown, width: 9, seed: 771, wobble: 3, alpha: 0.75, passes: 2 });
+      crayonPath(body, { color: C.darkBrown, width: 2.5, seed: 772, wobble: 3 });
+      // 풀 방울 (미끈미끈)
+      crayonPath(ellipsePts(x - s * 0.3, y + s * 0.45, 4, 5, 8),
+        { color: C.skyBlue, width: 3, seed: 773, wobble: 0.5, alpha: 0.8 });
+      crayonPath(ellipsePts(x + s * 0.55, y + s * 0.4, 3, 4, 8),
+        { color: C.skyBlue, width: 2.5, seed: 774, wobble: 0.5, alpha: 0.8 });
+      // 수염 + 눈
+      crayonPath([[x - s * 1.2, y + 2], [x - s * 1.45, y + s * 0.2]],
+        { color: C.darkBrown, width: 2, seed: 775, wobble: 1 });
+      crayonPath([[x - s * 1.18, y - 2], [x - s * 1.42, y - s * 0.12]],
+        { color: C.darkBrown, width: 2, seed: 776, wobble: 1 });
+      crayonPath(ellipsePts(x - s * 1.0, y - s * 0.1, 2.5, 2.5, 8),
+        { color: C.navy, width: 3, seed: 777, wobble: 0.3, alpha: 1 });
+    },
+    'redpen-snapper': () => {  // 선생님 빨간펜으로 그린 100점 도미
+      const s = 32;
+      scribbleFill(ellipseRows(x, y, s * 0.75, s * 0.5, 7),
+        { color: C.red, seed: 781, alpha: 0.3, width: 6 });
+      crayonPath(ellipsePts(x, y, s * 0.85, s * 0.58, 26),
+        { color: C.red, width: 4, seed: 782, wobble: 2 });
+      // 등 가시 지느러미
+      for (let i = 0; i < 4; i++) {
+        const fx2 = x - s * 0.45 + i * s * 0.28;
+        crayonPath([[fx2, y - s * 0.5], [fx2 + s * 0.1, y - s * 0.78], [fx2 + s * 0.22, y - s * 0.48]],
+          { color: C.red, width: 3, seed: 783 + i, wobble: 0.8 });
+      }
+      crayonPath([[x + s * 0.8, y], [x + s * 1.25, y - s * 0.42], [x + s * 1.25, y + s * 0.42], [x + s * 0.8, y]],
+        { color: C.red, width: 3.5, seed: 788, wobble: 1.5 });
+      // 참 잘했어요 도장 (겹 동그라미)
+      crayonPath(ellipsePts(x + s * 0.25, y + s * 0.1, 9, 9, 12),
+        { color: C.redDark, width: 3, seed: 789, wobble: 1, alpha: 0.9 });
+      crayonPath(ellipsePts(x + s * 0.25, y + s * 0.1, 4, 4, 8),
+        { color: C.redDark, width: 2.5, seed: 790, wobble: 0.8, alpha: 0.9 });
+      fishEyeMouth(x - s * 0.5, y - s * 0.12, 791, C.redDark);
+    },
+    'scissor-cutlass': () => {  // 입이 가위인 은빛 갈치
+      const s = 38;
+      // 길고 비스듬한 은빛 몸통
+      crayonPath([[x - s * 1.1, y + s * 0.18], [x + s * 1.3, y - s * 0.22]],
+        { color: C.gray, width: 11, seed: 801, wobble: 1.5, alpha: 0.75, passes: 2 });
+      crayonPath([[x + s * 1.3, y - s * 0.22], [x + s * 1.6, y - s * 0.3]],
+        { color: C.gray, width: 4, seed: 802, wobble: 1 });
+      crayonPath([[x - s * 0.8, y + s * 0.1], [x + s * 1.0, y - s * 0.16]],
+        { color: '#ffffff', width: 3, seed: 803, wobble: 1, alpha: 0.9 });
+      // 가위 입 (벌어진 가윗날 + 손잡이 동그라미)
+      crayonPath([[x - s * 1.1, y + s * 0.18], [x - s * 1.65, y - s * 0.05]],
+        { color: C.gray, width: 4, seed: 804, wobble: 0.8 });
+      crayonPath([[x - s * 1.1, y + s * 0.18], [x - s * 1.55, y + s * 0.5]],
+        { color: C.gray, width: 4, seed: 805, wobble: 0.8 });
+      crayonPath(ellipsePts(x - s * 1.72, y - s * 0.1, 5, 5, 10),
+        { color: C.redDark, width: 3, seed: 806, wobble: 0.5 });
+      crayonPath(ellipsePts(x - s * 1.62, y + s * 0.55, 5, 5, 10),
+        { color: C.redDark, width: 3, seed: 807, wobble: 0.5 });
+      crayonPath(ellipsePts(x - s * 0.85, y, 2.8, 2.8, 8),
+        { color: C.navy, width: 3, seed: 808, wobble: 0.3, alpha: 1 });
+    },
+    'bucket-catfish': () => {  // 붓 씻는 물통에 사는 메기 (수염은 붓털!)
+      const s = 36;
+      scribbleFill(ellipseRows(x + s * 0.1, y, s * 0.85, s * 0.38, 7),
+        { color: C.brown, seed: 821, alpha: 0.4, width: 6 });
+      crayonPath(ellipsePts(x + s * 0.1, y, s * 0.95, s * 0.42, 26),
+        { color: C.darkBrown, width: 4, seed: 822, wobble: 2 });
+      // 넓적한 머리
+      crayonPath(ellipsePts(x - s * 0.55, y, s * 0.5, s * 0.45, 22),
+        { color: C.darkBrown, width: 4, seed: 823, wobble: 2 });
+      // 붓털 수염 (양쪽 세 가닥)
+      for (let i = 0; i < 3; i++) {
+        crayonPath([[x - s * 0.95, y - s * 0.1 + i * s * 0.12], [x - s * 1.5, y - s * 0.35 + i * s * 0.3]],
+          { color: C.darkBrown, width: 2.2, seed: 824 + i, wobble: 2 });
+      }
+      crayonPath([[x + s * 1.0, y], [x + s * 1.3, y - s * 0.3], [x + s * 1.3, y + s * 0.3], [x + s * 1.0, y]],
+        { color: C.darkBrown, width: 3.5, seed: 828, wobble: 1.2 });
+      // 눈 두 개 (머리 위) + 함박웃음
+      crayonPath(ellipsePts(x - s * 0.65, y - s * 0.2, 2.8, 2.8, 8),
+        { color: C.navy, width: 3, seed: 829, wobble: 0.3, alpha: 1 });
+      crayonPath(ellipsePts(x - s * 0.4, y - s * 0.22, 2.8, 2.8, 8),
+        { color: C.navy, width: 3, seed: 830, wobble: 0.3, alpha: 1 });
+      crayonPath([[x - s * 0.8, y + s * 0.15], [x - s * 0.5, y + s * 0.28], [x - s * 0.2, y + s * 0.15]],
+        { color: C.navy, width: 2.5, seed: 831, wobble: 0.5 });
+    },
+    'highlighter-sweetfish': () => {  // 형광펜처럼 빛나는 은어
+      const s = 34;
+      // 형광 번짐 (몸 둘레 흐릿한 노랑)
+      crayonPath(ellipsePts(x, y, s * 1.05, s * 0.36, 24),
+        { color: C.yellow, width: 13, seed: 841, wobble: 1.5, alpha: 0.25, passes: 1, continuous: true });
+      scribbleFill(ellipseRows(x, y, s * 0.9, s * 0.26, 5),
+        { color: C.yellow, seed: 842, alpha: 0.7, width: 5 });
+      crayonPath(ellipsePts(x, y, s * 1.0, s * 0.3, 24),
+        { color: C.green, width: 3.5, seed: 843, wobble: 1.5 });
+      // 납작하게 깎인 형광펜 촉 얼굴
+      crayonPath([[x - s * 1.0, y - s * 0.26], [x - s * 1.3, y + s * 0.05], [x - s * 0.95, y + s * 0.28]],
+        { color: C.green, width: 3.5, seed: 844, wobble: 0.8 });
+      crayonPath([[x + s * 0.95, y], [x + s * 1.3, y - s * 0.28], [x + s * 1.3, y + s * 0.28], [x + s * 0.95, y]],
+        { color: C.green, width: 3.5, seed: 845, wobble: 1 });
+      fishEyeMouth(x - s * 0.6, y - s * 0.05, 846, C.darkGreen);
+    },
+    'notebook-crucian': () => {  // 공책 줄이 그어진 붕어
+      const s = 34;
+      crayonPath(ellipsePts(x, y, s * 0.9, s * 0.55, 26),
+        { color: C.darkBrown, width: 4, seed: 861, wobble: 2 });
+      // 공책 줄 (하늘색 가로줄 + 빨간 세로 여백선)
+      for (let i = 0; i < 3; i++) {
+        const ly = y - s * 0.25 + i * s * 0.25;
+        const half = Math.sqrt(Math.max(0.1, 1 - ((ly - y) / (s * 0.55)) ** 2)) * s * 0.82;
+        crayonPath([[x - half, ly], [x + half, ly]],
+          { color: C.skyBlue, width: 2.5, seed: 862 + i, wobble: 0.8, alpha: 0.9 });
+      }
+      crayonPath([[x - s * 0.45, y - s * 0.45], [x - s * 0.45, y + s * 0.45]],
+        { color: C.red, width: 2, seed: 866, wobble: 0.8, alpha: 0.7 });
+      crayonPath([[x + s * 0.85, y], [x + s * 1.3, y - s * 0.4], [x + s * 1.3, y + s * 0.4], [x + s * 0.85, y]],
+        { color: C.darkBrown, width: 3.5, seed: 867, wobble: 1.5 });
+      fishEyeMouth(x - s * 0.55, y - s * 0.15, 868, C.darkBrown);
+    },
+    'ruler-minnow': () => {  // 눈금 달린 자 피라미
+      const s = 32;
+      scribbleFill(ellipseRows(x, y, s * 1.0, s * 0.22, 5),
+        { color: C.yellow, seed: 871, alpha: 0.45, width: 5 });
+      crayonPath([[x - s * 1.15, y - s * 0.24], [x + s * 1.0, y - s * 0.24], [x + s * 1.0, y + s * 0.24], [x - s * 1.15, y + s * 0.24], [x - s * 1.15, y - s * 0.24]],
+        { color: C.brown, width: 3.5, seed: 872, wobble: 0.7 });
+      // 자 눈금 (위쪽에, 길고 짧게 번갈아)
+      for (let i = 0; i < 7; i++) {
+        const tx2 = x - s * 0.95 + i * s * 0.3;
+        crayonPath([[tx2, y - s * 0.24], [tx2, y - s * 0.24 + (i % 2 ? s * 0.1 : s * 0.16)]],
+          { color: C.darkBrown, width: 2, seed: 873 + i, wobble: 0.3 });
+      }
+      crayonPath([[x + s * 1.0, y], [x + s * 1.3, y - s * 0.22], [x + s * 1.3, y + s * 0.22], [x + s * 1.0, y]],
+        { color: C.brown, width: 3, seed: 880, wobble: 1 });
+      fishEyeMouth(x - s * 0.85, y - s * 0.02, 881, C.darkBrown);
+    },
+    'tape-salmon': () => {  // 강을 되감는 테이프 연어
+      const s = 34;
+      scribbleFill(ellipseRows(x, y, s * 0.95, s * 0.4, 6),
+        { color: C.pink, seed: 891, alpha: 0.5, width: 6 });
+      scribbleFill(ellipseRows(x, y - s * 0.25, s * 0.85, s * 0.12, 5),
+        { color: C.deepBlue, seed: 892, alpha: 0.4, width: 5 });
+      crayonPath(ellipsePts(x, y, s * 1.05, s * 0.45, 26),
+        { color: C.redDark, width: 4, seed: 893, wobble: 2 });
+      // 테이프 롤 무늬 (가운데 구멍 뚫린 동그라미)
+      crayonPath(ellipsePts(x + s * 0.2, y + s * 0.05, 10, 10, 14),
+        { color: '#ffffff', width: 3.5, seed: 894, wobble: 0.8, alpha: 0.95 });
+      crayonPath(ellipsePts(x + s * 0.2, y + s * 0.05, 4, 4, 8),
+        { color: '#ffffff', width: 2.5, seed: 895, wobble: 0.5, alpha: 0.95 });
+      crayonPath([[x + s * 1.0, y], [x + s * 1.4, y - s * 0.4], [x + s * 1.4, y + s * 0.4], [x + s * 1.0, y]],
+        { color: C.redDark, width: 3.5, seed: 896, wobble: 1.5 });
+      fishEyeMouth(x - s * 0.6, y - s * 0.1, 897, C.redDark);
+    },
+    'ballpoint-rockfish': () => {  // 촉이 볼펜인 우럭
+      const s = 32;
+      scribbleFill(ellipseRows(x, y, s * 0.8, s * 0.45, 6),
+        { color: C.navy, seed: 901, alpha: 0.4, width: 6 });
+      crayonPath(ellipsePts(x, y, s * 0.9, s * 0.52, 26),
+        { color: C.navy, width: 4, seed: 902, wobble: 2 });
+      // 뾰족뾰족 등지느러미 (우럭!)
+      for (let i = 0; i < 4; i++) {
+        const fx2 = x - s * 0.5 + i * s * 0.28;
+        crayonPath([[fx2, y - s * 0.45], [fx2 + s * 0.1, y - s * 0.72], [fx2 + s * 0.22, y - s * 0.43]],
+          { color: C.navy, width: 2.5, seed: 903 + i, wobble: 0.8 });
+      }
+      // 볼펜 촉 입 (은색 원뿔 + 볼 점)
+      crayonPath([[x - s * 0.85, y - s * 0.12], [x - s * 1.25, y + s * 0.02], [x - s * 0.85, y + s * 0.16]],
+        { color: C.gray, width: 3.5, seed: 908, wobble: 0.6 });
+      crayonPath(ellipsePts(x - s * 1.27, y + s * 0.02, 2.5, 2.5, 8),
+        { color: C.darkBrown, width: 3, seed: 909, wobble: 0.3, alpha: 1 });
+      crayonPath([[x + s * 0.85, y], [x + s * 1.2, y - s * 0.35], [x + s * 1.2, y + s * 0.35], [x + s * 0.85, y]],
+        { color: C.navy, width: 3.5, seed: 910, wobble: 1.2 });
+      // 어두운 몸이라 눈은 하얗게
+      crayonPath(ellipsePts(x - s * 0.5, y - s * 0.12, 4, 4, 10),
+        { color: '#ffffff', width: 3.5, seed: 911, wobble: 0.4, alpha: 1 });
+      crayonPath(ellipsePts(x - s * 0.5, y - s * 0.12, 1.8, 1.8, 6),
+        { color: C.navy, width: 2.5, seed: 912, wobble: 0.3, alpha: 1 });
+    },
+    'nametag-pollock': () => {  // 이름표를 붙이고 다니는 명태
+      const s = 36;
+      scribbleFill(ellipseRows(x, y, s * 1.0, s * 0.3, 6),
+        { color: C.skyBlue, seed: 921, alpha: 0.35, width: 6 });
+      crayonPath(ellipsePts(x, y, s * 1.1, s * 0.35, 26),
+        { color: C.deepBlue, width: 4, seed: 922, wobble: 1.8 });
+      // 이름표 두 장 (흰 네모 + 빨간 테두리)
+      [[-0.45, -0.05], [0.3, 0.02]].forEach(([dx, dy], i) => {
+        const nx = x + s * dx, ny = y + s * dy;
+        ctx.save(); ctx.globalAlpha = 0.9; ctx.fillStyle = '#ffffff';
+        ctx.fillRect(nx - 11, ny - 7, 22, 14); ctx.restore();
+        crayonPath([[nx - 11, ny - 7], [nx + 11, ny - 7], [nx + 11, ny + 7], [nx - 11, ny + 7], [nx - 11, ny - 7]],
+          { color: C.red, width: 2, seed: 923 + i, wobble: 0.5 });
+        crayonPath([[nx - 7, ny], [nx + 7, ny]],
+          { color: C.gray, width: 1.8, seed: 925 + i, wobble: 0.5 });
+      });
+      crayonPath([[x + s * 1.05, y], [x + s * 1.4, y - s * 0.3], [x + s * 1.4, y + s * 0.3], [x + s * 1.05, y]],
+        { color: C.deepBlue, width: 3.5, seed: 928, wobble: 1.2 });
+      fishEyeMouth(x - s * 0.75, y - s * 0.05, 929, C.navy);
+    },
+    'pencil-trout': () => {  // 옆줄이 색연필 심인 송어
+      const s = 34;
+      scribbleFill(ellipseRows(x, y, s * 0.95, s * 0.35, 6),
+        { color: C.green, seed: 941, alpha: 0.3, width: 6 });
+      crayonPath(ellipsePts(x, y, s * 1.05, s * 0.4, 26),
+        { color: C.darkGreen, width: 4, seed: 942, wobble: 2 });
+      // 분홍 옆줄 (색연필 심!)
+      crayonPath([[x - s * 0.8, y + s * 0.02], [x + s * 0.8, y - s * 0.02]],
+        { color: C.pink, width: 6, seed: 943, wobble: 1.5, alpha: 0.9 });
+      // 점무늬 (송어!)
+      for (let i = 0; i < 5; i++) {
+        crayonPath(ellipsePts(x - s * 0.6 + i * s * 0.3, y - s * 0.2, 2, 2, 6),
+          { color: C.darkGreen, width: 2.5, seed: 944 + i, wobble: 0.3, alpha: 0.9 });
+      }
+      crayonPath([[x + s * 1.0, y], [x + s * 1.35, y - s * 0.32], [x + s * 1.35, y + s * 0.32], [x + s * 1.0, y]],
+        { color: C.darkGreen, width: 3.5, seed: 950, wobble: 1.2 });
+      fishEyeMouth(x - s * 0.65, y - s * 0.1, 951, C.darkGreen);
+    },
+    'glue-yellowtail': () => {  // 풀로 몸을 지키는(?) 방어
+      const s = 34;
+      scribbleFill(ellipseRows(x, y, s * 0.95, s * 0.38, 6),
+        { color: C.skyBlue, seed: 961, alpha: 0.4, width: 6 });
+      crayonPath(ellipsePts(x, y, s * 1.05, s * 0.42, 26),
+        { color: C.deepBlue, width: 4, seed: 962, wobble: 2 });
+      // 노란 옆줄 + 노란 꼬리 (방어!)
+      crayonPath([[x - s * 0.85, y], [x + s * 0.9, y]],
+        { color: C.yellow, width: 5, seed: 963, wobble: 1.2, alpha: 0.95 });
+      crayonPath([[x + s * 1.0, y], [x + s * 1.4, y - s * 0.35], [x + s * 1.4, y + s * 0.35], [x + s * 1.0, y]],
+        { color: C.orange, width: 3.5, seed: 964, wobble: 1.2 });
+      // 풀 자국 (몸에 살짝 반짝이는 풀 칠)
+      crayonPath([[x - s * 0.3, y - s * 0.28], [x + s * 0.25, y - s * 0.3]],
+        { color: '#ffffff', width: 3.5, seed: 965, wobble: 1, alpha: 0.8 });
+      fishEyeMouth(x - s * 0.65, y - s * 0.1, 966, C.navy);
+    },
+    'ink-snakehead': () => {  // 먹물처럼 새까만 가물치
+      const s = 38;
+      scribbleFill(ellipseRows(x, y, s * 1.05, s * 0.32, 5),
+        { color: C.navy, seed: 971, alpha: 0.65, width: 7 });
+      crayonPath(ellipsePts(x, y, s * 1.15, s * 0.36, 28),
+        { color: C.navy, width: 4.5, seed: 972, wobble: 2 });
+      // 먹물 방울 뚝뚝
+      crayonPath(ellipsePts(x - s * 0.2, y + s * 0.5, 4, 5, 8),
+        { color: C.navy, width: 3, seed: 973, wobble: 0.5, alpha: 0.9 });
+      crayonPath(ellipsePts(x + s * 0.45, y + s * 0.48, 3, 4, 8),
+        { color: C.navy, width: 2.5, seed: 974, wobble: 0.5, alpha: 0.9 });
+      crayonPath([[x + s * 1.1, y], [x + s * 1.4, y - s * 0.28], [x + s * 1.4, y + s * 0.28], [x + s * 1.1, y]],
+        { color: C.navy, width: 3.5, seed: 975, wobble: 1.2 });
+      // 새까만 몸이라 눈은 하얗게
+      crayonPath(ellipsePts(x - s * 0.75, y - s * 0.08, 4, 4, 10),
+        { color: '#ffffff', width: 3.5, seed: 976, wobble: 0.4, alpha: 1 });
+      crayonPath(ellipsePts(x - s * 0.75, y - s * 0.08, 1.8, 1.8, 6),
+        { color: C.navy, width: 2.5, seed: 977, wobble: 0.3, alpha: 1 });
+    },
+    'thumbtack-urchin': () => {  // 가시가 전부 압정인 성게
+      const s = 28;
+      scribbleFill(ellipseRows(x, y, s * 0.65, s * 0.6, 5),
+        { color: C.navy, seed: 981, alpha: 0.55, width: 5 });
+      crayonPath(ellipsePts(x, y, s * 0.7, s * 0.65, 22),
+        { color: C.navy, width: 4, seed: 982, wobble: 2 });
+      // 속의 노란 물감 (우니!)
+      scribbleFill(ellipseRows(x, y, s * 0.28, s * 0.24, 4),
+        { color: C.yellow, seed: 983, alpha: 0.8, width: 4 });
+      // 압정 가시 (핀 + 빨간 머리)
+      for (let i = 0; i < 9; i++) {
+        const a = (i / 9) * Math.PI * 2 + 0.2;
+        const px2 = x + Math.cos(a) * s * 0.72, py2 = y + Math.sin(a) * s * 0.67;
+        const qx = x + Math.cos(a) * s * 1.05, qy = y + Math.sin(a) * s * 0.98;
+        crayonPath([[px2, py2], [qx, qy]],
+          { color: C.gray, width: 2.5, seed: 984 + i, wobble: 0.4 });
+        crayonPath(ellipsePts(qx, qy, 2.5, 2.5, 6),
+          { color: C.red, width: 2.5, seed: 994 + i, wobble: 0.3, alpha: 1 });
+      }
+      // 어두운 몸이라 눈은 하얗게
+      crayonPath(ellipsePts(x - s * 0.25, y - s * 0.15, 3, 3, 8),
+        { color: '#ffffff', width: 3, seed: 1004, wobble: 0.3, alpha: 1 });
+      crayonPath(ellipsePts(x + s * 0.25, y - s * 0.15, 3, 3, 8),
+        { color: '#ffffff', width: 3, seed: 1005, wobble: 0.3, alpha: 1 });
+    },
+    'marker-skate': () => {  // 매직 냄새 나는 홍어 (마름모 + 냄새 아지랑이)
+      const s = 36;
+      scribbleFill(ellipseRows(x, y, s * 0.75, s * 0.42, 7),
+        { color: C.navy, seed: 1011, alpha: 0.45, width: 6 });
+      crayonPath([[x - s * 1.0, y], [x, y - s * 0.58], [x + s * 1.0, y], [x, y + s * 0.58], [x - s * 1.0, y]],
+        { color: C.navy, width: 4, seed: 1012, wobble: 1 });
+      // 가느다란 꼬리
+      crayonPath([[x + s * 0.95, y], [x + s * 1.6, y + s * 0.2]],
+        { color: C.navy, width: 2.5, seed: 1013, wobble: 2 });
+      // 냄새 아지랑이 (구불구불 세 줄)
+      for (let i = 0; i < 3; i++) {
+        const ax2 = x - s * 0.35 + i * s * 0.35;
+        crayonPath([[ax2, y - s * 0.65], [ax2 + 4, y - s * 0.85], [ax2 - 2, y - s * 1.05]],
+          { color: C.gray, width: 2.2, seed: 1014 + i, wobble: 1.5, alpha: 0.8 });
+      }
+      // 눈 두 개 (위에서 본 모습)
+      crayonPath(ellipsePts(x - s * 0.18, y - s * 0.12, 3, 3, 8),
+        { color: '#ffffff', width: 3, seed: 1018, wobble: 0.3, alpha: 1 });
+      crayonPath(ellipsePts(x + s * 0.18, y - s * 0.12, 3, 3, 8),
+        { color: '#ffffff', width: 3, seed: 1019, wobble: 0.3, alpha: 1 });
+    },
+    'sketchbook-whale': () => {  // 전설의 대왕 고래 + 물 뿜기
+      const s = 38;
+      scribbleFill(ellipseRows(x, y + s * 0.05, s * 1.1, s * 0.55, 7),
+        { color: C.deepBlue, seed: 461, alpha: 0.5, width: 6 });
+      crayonPath(ellipsePts(x, y + s * 0.05, s * 1.2, s * 0.6, 30),
+        { color: C.navy, width: 4.5, seed: 462, wobble: 2.5 });
+      // 꼬리 (두 갈래)
+      crayonPath([[x + s * 1.1, y], [x + s * 1.55, y - s * 0.45], [x + s * 1.4, y + s * 0.05], [x + s * 1.6, y + s * 0.4], [x + s * 1.1, y + s * 0.15]],
+        { color: C.navy, width: 4, seed: 463, wobble: 1.5 });
+      // 배 줄무늬
+      for (let i = 0; i < 3; i++) {
+        crayonPath([[x - s * 0.9 + i * 6, y + s * 0.25 + i * 8], [x + s * 0.5 - i * 6, y + s * 0.25 + i * 8]],
+          { color: C.skyBlue, width: 3, seed: 464 + i, wobble: 1, alpha: 0.7 });
+      }
+      // 물 뿜기!
+      crayonPath([[x - s * 0.3, y - s * 0.55], [x - s * 0.45, y - s * 1.0]],
+        { color: C.skyBlue, width: 3.5, seed: 468, wobble: 2 });
+      crayonPath([[x - s * 0.3, y - s * 0.55], [x - s * 0.1, y - s * 0.95]],
+        { color: C.skyBlue, width: 3.5, seed: 469, wobble: 2 });
+      fishEyeMouth(x - s * 0.75, y - s * 0.05, 470, C.navy);
+    },
+  };
+  (d[fish.id] || d['kkobulchi'])();
+}
+
+function drawDynamic(t) {
+  const home = SCENE.bobberHome, tip = SCENE.rodTip;
+  if (!home) return;
+
+  // 찌 위치: 평소엔 살랑살랑, 입질/미니게임 중엔 쑥 들어감
+  let bobDip = Math.sin(t / 500) * 2.5;
+  if (game.state === 'minigame') bobDip = 13;
+  if (game.state === 'result' && game.result === 'catch') bobDip = -4;
+  const bx = home.x, by = home.y + bobDip;
+
+  // 낚싯줄 + 찌 + 물결
+  crayonPath([[tip.x, tip.y], [bx, by - 6]],
+    { color: C.gray, width: 2.5, seed: 222, wobble: 2 });
+  crayonPath(ellipsePts(bx, by - 4, 5.5, 6.5, 14),
+    { color: C.red, width: 5, seed: 224, wobble: 0.6, alpha: 1 });
+  crayonPath(ellipsePts(bx, by + 4, 20, 6, 18),
+    { color: C.navy, width: 3, seed: 226, wobble: 1.5, alpha: 0.55 });
+
+  // 입질 순간 물튀김 (커지는 물결 두 겹)
+  if (t < game.biteFxUntil) {
+    const p = 1 - (game.biteFxUntil - t) / 600;
+    crayonPath(ellipsePts(bx, by + 4, 24 + p * 26, 8 + p * 8, 18),
+      { color: C.deepBlue, width: 3, seed: 228, wobble: 1.5, alpha: 0.5 * (1 - p) + 0.2 });
+    crayonText(tr('bite'), bx, by - 34, 24, C.redDark);
+  }
+
+  // 상태별 안내와 동그라미
+  const hudY = SPIRAL_H + 40;
+  if (game.state === 'waiting') {
+    crayonText(tr('waiting'), W / 2, hudY, 22, C.darkBrown);
+    if (t < game.shushUntil) crayonText(tr('shush'), W / 2, hudY + 30, 18, C.gray);
+    // 도감 버튼 (왼쪽 위)
+    const b = dexBtnRect();
+    ctx.save();
+    ctx.globalAlpha = 0.92;
+    ctx.fillStyle = '#fdf8ec';
+    ctx.beginPath();
+    ctx.roundRect(b.x, b.y, b.w, b.h, 10);
+    ctx.fill();
+    ctx.restore();
+    crayonPath([[b.x, b.y], [b.x + b.w, b.y], [b.x + b.w, b.y + b.h], [b.x, b.y + b.h], [b.x, b.y]],
+      { color: C.brown, width: 3.5, seed: 601, wobble: 1.2 });
+    crayonText(tr('dex'), b.x + b.w / 2, b.y + 26, 17, C.darkBrown);
+  } else if (game.state === 'minigame') {
+    crayonText(tr('hint'), W / 2, hudY, 22, C.darkBrown);
+    if (game.circle) {
+      const c = game.circle;
+      const r = circleRadius(c, t);
+      // 목표 원 (갈색, 얇게) + 줄어드는 원 (주황, 굵게)
+      crayonPath(ellipsePts(c.x, c.y, TARGET_R, TARGET_R, 22),
+        { color: C.darkBrown, width: 3.5, seed: 240 + game.ci, wobble: 1.5, alpha: 0.8 });
+      crayonPath(ellipsePts(c.x, c.y, r, r, 26),
+        { color: C.orange, width: 6, seed: 250 + game.ci, wobble: 2, alpha: 1 });
+      crayonText(`${game.ci + 1} / ${game.fish.circles}`, c.x, c.y + 7, 18, C.darkBrown);
+    }
+  } else if (game.state === 'result') {
+    if (game.result === 'catch') {
+      // 가운데 잡았다! 상자 (모동숲 스타일: 물고기 + 이름 + 개그 한마디)
+      const bw = Math.min(470, W * 0.72), bh = 200;
+      const rx0 = W / 2 - bw / 2, ry0 = H * 0.42 - bh / 2;
+      ctx.save();
+      ctx.globalAlpha = 0.96;
+      ctx.fillStyle = '#fffdf2';
+      ctx.beginPath();
+      ctx.roundRect(rx0, ry0, bw, bh, 14);
+      ctx.fill();
+      ctx.restore();
+      crayonPath([[rx0, ry0], [rx0 + bw, ry0], [rx0 + bw, ry0 + bh], [rx0, ry0 + bh], [rx0, ry0]],
+        { color: C.orange, width: 5, seed: 310, wobble: 2.5 });
+      drawFish(game.fish, W / 2 - 8, ry0 + 62);
+      crayonText(T[LANG].caught(game.fish), W / 2, ry0 + 130, 26, C.redDark);
+      crayonText(game.gag, W / 2, ry0 + 164, 18, C.deepBlue);
+      if (t - game.resultAt > 500) {
+        crayonText(tr('again'), W / 2, ry0 + bh + 36, 20, C.darkBrown);
+      }
+    } else {
+      crayonText(game.resultMsg, W / 2, hudY, 26, C.deepBlue);
+      if (t - game.resultAt > 500) {
+        crayonText(tr('again'), W / 2, hudY + 60, 20, C.darkBrown);
+      }
+    }
+  }
+
+  // 판정 텍스트 (딱 맞았어!! / 좋아!)
+  if (t < game.judgeUntil) {
+    crayonText(game.judgeText, game.judgeX, game.judgeY, 22, C.redDark);
+  }
+
+  // 점수 (오른쪽 위)
+  crayonText(T[LANG].score(game.caught, game.missed), W - 24, SPIRAL_H + 34, 17, C.darkBrown, 'right');
+
+  // 도전과제 달성 배너 (하나씩 차례로 4초간)
+  if (!game.achvBanner && game.achvQueue.length && t > game.achvBannerUntil) {
+    game.achvBanner = game.achvQueue.shift();
+    game.achvBannerUntil = t + 4000;
+  }
+  if (game.achvBanner) {
+    if (t > game.achvBannerUntil) {
+      game.achvBanner = null;
+    } else {
+      const abw = 340, abh = 74;
+      const ax = W / 2 - abw / 2, ay = SPIRAL_H + 56;
+      ctx.save();
+      ctx.globalAlpha = 0.97;
+      ctx.fillStyle = '#fffdf2';
+      ctx.beginPath();
+      ctx.roundRect(ax, ay, abw, abh, 14);
+      ctx.fill();
+      ctx.restore();
+      crayonPath([[ax, ay], [ax + abw, ay], [ax + abw, ay + abh], [ax, ay + abh], [ax, ay]],
+        { color: C.yellow, width: 5, seed: 670, wobble: 2 });
+      crayonText(tr('achvGet'), W / 2, ay + 28, 16, C.gray);
+      crayonText('★ ' + game.achvBanner.name[LANG] + ' ★', W / 2, ay + 56, 22, C.redDark);
+    }
+  }
+}
+
+// ============================================================
+// 메인 루프
+// ============================================================
+function resize() {
+  DPR = window.devicePixelRatio || 1;
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = W * DPR;
+  canvas.height = H * DPR;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  renderSceneToCache();
+  if (game.state === 'dex') renderDexToCache();
+  if (game.state === 'achv') renderAchvToCache();
+}
+window.addEventListener('resize', resize);
+
+// ---------- 시작 메뉴 ----------
+const menuEl = document.getElementById('menu');
+const btnStart = document.getElementById('btn-start');
+const btnDex = document.getElementById('btn-dex');
+const btnAchv = document.getElementById('btn-achv');
+const btnLang = document.getElementById('btn-lang');
+const btnBoil = document.getElementById('btn-boil');
+let BOIL = localStorage.getItem('sketch-fishing-boil') !== 'off';
+
+function updateMenuTexts() {
+  document.getElementById('m-title').textContent = tr('title');
+  document.getElementById('m-sub').textContent = tr('sub');
+  btnStart.textContent = tr('start');
+  btnDex.textContent = tr('dex');
+  btnAchv.textContent = tr('achv');
+  btnLang.textContent = LANG === 'ko' ? '언어 · Language: 한국어' : 'Language · 언어: English';
+  btnBoil.textContent = BOIL ? tr('boilOn') : tr('boilOff');
+}
+btnStart.addEventListener('click', () => {
+  menuEl.classList.add('hidden');
+  game.state = 'zoom';
+  game.zoomStart = performance.now();
+});
+btnDex.addEventListener('click', () => openDex('menu'));
+btnAchv.addEventListener('click', () => openAchv());
+btnLang.addEventListener('click', () => {
+  LANG = LANG === 'ko' ? 'en' : 'ko';
+  localStorage.setItem('sketch-fishing-lang', LANG);
+  updateMenuTexts();
+});
+btnBoil.addEventListener('click', () => {
+  BOIL = !BOIL;
+  localStorage.setItem('sketch-fishing-boil', BOIL ? 'on' : 'off');
+  updateMenuTexts();
+});
+updateMenuTexts();
+
+let lastBoil = -1;
+function tick(t) {
+  // 라인 보일: 0.7초마다 배경을 살짝 다르게 다시 그림 (메뉴에서 끌 수 있음)
+  const f = Math.floor(t / 700) % 3;
+  if (BOIL && f !== lastBoil) {
+    lastBoil = f;
+    boilSeed = f;
+    renderSceneToCache();
+    if (game.state === 'dex') renderDexToCache();    // 도감 그림도 같이 꿈틀
+    if (game.state === 'achv') renderAchvToCache();
+  }
+
+  // 상태 진행
+  if (game.state === 'waiting') {
+    if (!game.biteAt) startWaiting(t);
+    else if (t >= game.biteAt) startMinigame(t);
+  } else if (game.state === 'minigame') {
+    if (!game.circle && t >= game.nextAt) game.circle = newCircle(t, game.ci);
+    if (game.circle && AUTO_DEMO && Math.abs(circleRadius(game.circle, t) - TARGET_R) < 1.5) {
+      onTap(t);
+    }
+    if (game.circle && t - game.circle.start >= game.circle.dur * 0.95) {
+      endRound(t, false, tr('ignored'));
+    }
+  }
+
+  // 화면 그리기
+  if (game.state === 'menu' || game.state === 'zoom') {
+    // 메뉴: 책상 위에 놓인 작은 스케치북 → 시작하면 쭉 확대되며 들어감
+    let sc = 0.52;
+    if (game.state === 'zoom') {
+      const p = Math.min(1, (t - game.zoomStart) / 1300);
+      sc = 0.52 + 0.48 * (1 - Math.pow(1 - p, 3));  // 처음엔 빠르고 끝은 사뿐히
+      if (p >= 1) startWaiting(t);
+    }
+    screenCtx.setTransform(1, 0, 0, 1, 0, 0);
+    screenCtx.fillStyle = C.desk;
+    screenCtx.fillRect(0, 0, canvas.width, canvas.height);
+    const dw = canvas.width * sc, dh = canvas.height * sc;
+    screenCtx.save();
+    screenCtx.shadowColor = 'rgba(0,0,0,0.35)';
+    screenCtx.shadowBlur = 34 * DPR * (1 - sc);
+    screenCtx.shadowOffsetY = 8 * DPR * (1 - sc);
+    screenCtx.drawImage(sceneCanvas, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
+    screenCtx.restore();
+    screenCtx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  } else if (game.state === 'dex' || game.state === 'achv') {
+    // 도감/도전과제: 배경 위에 캐시를 덮어 그림
+    screenCtx.setTransform(1, 0, 0, 1, 0, 0);
+    screenCtx.drawImage(sceneCanvas, 0, 0);
+    screenCtx.drawImage(game.state === 'dex' ? dexCanvas : achvCanvas, 0, 0);
+    screenCtx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  } else {
+    // 게임 중: 배경 캐시 복사 + 움직이는 것들
+    screenCtx.setTransform(1, 0, 0, 1, 0, 0);
+    screenCtx.drawImage(sceneCanvas, 0, 0);
+    screenCtx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    drawDynamic(t);
+  }
+
+  requestAnimationFrame(tick);
+}
+
+resize();
+// 개발용: #auto(자동 시범)와 #catch(상자 미리보기)는 메뉴를 건너뛴다
+if (AUTO_DEMO) {
+  menuEl.style.display = 'none';
+  game.state = 'waiting';
+}
+// #dex로 열면 가짜 기록으로 도감 화면을 미리 볼 수 있다 (진짜 저장엔 반영 안 됨)
+// #dex=클립멸치 처럼 이름을 붙이면 그 물고기 상세 카드까지 열림
+if (location.hash.startsWith('#dex')) {
+  DEV_FAKE = true;
+  [12, 100, 5, 3, 2, 1, 1].forEach((n, i) => { save.caught[FISH[i].id] = n; });
+  const wanted = decodeURIComponent(location.hash).split('=')[1];
+  game.dexDetail = FISH.find(f => f.name.ko === wanted) || null;
+  openDex('menu');
+  if (wanted && /^\d+$/.test(wanted)) {  // #dex=2 → 2페이지 바로 열기
+    game.dexPage = Math.min(+wanted - 1, Math.ceil(FISH.length / DEX_PER_PAGE) - 1);
+    renderDexToCache();
+  }
+}
+// #achv로 열면 가짜 기록으로 도전과제 화면을 미리 볼 수 있다
+if (location.hash === '#achv') {
+  DEV_FAKE = true;
+  save.caught['clip-anchovy'] = 100;
+  save.caught['eraser-shark'] = 7;
+  save.caught['pencil-eel'] = 5;
+  openAchv();
+}
+// #catch=꼬불치 처럼 이름을 붙이면 그 물고기 상자를 바로 볼 수 있다 (점수엔 반영 안 됨)
+if (location.hash.startsWith('#catch')) {
+  const wanted = decodeURIComponent(location.hash).split('=')[1];
+  menuEl.style.display = 'none';
+  game.state = 'result'; game.result = 'catch';
+  game.resultMsg = ''; game.resultAt = performance.now();
+  game.fish = FISH.find(f => f.name.ko === wanted) || pickFish();
+  game.gag = game.fish.gags[LANG][0];
+}
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

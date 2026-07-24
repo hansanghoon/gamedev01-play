@@ -1,0 +1,1456 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Broken City — 스팀펑크 추억 액션</title>
+<style>
+  html, body {
+    margin: 0; height: 100%;
+    background: #14151a;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    font-family: sans-serif; color: #8a8f99;
+  }
+  canvas {
+    image-rendering: pixelated;         /* 도트가 뭉개지지 않게 */
+    max-width: 96vw; height: auto;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.6);
+  }
+  p { margin-top: 12px; font-size: 13px; letter-spacing: .3px; }
+</style>
+</head>
+<body>
+<canvas id="screen" width="768" height="480"></canvas>
+<p>← → 이동 · 스페이스/↑ 점프 · X/J/클릭 공격 · E/↓ 추억 · 문으로 밖으로 ⚔️</p>
+
+<script src="steam-city-maps.js"></script>
+<script>
+// ════════════════════════════════════════════════════════════
+//  멈춘 도시 — 방 + 바깥 거리, 주인공 걷기, 조명
+//  전부 "그리드 도트"(글자 하나 = 픽셀 한 칸). '.' = 투명.
+// ════════════════════════════════════════════════════════════
+const PX = 12, GW = 64, VH = 40, GH = 160, GROUND = 30;   // GW·VH=화면 칸수 / GH=최대 맵 높이(세로 맵용) / 바닥
+
+// ── 맵 데이터 ──
+// steam-city-maps.js(맵 에디터에서 내보낸 파일)의 STEAM_MAPS를 읽는다.
+// 파일이 없으면 내장 기본 맵으로 돌아감 → 게임이 죽지 않음.
+// 양식: platforms [x, y(윗면), 폭] / start [x,y] / doors {x,y,to,at:[x,y]}
+const BUILTIN_MAPS = {
+  room:{ name:"방", width:64, height:40, start:[28,30], platforms:[[0,30,64]],
+    doors:[{x:51,y:30,to:"street",at:[20,30]}] },
+  street:{ name:"거리", width:320, height:40, start:[20,30],
+    platforms:[[0,30,196],[208,30,112],[0,10,16],[40,19,17],[88,17,16],[150,20,18],[210,16,18],[250,17,20],[290,18,19],[22,25,8],[58,25,8],[70,21,8],[82,18,8],[120,24,9],[134,20,9],[168,23,9],[180,19,9],[199,26,6],[228,24,9],[240,20,9],[272,23,9]],
+    doors:[{x:2,y:30,to:"room",at:[43,30]},{x:306,y:30,to:"tower",at:[6,66]}] },
+  tower:{ name:"탑", width:64, height:72, start:[6,66],
+    platforms:[[0,66,64],[8,60,14],[34,54,14],[10,48,14],[34,42,14],[22,37,20],[20,4,24]],
+    doors:[{x:1,y:66,to:"street",at:[297,30]}] },
+};
+let MAPS = (typeof STEAM_MAPS !== "undefined") ? STEAM_MAPS : BUILTIN_MAPS;
+// 🧪 테스트 모드: 에디터의 "▶ 테스트 플레이"(#test-…)로 열리면 파일 대신
+// 에디터의 자동 저장(localStorage)에서 맵을 읽음 → 내보내기 없이 바로 플레이.
+let TEST_MODE=false;
+if(location.hash.slice(1).startsWith("test")){
+  try{ const em=JSON.parse(localStorage.getItem("steam-city-editor-v1"));
+    if(em && Object.keys(em).length){ MAPS=em; TEST_MODE=true; } }catch(err){}
+}
+
+// ── 팔레트 (hex) : 방 + 주인공 + 거리 색을 한곳에 ──
+const PALHEX = {
+  // 방
+  K:"#1a1c22",W:"#3a3e49",w:"#31353f",V:"#454a56",F:"#463f38",f:"#37302a",E:"#514840",
+  B:"#8a7548",A:"#b09a5f",b:"#574a2e",G:"#4a5560",g:"#5c6875",c:"#2f3640",C:"#3b4450",
+  P:"#565b64",Q:"#6b717a",p:"#3a3d45",o:"#2b2e34",D:"#42506a",Y:"#4e5d7a",y:"#374766",
+  d:"#262b33",e:"#39414e",H:"#8f95a0",h:"#767c88",l:"#4c4636",m:"#635b46",L:"#5a6570",
+  S:"#4a4d55",T:"#5b5f68",s:"#34373d",
+  // 주인공
+  r:"#463726",R:"#5a4834",z:"#c99a6a",x:"#a3774d",i:"#1c1a17",u:"#3f4e5e",U:"#4c5d6e",
+  j:"#2b3540",q:"#2c3138",n:"#20242a",N:"#33383f",M:"#8a3b3f",
+  // 거리 (숫자 키)
+  "1":"#232b3a","2":"#2f3a4d","3":"#c9cdd6","4":"#252b34","5":"#343c47","6":"#e0a24a",
+  "7":"#232831","8":"#3a3f47","9":"#2e323a","0":"#41474f",
+  // 배경 겹(패럴랙스): 먼 도시(밝은 안개빛)·중간 건물·네온 간판
+  v:"#53668a",X:"#455778",Z:"#63779c",k:"#323e50",I:"#46b6a0",O:"#cc5f88",
+  // 그녀(추억 속): 적갈색 머리·더스티로즈 드레스(주인공 목도리와 같은 붉은 계열, 안 튀게 차분히)
+  a:"#7a4a2a",t:"#9a6238",J:"#9c6a64",
+  // 새 주인공(2배 해상도) 하이라이트 5종: 머리·피부·목도리·코트
+  "+":"#7a6748","=":"#e6c79c","!":"#5e2a2c","@":"#bb5751","*":"#6a7d8e",
+};
+const PAL = {};   // hex → [r,g,b] 숫자
+for (const k in PALHEX) { const v = parseInt(PALHEX[k].slice(1),16); PAL[k] = [(v>>16)&255,(v>>8)&255,v&255]; }
+
+// ── 도트 그림들 ──
+const WINDOW = ["......bAAb......","....bAAggABb....","...bAgggggGBb...","..bAgggggGGGBb..",".bAggggGGGGGBBb.",".bAgggGGGGGGGBb.","bBggGGGGGGGGGBBb","bBgGGGGGGGGGGBBb","bBGGGGGGGGGGGBBb","bBGGCCCCCCCGGGBb",".bGCcCcAcCcCCGb.",".bBCcccccccCcBb.","..bBcccccAccBb..","...bBccccccBb...","....bBcccBBb....","......bBbb......"];
+const LAMP = ["...mm...","...lm...","...lm...","..mllm..",".mlLLlm.","mlLLLLlm","mlLLLLlm","mlLLLLlm",".mlLLlm.","..mllm..","...lm...","...mm..."];
+const PICT = ["bAABBb","AgHHgb","AgHHgb","Aghhgb","AgggBb","bBBBbb"];
+const BED  = ["ed....................","ed....................","ed....................","edHHHHH.............ed","edHHHHh.............ed","edYYYYYYYYYYYYYYYYYYed","edDDDDDyDDDDDyDDDDDDed","edDDDDDDDDDDDDDDDDDDed","dddddddddddddddddddddd",".d.................d.."];
+const STOVE= [".....pp.....",".....pp.....",".....pp.....","...TSSSSs...","..TSSSSSSs..",".TSSSSSSSSs.",".TSooooSSAs.",".TSooooSSSs.",".TSooooSSSs.",".TSSSSSSSSs.","..TSSSSSSs..","...TSSSSs...","...s....s...","..ss....ss.."];
+const GEAR = ["..BbB..",".BAAAB.","bAAbAAb","BAbbbAB","bAAbAAb",".BAAAB.","..BbB.."];
+const GEAR2= [".BbB.","bAAAb","AAbAA","bAAAb",".BbB."];
+const DOOR = ["bBBBBBBBBBb","bTSSSSSSSsb","bTSSSSSSSsb","bTSbBBBbSsb","bTSbGGGbSsb","bTSbGGGbSsb","bTSbBBBbSsb","bTSSSSSSSsb","bTSSSSSSSsb","bTSSSSSSSsb","bTSSSSSSAsb","bTSSSSSSAsb","bTSSSSSSSsb","bTSSSSSSSsb","bTSbbbbbSsb","bTSSSSSSSsb","bTSSSSSSSsb","bTSSSSSSSsb","bTSSSSSSSsb","bBBBBBBBBBb"];
+const CLOCK= ["..bBBBb..",".bBHHHBb.","bBHHHHHBb","bBHHiHHBb","bBHiiiHBb","bBHHiHHBb","bBHHHHHBb",".bBHHHBb.","..bBBBb.."];
+
+// 주인공(머리·몸·다리 비율 맞춘 날씬 버전): 위 몸통+엉덩이(공통) + 다리 두 종류
+// 원래 주인공에 명암·디테일만 살짝 (하이라이트 + = @ *, 그림자 x n)
+const CH_UP = ["....+RRr....","...rR++Rr...","...izzzzi...","...izzizi...","...izzzxi...","...izzxxi...","...j@MMMj...","...*UAUuj...","...*UAUuj...","...*UUUuj...","...*bbbuj...","...*qqquj..."];
+const CH_LA = ["...qq.qq....","...qq.qq....","...qq.qq....","..nnn.nnn...","..nNn.nNn..."]; // 다리 벌림(서있기)
+const CH_LB = ["....qqqq....","....qqqq....","....qqqq....","....nnnn....","....nNNn...."]; // 다리 모음
+const CH_W3 = ["..qq...qq...","..qq...qq...","..qq...qq...",".nnn...nnn..",".nNn...nNn.."]; // 다리 넓게
+// 세세한 애니메이션용 다리 포즈들
+const CH_STEP1 = ["...qqqq.....","..qqqq......","..nnq..qq...","..nn...nnn..",".nNn....Nn.."];  // 한 발 앞
+const CH_STEP2 = [".....qqqq...","......qqqq..","...qq..qnn..","..nnn...nn..","..nN....nNn."];  // 반대 발 앞
+const CH_JUMP  = ["....qqqq....","....qqqq....","...qqqq.....","...nnn......","..nNn......."];  // 도약(다리 모아 올림)
+const CH_FALL  = ["...qq.qq....","..qq...qq...","..qq...qq...",".nn.....nn..",".nN.....Nn.."];  // 낙하(다리 벌려 착지 준비)
+const CH_CROUCH= ["..qqqqqq....","..qq..qq....","..nn..nn....","..nn..nn....","..nNn.nNn..."];  // 착지 웅크림
+const CHAR_A = CH_UP.concat(CH_LA);
+const CHAR_B = CH_UP.concat(CH_LB);
+// 걷기: 한 발 앞 → 모음 → 반대 발 앞 → 모음
+const WALK_LEGS = [CH_STEP1, CH_LB, CH_STEP2, CH_LB];
+const CHAR_WALK = WALK_LEGS.map(L=>CH_UP.concat(L));
+const CHW = 12, CHH = 17;
+// 그녀 (추억 속 인물): 긴 적갈색 머리 + 붉은 드레스
+const CHAR_HER = ["...atttta...","..aizzzzia..","..aizzizia..","..aizzzxia..","..aizzxxia..","...aJJJJa...","....JJJJ....","....JMJJ....","....JJJJ....","...JJJJJJ...","...JJJJJJ...","...JJJJJJ...","...JJMMJJ...","...JJJJJJ...","..JJJJJJJJ..","...nn..nn...","...nN..Nn..."];
+// 고장난 자동인형(적): 호박색 눈. 14x12
+const CHAR_BOT = [".....bAb......",".....sSs......","...sTTTTTTs...","..sSSSSSSSSs..","..sS666666Ss..","..sSSSSSSSSs..","..sTSssssSTs..","..sSSSSSSSSs..","..sbSSSSSSbs..","...SSSSSSSS...","...SS....SS...","...ss....ss..."];
+const BOTW=14, BOTH=12;
+// 자동인형 걷기: 다리 두 프레임(모음 ↔ 벌림)을 번갈아 → 살아있는 느낌
+const BOT_LEGS=[["...SS....SS...","...ss....ss..."], ["..SS......SS..","..ss......ss.."]];
+// 돌진하는 적: 낮고 넓은 몸통 + 붉은 바이저 + 앞쪽 뿔(b) + 바퀴. 14×9
+const CHAR_CHG=["....TTTTT.....","..sMMMMMMMs...",".sMM6666MMSb..","sSMMMMMMMMSSb.","sSSSSSSSSSSSb.","sSTSSSSSSTSSs.",".sSSSSSSSSSs..",".s00....00s...","..00....00...."];
+const CHGW=14, CHGH=9;
+// 정비공(상인): 두건 쓴 땜장이 + 놋쇠 고글 + 등불. 14×18, 뒤집지 않고 그대로 그림
+const CHAR_MERCHANT = ["....bBBBBb....","...bBBAABBb...","..bBBAAAABBb..","...b66AA66b...","...xzzzzzzx...","...xzizzizx...","...xxzzzzxx...","...xxzbbzxx...","...yDDDDDDy...","..yDYDDDDyDy..","..yDY6DD6yDy.B","..yDYDDDDyDyB6","..yDYDDDDyDyB6","..yDYDDDDyDy.B","..yyDDDDDDyy..","..yyDDDDDDyy..","...yDDyyDDy...","...sss..sss..."];
+const MERW=14, MERH=18;
+
+const cv = document.getElementById("screen");
+const ctx = cv.getContext("2d");
+ctx.imageSmoothingEnabled = false;
+
+// 현재 장면의 배경 격자 (맵은 화면보다 넓을 수 있음 → 카메라로 일부만 보여줌)
+let cells = [], MW = GW;   // MW = 현재 맵의 가로 칸 수
+function newCells(w){ MW=w; const a=[]; for(let y=0;y<GH;y++){a[y]=[];for(let x=0;x<w;x++)a[y][x]=null;} return a; }
+function pF(x,y,w,h,ch){ for(let yy=y;yy<y+h;yy++)for(let xx=x;xx<x+w;xx++) if(xx>=0&&xx<MW&&yy>=0&&yy<GH) cells[yy][xx]=PAL[ch]; }
+function pS(rows,ox,oy){ for(let j=0;j<rows.length;j++)for(let i=0;i<rows[j].length;i++){const c=rows[j][i]; if(c===".")continue; const X=ox+i,Y=oy+j; if(X>=0&&X<MW&&Y>=0&&Y<GH) cells[Y][X]=PAL[c];} }
+function disc(cx,cy,r,ch){ for(let y=cy-r;y<=cy+r;y++)for(let x=cx-r;x<=cx+r;x++){ if((x-cx)*(x-cx)+(y-cy)*(y-cy)<=r*r&&x>=0&&x<MW&&y>=0&&y<GH) cells[y][x]=PAL[ch]; } }
+const STREET_LAMPS = [74,120,172,224,276];   // 거리 가로등 위치 (주인공 앞에 그림). 첫(24) 제거
+// ── 깊이(앞뒤): 아래 사물들은 배경에 굽지 않고 주인공 뒤(drawMerchant)/앞(drawForeground)에 따로 그림 ──
+function fillLit(x,y,w,h,ch,camPx){ for(let yy=y;yy<y+h;yy++)for(let xx=x;xx<x+w;xx++) putc(xx*PX-camPx,yy*PX,PAL[ch],lightAt(xx,yy)); }
+function spriteLit(rows,ox,oy,camPx){ for(let j=0;j<rows.length;j++)for(let i=0;i<rows[j].length;i++){ const ch=rows[j][i]; if(ch===".")continue; putc((ox+i)*PX-camPx,(oy+j)*PX,PAL[ch],lightAt(ox+i,oy+j)); } }
+function lampFront(lx,gy,camPx){   // 가로등을 주인공 앞에 그림 (gy=바닥). streetLamp/paintLamp와 같은 모양
+  fillLit(lx,gy-16,1,16,"0",camPx); fillLit(lx-1,gy-1,3,1,"0",camPx); fillLit(lx-2,gy-19,5,4,"b",camPx); fillLit(lx-1,gy-18,3,2,"L",camPx); fillLit(lx,gy-20,1,1,"B",camPx);
+}
+// 주인공을 가리는 앞 사물들: 용광로(방)·가로등(거리/오브젝트)
+function drawForeground(camPx){
+  if(mem) return;
+  const M=MAPS[scene];
+  if(scene==="room") spriteLit(STOVE, 3, 22, camPx);                       // 용광로/난로 — 주인공 앞
+  // 거리 하드코딩 가로등 삭제(아드님 요청). 필요하면 에디터에서 가로등 오브젝트로 배치
+  for(const o of (M.objects||[])) if(o.type==="lamp") lampFront(o.x, o.y, camPx); // 오브젝트 가로등
+}
+
+// 데이터 맵의 오브젝트(가로등·톱니·증기 구멍)를 그림. 적은 그림이 아니라 살아있는 개체라 enter()에서 만듦.
+function paintObjects(M){
+  for(const o of (M.objects||[])){
+    // 가로등(lamp)은 배경에 굽지 않고 drawForeground에서 주인공 앞에 그림
+    if(o.type==="gear") pS(GEAR,o.x-3,o.y-3);
+    else if(o.type==="vent"){ pF(o.x-1,o.y-1,3,1,"5"); pF(o.x-1,o.y,3,1,"p"); }
+  }
+}
+function paintLamp(lx,gy){ pF(lx,gy-16,1,16,"0"); pF(lx-1,gy-1,3,1,"0"); pF(lx-2,gy-19,5,4,"b"); pF(lx-1,gy-18,3,2,"L"); pF(lx,gy-20,1,1,"B"); }
+
+// 데이터 맵의 발판을 그림. 통짜 바닥(폭=맵 전체)은 장면 그림이 있는 맵에선 건너뛰고,
+// 전용 그림이 없는 맵(all=true)에선 바닥까지 전부 그림.
+function paintPlatforms(M, all){
+  for(const p of M.platforms){ const px=p[0],py=p[1],pw=p[2];
+    if(!all && pw>=M.width) continue;
+    if(pw>=20){                                     // 넓은 발판 = 부서진 거리 조각(두껍게)
+      const h=Math.min(6,GH-py);
+      pF(px,py,pw,h,"8"); pF(px,py,pw,1,"0");
+      pF(px,py,1,h,"p"); pF(px+pw-1,py,1,h,"p");    // 부서진 가장자리
+      for(let x=px+3;x<px+pw-1;x+=6) pF(x,py+1,1,h-1,"9");
+    } else {                                        // 좁은 발판 = 뜬 금속 발판(놋쇠 테두리)
+      pF(px,py,pw,2,"5"); pF(px,py,pw,1,"Q"); pF(px,py,1,2,"b"); pF(px+pw-1,py,1,2,"b");
+      pF(px+1,py+2,1,3,"p"); pF(px+pw-2,py+2,1,3,"p");
+    }
+  }
+}
+// 땅(solid): 꽉 찬 돌/흙 사각형 [x,y,w,h]. 통과 못 함(사방 충돌). 발판과 다른 재질로.
+function paintGrounds(M){
+  for(const g of (M.grounds||[])){ const gx=g[0],gy=g[1],gw=g[2],gh=g[3];
+    pF(gx,gy,gw,gh,"8");                                 // 흙/돌 채움
+    pF(gx,gy,gw,1,"0");                                  // 윗면 밝게
+    for(let x=gx;x<gx+gw;x+=5) pF(x,gy+1,1,gh-1,"9");    // 세로 결
+    for(let y=gy+3;y<gy+gh;y+=5) pF(gx,y,gw,1,"9");      // 가로 결(벽돌 느낌)
+    pF(gx,gy,1,gh,"9"); pF(gx+gw-1,gy,1,gh,"9");         // 좌우 테두리
+  }
+}
+// 땅(solid) 좌우 벽 충돌: 히어로를 땅 밖으로 밀어냄 (위에 서 있을 땐 안 밀림)
+function groundCollideX(){
+  const ht=hero.y-hero.ch+2, hb=hero.y-1;   // 웅크리면 ch가 낮아져 낮은 벽/천장 아래 통과
+  for(const g of grounds){ const gl=g[0],gr=g[0]+g[2],gt=g[1],gb=g[1]+g[3];
+    if(hb<=gt || ht>=gb) continue;                 // 세로로 안 겹침(위/아래)
+    if(hero.x+CHW<=gl || hero.x>=gr) continue;      // 가로로 안 겹침
+    if(hero.x+CHW/2 < (gl+gr)/2) hero.x=gl-CHW; else hero.x=gr;   // 가까운 쪽으로 밀어냄
+  }
+}
+
+// ── 장면 1: 주인공의 방 (한 화면, 64칸, 배경 겹 없음) ──
+let bgLayers = [];   // 뒤 배경 겹들(패럴랙스) — 미리 캔버스에 구워둠 [{canvas,factor}]
+function paintRoom(){
+  bgLayers = [];
+  cells = newCells(GW);
+  pF(0,0,GW,GH,"K");
+  pF(0,0,GW,30,"W"); pF(0,0,GW,2,"w");
+  pF(0,23,GW,6,"w"); pF(0,22,GW,1,"V");
+  for(const x of [10,26,42]) pF(x,23,1,6,"K");
+  pF(0,29,GW,1,"w"); pF(0,30,GW,10,"F"); pF(0,30,GW,1,"E");
+  for(const x of [6,18,30,42,54]) pF(x,30,1,10,"f");
+  pS(WINDOW,6,4); pS(LAMP,26,0); pS(GEAR,36,2); pS(GEAR2,43,5);
+  pS(PICT,46,12); pS(BED,16,20); pS(DOOR,52,10);   // 침대는 배경(주인공 뒤). 용광로(STOVE)는 drawForeground에서 주인공 앞
+  paintGrounds(MAPS.room); paintPlatforms(MAPS.room); paintObjects(MAPS.room);   // 땅·발판·오브젝트
+}
+
+// ── 장면 2: 바깥 거리 — 3겹 배경(먼 도시/중간 건물/앞 거리) + 넓은 맵 192칸 ──
+// 배경 한 겹을 미리 캔버스에 구움(빛 없이, dark로 살짝 어둡게). 매 프레임 통째로 밀어 그림 → 빠름.
+function bakeLayer(w, dark, drawFn){
+  cells = newCells(w); drawFn();
+  const off = document.createElement("canvas"); off.width = w*PX; off.height = GH*PX;
+  const o = off.getContext("2d");
+  for(let y=0;y<GH;y++)for(let x=0;x<w;x++){ const b=cells[y][x]; if(!b)continue;
+    o.fillStyle="rgb("+((b[0]*dark)|0)+","+((b[1]*dark)|0)+","+((b[2]*dark)|0)+")"; o.fillRect(x*PX,y*PX,PX,PX); }
+  return off;
+}
+function drawFar(){           // 먼 스카이라인: 밝은 안개빛 얇은 탑들 (하늘을 채움)
+  disc(95,6,4,"3");           // 달
+  let fx=0;
+  while(fx<MW){ const w=5+(fx*7)%4, top=3+(fx*13)%10;
+    pF(fx,top,w,GROUND-top,"v"); pF(fx,top,1,GROUND-top,"Z"); pF(fx,top,w,1,"Z");
+    for(let wy=top+2;wy<27;wy+=4)for(let wx=fx+1;wx<fx+w-1;wx+=3) pF(wx,wy,1,1,"X");
+    fx+=w+1; }
+}
+function drawMid(){           // 중간 건물: 창문 격자 + 네온 간판 + 시계탑
+  let mx=0;
+  while(mx<MW){ const w=10+(mx*5)%9, top=6+(mx*11)%9;
+    pF(mx,top,w,GROUND-top,"k"); pF(mx,top,1,GROUND-top,"5"); pF(mx,top,w,1,"5");
+    for(let wy=top+3;wy<GROUND-2;wy+=5)for(let wx=mx+2;wx<mx+w-2;wx+=4) pF(wx,wy,2,2,((wx*3+wy*7)%4===0)?"6":"7");
+    if(mx%37<12) pF(mx+2,top+2,3,5,((Math.floor(mx/10))%2===0)?"I":"O");   // 네온 간판
+    mx+=w+2; }
+  pF(70,4,12,26,"k"); pF(70,4,2,26,"5"); pS(CLOCK,71,8);   // 시계탑
+}
+function drawFg(){            // 앞 거리 배경: 집·건물·멈춘 기계·가로등 (발판·바닥은 데이터에서 paintPlatforms로)
+  pF(0,10,16,20,"4"); pF(0,10,16,1,"b"); pS(DOOR,3,11);
+  for(const b of [[40,17,19],[88,16,17],[150,18,20],[210,16,18],[250,17,20],[290,18,19]]){ const bx=b[0],bw=b[1],bt=b[2];
+    pF(bx,bt,bw,GROUND-bt,"4"); pF(bx,bt,bw,1,"b");
+    pF(bx+((bw/2)|0)-1,bt+3,3,GROUND-bt-3,"S"); pF(bx+2,bt+2,2,2,"6"); }
+  pS(GEAR,116,15); pS(GEAR2,123,19); pS(GEAR,244,15); pS(GEAR2,251,19);
+  // 가로등은 배경에 굽지 않고 drawForeground에서 주인공 앞에 그림 (STREET_LAMPS)
+}
+function paintStreet(){
+  bgLayers = [
+    { canvas: bakeLayer(168, 1.0, drawFar), factor: 0.30 },   // 멀수록 천천히 움직임
+    { canvas: bakeLayer(232, 0.9, drawMid), factor: 0.60 },
+  ];
+  cells = newCells(MAPS.street.width); drawFg();               // 앞 거리 배경(활성 맵)
+  paintGrounds(MAPS.street); paintPlatforms(MAPS.street); paintObjects(MAPS.street);   // 땅·발판·오브젝트
+  const hd=(MAPS.street.doors||[]).find(d=>d.to==="factory"); // 지하 입구(해치): 바닥에 어두운 구멍 + 사다리
+  if(hd){ const hx=hd.x; pF(hx-2,34,5,6,"1"); pF(hx-2,34,5,1,"0"); pF(hx-2,34,1,6,"0"); pF(hx+2,34,1,6,"0");
+    for(let ry=35;ry<40;ry++) pF(hx,ry,1,1,"5"); }
+}
+// ── 지하 공장 ── 어두운 파이프·식은 보일러·멈춘 컨베이어 (가스등만 깜빡)
+function paintFactory(){
+  bgLayers=[]; const M=MAPS.factory; cells=newCells(M.width);
+  pF(0,0,M.width,Math.min(M.height,GH),"1");                  // 어두운 지하
+  pF(0,0,M.width,2,"k"); pF(0,2,M.width,1,"5");               // 천장
+  for(const py of [6,12,18]){ pF(0,py,M.width,1,"b");         // 수평 파이프
+    for(let x=6;x<M.width;x+=16) pF(x,py-1,2,3,"B"); }
+  for(const bx of [40,96]){ pF(bx,20,16,14,"k"); pF(bx,20,16,1,"5");   // 식은 보일러
+    pF(bx+2,22,12,3,"S"); pF(bx+4,27,4,3,"7"); pF(bx+6,20,4,1,"b"); }
+  pF(0,33,M.width,1,"0");                                     // 멈춘 컨베이어(바닥 띠)
+  paintGrounds(M); paintPlatforms(M,true); paintObjects(M);
+  for(const d of (M.doors||[])) pS(DOOR, d.x-5, d.y-19);
+}
+
+// ── 장면: 탑 꼭대기(summit) — 큰 굴뚝을 다 오르면 나오는 풍경. 발밑에 도시가 펼쳐짐 ──
+function drawFarLow(){        // 꼭대기에서 내려다본 먼 도시 (스카이라인이 낮게 깔림) + 큰 달
+  disc(20,6,5,"3");
+  let fx=0;
+  while(fx<MW){ const w=5+(fx*7)%4, top=17+(fx*13)%9;
+    pF(fx,top,w,GROUND-top,"v"); pF(fx,top,1,GROUND-top,"Z"); pF(fx,top,w,1,"Z");
+    for(let wy=top+2;wy<28;wy+=4)for(let wx=fx+1;wx<fx+w-1;wx+=3) pF(wx,wy,1,1,"X");
+    fx+=w+1; }
+}
+function paintSummit(){
+  bgLayers=[ { canvas: bakeLayer(150, 1.0, drawFarLow), factor: 0.25 } ];
+  const M=MAPS.summit; cells=newCells(M.width);
+  paintGrounds(M); paintPlatforms(M,true); paintObjects(M);                 // 옥상 바닥·오브젝트는 데이터에서
+  for(const d of (M.doors||[])) pS(DOOR, d.x-5, d.y-19);
+  pS(GEAR,6,23); pS(GEAR2,86,25);                          // 꼭대기의 멈춘 기계 장식
+}
+
+// ── 장면 3: 세로 탑(고장난 탑) — 화면보다 높은 세로 맵. 이단 점프 + 벽 타기로 올라감 ──
+const TOWER_W = 64, TGROUND = 66;   // 폭=화면, 바닥은 아래(72칸 중 66)
+// 아래 절반: 발판 지그재그(이단 점프, 데이터 맵) → 위 절반: 좁은 굴뚝(벽 타기)
+const SHAFT_X0 = 24, SHAFT_X1 = 40, SHAFT_TOP = 8, SHAFT_BOT = 35;   // 벽 타기 굴뚝(좌벽면 24 / 우벽면 40, 돌기둥 22-23·40-41)
+function paintTower(){
+  bgLayers = [];
+  cells = newCells(TOWER_W);
+  pF(0,0,TOWER_W,GH,"9");                                   // 어두운 내부
+  pF(0,0,3,GH,"k"); pF(TOWER_W-3,0,3,GH,"k");               // 양 옆 돌벽(붙기만)
+  pF(2,0,1,GH,"5"); pF(TOWER_W-3,0,1,GH,"5");               // 벽 안쪽 금속선
+  for(let wy=8;wy<TGROUND;wy+=7){                            // 벽 창문 불빛
+    pF(4,wy,2,2,(wy%14===0)?"6":"7"); pF(TOWER_W-6,wy+3,2,2,"7"); }
+  pF(0,TGROUND,TOWER_W,GH-TGROUND,"8"); pF(0,TGROUND,TOWER_W,1,"0");   // 바닥
+  // 벽 타기 굴뚝: 좌우 돌기둥(면이 24 / 40)
+  pF(SHAFT_X0-2,SHAFT_TOP,2,SHAFT_BOT-SHAFT_TOP,"k"); pF(SHAFT_X0-1,SHAFT_TOP,1,SHAFT_BOT-SHAFT_TOP,"5");
+  pF(SHAFT_X1,SHAFT_TOP,2,SHAFT_BOT-SHAFT_TOP,"k");   pF(SHAFT_X1,SHAFT_TOP,1,SHAFT_BOT-SHAFT_TOP,"5");
+  for(let wy=SHAFT_TOP+3;wy<SHAFT_BOT-2;wy+=6){ pF(SHAFT_X0-2,wy,1,2,"6"); pF(SHAFT_X1+1,wy+3,1,2,"6"); }  // 굴뚝 벽 횃불
+  paintGrounds(MAPS.tower); paintPlatforms(MAPS.tower); paintObjects(MAPS.tower);   // 땅·발판·오브젝트
+  pS(GEAR,4,50); pS(GEAR2,56,40);                          // 멈춘 톱니 장식(구석)
+}
+
+// ── 장면별 빛 (cold=차가운 빛 여러개, warm=따뜻한 빛 여러개; warm은 클릭으로 켜고 끔) ──
+const SCENES = {
+  room: { paint: paintRoom, amb:[0.30,0.34,0.42],
+    cold:[{cx:13,cy:12,col:[0.42,0.56,0.85],R:11}],       // 창문
+    warm:[{cx:29,cy:6, col:[1.9,1.25,0.62],R:8.5}] },     // 가스등
+  street: { paint: paintStreet, amb:[0.62,0.64,0.70],     // 밝게(하늘 도시빛 받는 느낌)
+    cold:[], warm:[] },                                    // 하드코딩 가로등 삭제(아드님 요청)
+  tower: { paint: paintTower, amb:[0.46,0.49,0.57],       // 탑 내부(세로 통로)
+    cold:[],
+    warm:[{cx:10,cy:58,col:[1.5,1.05,0.55],R:13},         // 벽 가스등(오르는 길 따라)
+          {cx:52,cy:40,col:[1.5,1.05,0.55],R:13},
+          {cx:10,cy:22,col:[1.5,1.05,0.55],R:13},
+          {cx:52,cy:8, col:[1.5,1.05,0.55],R:13}] },
+  summit: { paint: paintSummit, amb:[0.50,0.52,0.64],     // 탑 꼭대기: 트인 밤하늘 (달빛)
+    cold:[], warm:[] },
+  factory: { paint: paintFactory, amb:[0.34,0.36,0.44],   // 지하 공장: 어둡고 가스등만
+    cold:[], warm:[] },
+};
+// 에디터에서 새로 만든 맵(전용 그림이 아직 없는 맵)을 위한 기본 장면
+function paintGeneric(){
+  bgLayers=[]; const M=MAPS[scene]; cells=newCells(M.width);
+  pF(0,0,M.width,Math.min(M.height,GH),"9");               // 어두운 내부
+  paintGrounds(M); paintPlatforms(M,true); paintObjects(M);                 // 바닥 포함 전부 데이터에서
+  for(const d of (M.doors||[])) pS(DOOR, d.x-5, d.y-19);   // 문도 보이게
+}
+const GENERIC = { paint: paintGeneric, amb:[0.55,0.57,0.63], cold:[], warm:[] };
+function sceneDef(){ return SCENES[scene] || GENERIC; }
+
+function atten(cx,cy,x,y,R){ const dx=x-cx,dy=y-cy; return 1/(1+(dx*dx+dy*dy)/(R*R)); }
+
+// (x,y)칸에 닿는 빛의 세기 [r,g,b]. 배경과 주인공에 똑같이 적용.
+function lightAt(x,y){
+  const S=sceneDef();
+  let lr=S.amb[0],lg=S.amb[1],lb=S.amb[2];
+  for(const c of S.cold){ const a=atten(c.cx,c.cy,x,y,c.R); lr+=c.col[0]*a; lg+=c.col[1]*a; lb+=c.col[2]*a; }
+  if(flick>0.001) for(const c of curWarm){ const a=atten(c.cx,c.cy,x,y,c.R)*flick; lr+=c.col[0]*a; lg+=c.col[1]*a; lb+=c.col[2]*a; }
+  if(memLevel>0){   // 추억이 살아나면 전체가 따뜻해지고, 그 자리가 특히 밝아짐
+    lr+=0.55*memLevel; lg+=0.45*memLevel; lb+=0.28*memLevel;
+    const a=atten(memCx,memCy-12,x,y,30)*memLevel; lr+=1.3*a; lg+=0.95*a; lb+=0.5*a;
+  }
+  return [lr,lg,lb];
+}
+// px,py = 화면 픽셀 좌표
+function putc(px,py,base,L){
+  const r=Math.min(255,base[0]*L[0])|0, g=Math.min(255,base[1]*L[1])|0, bl=Math.min(255,base[2]*L[2])|0;
+  ctx.fillStyle="rgb("+r+","+g+","+bl+")";
+  ctx.fillRect(px,py,PX,PX);
+}
+
+// ── 상태 ──
+let scene="room";
+let lampOn=true, lampLevel=1, flick=1, t=0;   // 불 기본 ON
+let camX=0, camY=0;       // 카메라 왼쪽·위 끝 (칸 단위)
+let mapH=VH;              // 현재 맵 높이(칸). 거리·방=40(세로 스크롤 없음), 탑=72
+const keys={};
+const hero={ x:28, y:GROUND, vy:0, grounded:true, facing:1, moving:false, running:false, anim:0, hp:5, maxHp:5, invuln:0, atk:0, jumps:0, maxJumps:1, dash:0, dashCd:0, dashDir:1, ghost:[], wallDir:0, wallKick:0, wallKickDir:0, coyote:0, jumpBuf:0, airT:0, landT:0, crouching:false, ch:CHH };
+// 조작감(게임 필) 튜닝: 코요테 타임(발판 벗어난 직후에도 점프 허용) / 점프 버퍼(착지 직전 미리 눌러도 먹힘)
+const COYOTE=6, JUMP_BUFFER=6;
+// ── 능력(해금) ── 시작은 한 번 점프만. 상인한테 부품으로 사서 해금.
+const abilities={ doubleJump:false, crouch:false, map:false };
+const CROUCH_H = 6;   // 웅크릴 때 충돌 높이(칸) — 아주 낮게
+let devCrouch = false;   // 개발용 강제 웅크림 (#dev-crouch)
+function applyAbilities(){ hero.maxJumps = abilities.doubleJump ? 2 : 1; }
+// 상점 품목 (순서=상점 목록 순서)
+const SHOP_ITEMS=[
+  { key:"doubleJump", name:"더블점프", desc:"공중에서 한 번 더 점프", price:20 },
+  { key:"crouch",     name:"웅크리기", desc:"↓로 웅크려 낮은 곳 통과", price:15 },
+  { key:"map",        name:"지도",     desc:"M키로 세계 지도 보기(가본 곳)", price:12 },
+];
+// ── 부술 수 있는 벽 ── 맵 objects {type:"wall",x,y,(w,h,hp)}. 칼로 때리면 부서져 숨은 길이 열림
+let breakables=[], baseGrounds=[]; const wallBroken={};
+function syncGrounds(){ grounds = baseGrounds.concat(breakables.map(b=>[b.x, b.y-b.h, b.w, b.h])); }
+// ── 세계 지도 ── 상인에게 사면 M키로 열림. 가본 구역만 보이고, 옆에 붙은 미지 구역은 흐리게(?)
+let visited={}, mapOpen=false;
+// 지도 화면 배치 [중심x, 중심y] (768x480 기준)
+// ※ 연결된 방끼리는 가로 or 세로로 겹치게 둬야 통로(작은 직사각형)가 직선으로 이어짐
+const MAP_NODES = {
+  room:   [58,230],  street: [185,230], tower:  [315,272], factory:[185,330],
+  canal:  [285,360], map2:   [415,255], map3:   [510,250], summit: [605,165],
+};
+let walls=[];   // 벽 타기 벽면 목록 {x, y0, y1, dir(-1=왼쪽벽/+1=오른쪽벽), block}
+let platforms=[];   // 현재 장면의 발판들 {x, y(윗면), w} — 위에서만 착지(한방향)
+let grounds=[];     // 현재 장면의 땅들 [x,y,w,h] — 꽉 찬 solid, 사방 충돌
+let enemies=[], debris=[];   // 적 자동인형들 / 부서진 조각
+let safeX=20, safeY=GROUND;   // 마지막으로 딛은 안전한 자리 (틈에 빠지면 복귀)
+let doorArm=true;             // 문 작동 준비 (도착 직후 무한 왕복 방지)
+let trans=null;
+function mkBot(x,y){ return {x:x, y:(y===undefined?GROUND:y), vy:0, dir:-1, hp:3, hurt:0, alive:true, type:"walker", anim:0, moving:false}; }
+function mkCharger(x,y){ return {x:x, y:(y===undefined?GROUND:y), vy:0, dir:-1, hp:4, hurt:0, alive:true, type:"charger", mode:"walk", t:0, moving:false}; }
+let mapWarm=[], curWarm=[], curVents=[];   // 맵 데이터에서 온 가로등 불빛 / 현재 장면의 따뜻한 빛·증기 구멍
+// 적: 맵에 objects가 있으면 거기서(에디터 배치: enemy=걷는 적, charger=돌진 적), 없으면 거리 기본 배치
+function spawnEnemies(){
+  const M=MAPS[scene];
+  if(M.objects) return M.objects.filter(o=>o.type==="enemy"||o.type==="charger")
+    .map(o=> o.type==="charger" ? mkCharger(o.x,o.y) : mkBot(o.x,o.y));
+  return scene==="street" ? [mkBot(52),mkBot(112),mkBot(158),mkBot(224),mkBot(266),mkBot(300)] : [];
+}
+function spawnDebris(x,y){ for(let i=0;i<12;i++) debris.push({x:x+7, y:y-6, vx:(Math.random()-0.5)*0.5, vy:-Math.random()*0.7-0.2, life:1}); }
+// ── 부품(재화) ── 적을 부수면 튀어나옴 → 바닥에 떨어졌다가 다가가면 자석처럼 딸려와 주움
+let parts=[], partsCount=0;
+function dropParts(x,y,n){ for(let i=0;i<n;i++) parts.push({x:x+(Math.random()-0.5)*3, y:y, vx:(Math.random()-0.5)*0.45, vy:-Math.random()*0.6-0.2, settled:false, spin:Math.random()*6}); }
+// 공격: 앞쪽에 판정 → 닿은 적 데미지 + 넉백. 죽으면 조각으로 부서짐
+function heroAttack(){
+  hero.atk=16;
+  const hbw=13, hbh=CHH-2, hbx=hero.facing>0?hero.x+CHW-3:hero.x-hbw+3, hby=hero.y-CHH+1;
+  for(const en of enemies){ if(!en.alive) continue;
+    const ew = en.type==="charger"?CHGW:BOTW, eh = en.type==="charger"?CHGH:BOTH;
+    if(en.x+2<hbx+hbw && en.x+ew-2>hbx && en.y-eh<hby+hbh && en.y>hby){
+      en.hp--; en.hurt=8; en.x+=hero.facing*2.5; en.vy=-0.4;
+      if(en.hp<=0){ en.alive=false; spawnDebris(en.x,en.y); dropParts(en.x+ew/2, en.y-4, en.type==="charger"?5:3); }
+    }
+  }
+  for(let i=breakables.length-1;i>=0;i--){ const b=breakables[i];   // 부술 수 있는 벽
+    if(b.x<hbx+hbw && b.x+b.w>hbx && b.y-b.h<hby+hbh && b.y>hby){
+      b.hp--; b.hurt=8; shake=Math.max(shake,4);
+      if(b.hp<=0){                                         // 부서짐 → 길이 열림
+        wallBroken[scene+":"+b.x+","+b.y]=true;
+        for(let k=0;k<12;k++) spawnDebris(b.x+(k%3)*b.w/3, b.y-(k%4)*b.h/4);
+        breakables.splice(i,1); syncGrounds(); shake=Math.max(shake,9);
+      }
+    }
+  }
+  if(boss && boss.alive){                                  // 보스도 공격에 맞음 (넉백은 조금만)
+    if(boss.x+3<hbx+hbw && boss.x+BOSSW-3>hbx && boss.y-BOSSH<hby+hbh && boss.y>hby){
+      boss.hp--; boss.hurt=8; boss.x+=hero.facing*1.2;
+      if(boss.hp<=0){
+        if(boss.phase===1){          // ★ 체력을 다 깎으면 끝이 아니다 — 2페이즈! 체력 만땅 + 주인공을 밀쳐냄
+          boss.phase=2; boss.hp=boss.maxHp; boss.mode="rage"; boss.t=0; boss.chained=false;
+          shake=10; chaseFlash=0.6;
+          const push=(hero.x+CHW/2 < boss.x+BOSSW/2)?-1:1;
+          hero.x+=push*10; hero.vy=-0.7; hero.grounded=false; hero.invuln=80;
+          for(let k=0;k<12;k++) spawnDebris(boss.x+2+(k%6)*5, boss.y-(k%4)*5);
+        } else {                     // 2페이즈에서 다 깎아야 진짜로 쓰러짐
+          boss.alive=false; bossDown[scene]=true; chaseFlash=0.4;
+          for(let k=0;k<6;k++) spawnDebris(boss.x+3+k*4, boss.y-4-(k%3)*6);
+          dropParts(boss.x+BOSSW/2, boss.y-8, 16);   // 보스는 부품을 왕창 떨굼
+        }
+      }
+    }
+  }
+}
+
+// ── 추억(회상) 장면 ── 맵 데이터의 💭 자리(objects type:"memory")에 서서 E/↓
+let memSpots=[];                     // 현재 맵의 회상 자리들 {x,y,text}
+let mem=null, memLevel=0, memCx=0, memCy=GROUND;   // mem={spot,phase:'in'|'hold'|'out',level}
+// ── 상인(정비공) ── 맵 objects type:"merchant". 다가가 E → 상점. 부품으로 능력 구입.
+let merchant=null, shopOpen=false, shopSel=0, buyMsg=0, buyMsgTxt="";
+function nearMerchant(){ return merchant && Math.abs(hero.x+CHW/2-(merchant.x+MERW/2))<9 && Math.abs(hero.y-merchant.y)<10; }
+function tryBuy(){
+  const it=SHOP_ITEMS[shopSel];
+  if(abilities[it.key]){ buyMsg=90; buyMsgTxt="이미 "+it.name+"을(를) 배웠어."; return; }
+  if(partsCount>=it.price){
+    partsCount-=it.price; abilities[it.key]=true; applyAbilities();
+    buyMsg=150; buyMsgTxt=it.name+" 습득!";
+  } else { buyMsg=90; buyMsgTxt="부품이 부족해 ("+partsCount+"/"+it.price+")"; }
+}
+function nearSpot(){ for(const s of memSpots) if(Math.abs(hero.x+CHW/2 - s.x)<5 && Math.abs(hero.y - s.y)<6) return s; return null; }
+
+// ── 보스 (맵 데이터 objects type:"boss") ── 큰 자동인형. 한 번 쓰러뜨리면 이번 판에선 안 살아남
+let boss=null; const bossDown={};
+const BOSSW=BOTW*2, BOSSH=BOTH*2;
+let bossGhost=[], shake=0;           // 돌진 잔상 / 화면 흔들림
+
+// ── 하트 (맵 데이터 objects type:"heart") ── 먹으면 최대 체력 +1. 한 판에 한 번만.
+let curHearts=[], heartMsg=0; const heartTaken={};
+function spawnBoss(){
+  const M=MAPS[scene], o=(M.objects||[]).find(o=>o.type==="boss");
+  if(!o || bossDown[scene]) return null;
+  return {x:o.x, y:o.y, vy:0, dir:-1, hp:12, maxHp:12, hurt:0, alive:true, mode:"walk", t:0, phase:1, chained:false};
+}
+
+let started=false, titleAlpha=1;     // 타이틀 화면 (아무 키나 누르면 시작)
+const GAME_TITLE="Broken City";   // 정식 제목 확정 (2026-07-20, 구 "멈춘 도시")
+// ── 엔딩 ── 마지막 회상(final)을 닫으면: 그녀가 금빛 먼지로 흩어짐 → "Broken City" 타이틀 카드
+let ending=0, endingT=0, goldDust=[];
+// 붕괴(도망): 어둠에 삼켜지는 무너짐 파도가 왼쪽에서 밀려옴
+let collapse=null, collapseState="none", chaseFlash=0;   // collapse={x: 파도 앞쪽 끝(칸)}
+
+function camTarget(){ return hero.x + CHW/2 - GW/2; }
+function camTargetY(){ return hero.y - VH/2; }
+function clampCam(){ const mx=Math.max(0,MW-GW); if(camX<0)camX=0; if(camX>mx)camX=mx;
+  const my=Math.max(0,mapH-VH); if(camY<0)camY=0; if(camY>my)camY=my; }
+function enter(to){
+  scene=to; const M=MAPS[to];
+  visited[to]=true; mapOpen=false;                          // 지도: 가본 곳 기록
+  (SCENES[to]||GENERIC).paint(); lampOn=true; lampLevel=1; collapse=null; collapseState="none";   // 불 기본 ON
+  mapH = Math.min(M.height, GH);                            // 맵 높이(데이터에서, 최대 GH)
+  platforms = M.platforms.map(p => ({x:p[0], y:p[1], w:p[2]}));   // ★ 발판 = 맵 데이터
+  baseGrounds = (M.grounds||[]).map(g => g.slice());              // ★ 땅 = 맵 데이터 [x,y,w,h]
+  breakables = (M.objects||[]).filter(o=>o.type==="wall" && !wallBroken[to+":"+o.x+","+o.y])
+    .map(o=>({x:o.x, y:o.y, w:o.w||3, h:o.h||12, hp:o.hp||3, maxHp:o.hp||3, hurt:0}));   // 부술 벽(안 부순 것만)
+  syncGrounds();                                                  // 땅 = 지형 + 안 부순 벽
+  doorArm = false;                                          // 도착한 문에서 벗어나야 문이 다시 작동
+  hero.vy=0; hero.grounded=false; hero.invuln=0; hero.atk=0;
+  enemies = spawnEnemies();
+  mapWarm = (M.objects||[]).filter(o=>o.type==="lamp").map(o=>({cx:o.x, cy:o.y-18, col:[1.5,1.0,0.5], R:11}));
+  curWarm = (SCENES[to]||GENERIC).warm.concat(mapWarm);
+  curVents = (to==="street" ? vents : []).concat((M.objects||[]).filter(o=>o.type==="vent").map(o=>({x:o.x,y:o.y})));
+  memSpots = (M.objects||[]).filter(o=>o.type==="memory");
+  merchant = (M.objects||[]).find(o=>o.type==="merchant") || null; shopOpen=false;
+  boss = spawnBoss(); bossGhost=[];
+  curHearts = (M.objects||[]).filter(o=>o.type==="heart").filter(o=>!heartTaken[to+":"+o.x+","+o.y]);
+  walls = (to==="tower") ? [                                // sx0..sx1=돌기둥 칸 / dir: -1=오른쪽면에 붙음, +1=왼쪽면에 붙음
+    {sx0:0, sx1:3, y0:0, y1:GH, dir:-1, block:false},               // 바깥 왼벽(붙기만)
+    {sx0:TOWER_W-3, sx1:TOWER_W, y0:0, y1:GH, dir:1, block:false},  // 바깥 오른벽
+    {sx0:SHAFT_X0-2, sx1:SHAFT_X0, y0:SHAFT_TOP, y1:SHAFT_BOT, dir:-1, block:true},   // 굴뚝 왼벽(면24)
+    {sx0:SHAFT_X1, sx1:SHAFT_X1+2, y0:SHAFT_TOP, y1:SHAFT_BOT, dir:1, block:true},    // 굴뚝 오른벽(면40)
+  ] : [];
+  debris=[]; parts=[];   // 부품은 장면마다 초기화(획득 개수 partsCount는 유지)
+}
+function startTrans(to,hx,hy){ if(trans)return; trans={phase:"out",alpha:0,to:to,hx:hx,hy:hy}; }
+// 엔딩에서 아무 키나 → 처음(타이틀)으로. 새 게임을 위해 보스·하트·체력도 원래대로.
+function resetToTitle(){
+  ending=0; endingT=0; goldDust=[];
+  for(const k in bossDown) delete bossDown[k];
+  for(const k in heartTaken) delete heartTaken[k];
+  for(const k in wallBroken) delete wallBroken[k];   // 부순 벽도 원래대로
+  hero.maxHp=5; hero.hp=5;
+  abilities.doubleJump=false; abilities.crouch=false; abilities.map=false; applyAbilities(); partsCount=0;   // 새 게임: 능력·부품 초기화
+  visited={}; mapOpen=false;                                                          // 지도도 초기화
+  hero.crouching=false; hero.ch=CHH;
+  started=false; titleAlpha=1;
+  const id = MAPS.room ? "room" : Object.keys(MAPS)[0];
+  enter(id); hero.x=MAPS[id].start[0]; hero.y=MAPS[id].start[1];
+  safeX=hero.x; safeY=hero.y; camX=camTarget(); camY=camTargetY(); clampCam();
+}
+// 대시 = 좌/우 방향키를 빠르게 두 번
+let dblTap={l:-9,r:-9};
+function tryDash(dir){
+  if(hero.dash<=0 && hero.dashCd<=0 && !mem && !trans){
+    hero.dash=13; hero.dashDir=dir; hero.facing=dir; hero.dashCd=26; hero.invuln=Math.max(hero.invuln,13);
+    spawnDebris(hero.x+CHW/2, hero.y-CHH*0.5);
+  }
+}
+cv.addEventListener("click",()=>{ if(!started){ started=true; return; }
+  if(ending){ if(endingT>150) resetToTitle(); return; }
+  if(hero.atk<=0 && !mem && !trans) heroAttack(); });   // 클릭 = 공격
+window.addEventListener("keydown",e=>{
+  if(!started){ started=true; return; }                // 타이틀에서 아무 키나 → 시작
+  if(ending){ if(endingT>150) resetToTitle(); return; }
+  keys[e.code]=true;
+  if(e.code.startsWith("Arrow")||e.code==="Space") e.preventDefault();   // 페이지 스크롤 방지
+  // 상점 열려 있을 때: ↑↓=품목 선택, E/Enter=사기, Space/Esc=닫기
+  if(shopOpen){
+    if(e.code==="ArrowUp"||e.code==="KeyW") shopSel=(shopSel-1+SHOP_ITEMS.length)%SHOP_ITEMS.length;
+    else if(e.code==="ArrowDown"||e.code==="KeyS") shopSel=(shopSel+1)%SHOP_ITEMS.length;
+    else if(e.code==="KeyE"||e.code==="Enter") tryBuy();
+    else if(e.code==="Space"||e.code==="Escape") shopOpen=false;
+    return;
+  }
+  // 지도 열려 있을 때: M/Space/Esc로 닫기
+  if(mapOpen){ if(e.code==="KeyM"||e.code==="Space"||e.code==="Escape") mapOpen=false; return; }
+  // 지도 열기 (M) — 상인에게 지도를 산 뒤부터
+  if(e.code==="KeyM" && abilities.map && !mem && !trans){ mapOpen=true; return; }
+  // 추억 보는 중: 스페이스/엔터로 닫기
+  if(mem){ if((e.code==="Space"||e.code==="Enter") && mem.phase==="hold") mem.phase="out"; return; }
+  // 점프 입력 → 버퍼에 기록만 (실제 점프는 update에서 코요테·버퍼 반영해 처리)
+  if((e.code==="Space"||e.code==="ArrowUp"||e.code==="KeyW") && !trans && !mem) hero.jumpBuf=JUMP_BUFFER;
+  // 공격 (X / J)
+  if((e.code==="KeyX"||e.code==="KeyJ") && hero.atk<=0 && !mem && !trans){ heroAttack(); }
+  // 대시 = ← 또는 → 를 빠르게 두 번 (꾹 누름 e.repeat 는 무시)
+  if(!e.repeat && !mem && !trans){
+    if(e.code==="ArrowLeft"||e.code==="KeyA"){ if(t-dblTap.l < 0.9) tryDash(-1); dblTap.l=t; }
+    if(e.code==="ArrowRight"||e.code==="KeyD"){ if(t-dblTap.r < 0.9) tryDash(1); dblTap.r=t; }
+  }
+  // 상호작용 (E / ↓): 상인 근처면 상점, 아니면 빛나는 자리에서 추억
+  if((e.code==="KeyE"||e.code==="ArrowDown") && !mem && !trans && collapseState!=="active" && !(boss&&boss.alive)){
+    if(nearMerchant()){ shopOpen=true; shopSel=0; }
+    else { const s=nearSpot(); if(s) mem={ spot:s, phase:"in", level:0 }; }
+  }
+});
+window.addEventListener("keyup",e=>{ keys[e.code]=false;
+  // 가변 점프: 점프키를 일찍 떼면 상승을 끊어 낮게 뛴다(짧게=살짝, 꾹=높이)
+  if((e.code==="Space"||e.code==="ArrowUp"||e.code==="KeyW") && hero.vy<0) hero.vy*=0.45;
+});
+
+// ── 분위기 효과 (거리에서만): 비 + 파이프 증기 ──
+const rain=[];
+for(let i=0;i<150;i++) rain.push({x:Math.random()*cv.width, y:Math.random()*cv.height, l:7+Math.random()*11, s:8+Math.random()*7});
+function drawRain(fade){
+  const al=0.30*(1-(fade||0));                       // 추억 중엔 비가 옅어짐(과거는 맑음)
+  ctx.strokeStyle="rgba(150,170,205,"+al.toFixed(3)+")"; ctx.lineWidth=1; ctx.beginPath();
+  for(const d of rain){ ctx.moveTo(d.x,d.y); ctx.lineTo(d.x-2,d.y+d.l); d.y+=d.s; d.x-=1.2;
+    if(d.y>cv.height){ d.y=-d.l; d.x=Math.random()*cv.width; } if(d.x<0) d.x+=cv.width; }
+  ctx.stroke();
+}
+const vents=[{x:34,y:29},{x:100,y:29},{x:160,y:29},{x:238,y:29},{x:300,y:29}];   // 증기가 피어오르는 자리(맵 칸)
+const puffs=[]; let steamT=0;
+function updateSteam(){
+  if(!curVents.length) return;
+  steamT++;
+  if(steamT%12===0){ const v=curVents[(steamT/12|0)%curVents.length]; puffs.push({wx:v.x*PX+(Math.random()*8-4), y:v.y*PX, r:4, a:0.42}); }
+  for(let i=puffs.length-1;i>=0;i--){ const p=puffs[i]; p.y-=0.5; p.r+=0.22; p.a-=0.006; if(p.a<=0) puffs.splice(i,1); }
+}
+function drawSteam(camPx){
+  for(const p of puffs){ ctx.fillStyle="rgba(200,206,216,"+p.a.toFixed(3)+")"; ctx.beginPath(); ctx.arc(p.wx-camPx,p.y,p.r,0,Math.PI*2); ctx.fill(); }
+}
+
+function update(){
+  t+=0.05;
+  lampLevel += ((lampOn?1:0)-lampLevel)*0.08;
+  flick = lampLevel*(0.9+0.1*Math.sin(t*2.1)+0.04*Math.sin(t*5.3));
+
+  // 금빛 먼지는 언제나 흘러감 (회상 → 엔딩까지 이어지도록)
+  for(let i=goldDust.length-1;i>=0;i--){ const p=goldDust[i]; p.x+=p.vx; p.y+=p.vy; p.vx+=0.0012; p.life-=0.006; if(p.life<=0) goldDust.splice(i,1); }
+  if(!started) return;                    // 타이틀 화면에선 게임 정지
+  if(ending){ endingT++; return; }        // 엔딩 화면에선 세상이 멈춤
+  if(buyMsg>0) buyMsg--;
+  if(shopOpen){ hero.moving=false; return; }   // 상점 열려 있으면 세상 멈춤
+  if(mapOpen){ hero.moving=false; return; }    // 지도 보는 중에도 세상 멈춤
+  if(trans){
+    if(trans.phase==="out"){ trans.alpha+=0.06; if(trans.alpha>=1){ enter(trans.to); hero.x=trans.hx; hero.y=trans.hy; safeX=hero.x; safeY=hero.y; camX=camTarget(); camY=camTargetY(); clampCam(); trans.phase="in"; } }
+    else { trans.alpha-=0.06; if(trans.alpha<=0) trans=null; }
+    return;
+  }
+  if(mem){   // 추억 보는 중엔 걷기·카메라 멈춤, 밝기만 서서히 변함
+    hero.moving=false;
+    if(mem.phase!=="out") mem.reveal=(mem.reveal||0)+1;   // 타자기 효과 진행
+    if(mem.phase==="in"){ mem.level+=0.03; if(mem.level>=1){ mem.level=1; mem.phase="hold"; } }
+    else if(mem.phase==="out"){
+      mem.level-=0.03;
+      if(mem.spot.final){                              // 마지막 회상: 그녀가 금빛 먼지로 흩어짐
+        for(let k=0;k<2;k++) goldDust.push({ x:memCx+Math.random()*12, y:memCy-17+Math.random()*15,
+          vx:(Math.random()-0.3)*0.06, vy:-0.04-Math.random()*0.07, life:1 });
+      }
+      if(mem.level<=0){ const fin=!!mem.spot.final; mem=null; if(fin){ ending=1; endingT=0; } }
+    }
+    memLevel = mem?mem.level:0; if(mem){ memCx=mem.spot.x; memCy=mem.spot.y; }
+    return;
+  }
+  memLevel=0;
+  if(chaseFlash>0) chaseFlash=Math.max(0,chaseFlash-0.05);
+  // 조작감 타이머: 땅에 있으면 코요테 가득, 공중이면 줄어듦 / 점프 버퍼도 줄어듦
+  if(hero.grounded) hero.coyote=COYOTE; else if(hero.coyote>0) hero.coyote--;
+  if(hero.jumpBuf>0) hero.jumpBuf--;
+  // 좌우 이동 (도망 중엔 더 빨리)
+  let dx=0;
+  if(keys["ArrowLeft"]||keys["KeyA"]) dx-=1;
+  if(keys["ArrowRight"]||keys["KeyD"]) dx+=1;
+  hero.moving = dx!==0;
+  hero.running = (keys["ShiftLeft"]||keys["ShiftRight"]) && dx!==0;   // Shift = 달리기
+  // ── 웅크리기(능력) ── ↓ 누르면 웅크림. 낮은 천장 아래선 일어서지 못함(계속 웅크림). 충돌 높이 ch로 낮아짐
+  const cxx=hero.x+CHW/2; let ceilLow=false;
+  for(const g of grounds){ if(cxx>g[0] && cxx<g[0]+g[2]){ if(g[1]+g[3]>hero.y-CHH && g[1]<hero.y-CROUCH_H){ ceilLow=true; break; } } }
+  // ↓를 누르고 있으면 웅크림(공중에서도). 키를 떼면 풀림. 단 낮은 천장 아래선 못 일어나 유지.
+  const holdDown = keys["ArrowDown"]||keys["KeyS"];
+  const wantCrouch = (abilities.crouch && holdDown) || devCrouch;
+  hero.crouching = wantCrouch || (hero.crouching && ceilLow);
+  hero.ch = hero.crouching ? CROUCH_H : CHH;
+  const spd = (collapseState==="active") ? 0.5 : ((hero.crouching && hero.grounded) ? 0.14 : (hero.running ? 0.46 : 0.28));   // 땅에서 웅크릴 때만 느림
+  if(hero.dashCd>0) hero.dashCd--;
+  if(hero.dash>0){                                    // 대시 중: 수평으로 쭉(중력 무시는 아래에서)
+    hero.dash--; hero.facing=hero.dashDir; hero.x+=hero.dashDir*0.95; hero.moving=true;
+    if(hero.dash%3===0) hero.ghost.push({x:hero.x, y:hero.y, life:1});   // 잔상
+  } else if(dx){ hero.facing=dx>0?1:-1; hero.x+=dx*spd; hero.anim += hero.running?0.30:0.18; }
+  if(hero.wallKick>0){ hero.wallKick--; hero.x += hero.wallKickDir*0.5; hero.moving=true; }   // 벽 점프 후 벽 반대로 튕겨나감
+  for(let i=hero.ghost.length-1;i>=0;i--){ hero.ghost[i].life-=0.14; if(hero.ghost[i].life<=0) hero.ghost.splice(i,1); }
+  if(hero.x<1) hero.x=1; if(hero.x>MW-1-CHW) hero.x=MW-1-CHW;
+  groundCollideX();   // 땅(solid) 좌우 벽 막기
+  // 벽 처리 (탑): 굴뚝 돌기둥은 부딪히면 밀어내고(공중일 때만), 벽면에 대고 방향키 누르면 붙기(wallDir)
+  const wHead=hero.y-CHH, wFeet=hero.y;
+  for(const w of walls){                                    // block 돌기둥 = 통과 못함(가까운 쪽으로 밀어냄)
+    if(!w.block || hero.grounded) continue;                 // 서 있을 땐 안 밀기(발판에 방해 X)
+    if(wHead<w.y1 && wFeet>w.y0 && hero.x<w.sx1 && hero.x+CHW>w.sx0){
+      const hc=hero.x+CHW/2, wc=(w.sx0+w.sx1)/2;
+      hero.x = (hc<wc) ? w.sx0-CHW : w.sx1;                 // 몸 중심이 기둥 왼쪽이면 왼쪽으로, 아니면 오른쪽으로
+    }
+  }
+  hero.wallDir=0;
+  const pL=keys["ArrowLeft"]||keys["KeyA"], pR=keys["ArrowRight"]||keys["KeyD"];
+  if(!hero.grounded && hero.dash<=0 && hero.wallKick<=0){
+    for(const w of walls){
+      if(wHead>=w.y1 || wFeet<=w.y0) continue;
+      if(w.dir===-1 && pL && hero.x>=w.sx1-1 && hero.x<=w.sx1+0.6){ hero.wallDir=-1; break; }   // 오른쪽 벽면(sx1)에 왼쪽 눌러 붙기
+      if(w.dir===1 && pR && hero.x+CHW<=w.sx0+1 && hero.x+CHW>=w.sx0-0.6){ hero.wallDir=1; break; } // 왼쪽 벽면(sx0)에 오른쪽 눌러 붙기
+    }
+  }
+  // ── 점프 처리 (코요테 타임 + 점프 버퍼) : 입력을 버퍼에 담아 여기서 한 번에 판단 ──
+  if(hero.jumpBuf>0){                                        // 웅크린 채로도 점프 가능(웅크림은 ↓ 뗄 때만 풀림)
+    if(hero.wallDir!==0 && !hero.grounded){                 // 벽 점프: 벽 반대로 튕겨 오름
+      hero.vy=-1.0; hero.wallKick=9; hero.wallKickDir=-hero.wallDir; hero.facing=-hero.wallDir;
+      hero.jumps=hero.maxJumps-1; hero.wallDir=0; hero.jumpBuf=0; spawnDebris(hero.x+CHW/2, hero.y-CHH*0.4);
+    } else if(hero.grounded || hero.coyote>0){              // 땅 점프 (발판 벗어난 직후=코요테도 허용)
+      hero.vy=-1.02; hero.grounded=false; hero.coyote=0; hero.jumps=hero.maxJumps-1; hero.jumpBuf=0;
+    } else if(hero.jumps>0){                                // 공중(이단) 점프
+      hero.vy=-1.02; hero.jumps--; hero.jumpBuf=0; spawnDebris(hero.x+CHW/2, hero.y);   // 발밑 먼지
+    }
+  }
+  // 중력 + 발판 충돌 (플랫포머)
+  hero.vy += 0.055;                       // 중력
+  if(hero.dash>0) hero.vy=0;              // 대시 중엔 공중에 뜬 채 수평
+  if(hero.wallDir!==0){                    // 벽 슬라이드: 천천히 미끄러짐 + 벽 바라봄
+    if(hero.vy>0.16) hero.vy=0.16; hero.facing=hero.wallDir;
+    if(hero.vy>0 && Math.floor(t*10)%2===0) spawnDebris(hero.x+(hero.wallDir<0?0:CHW), hero.y-CHH*0.4);
+  }
+  const py0 = hero.y;                      // 이번 프레임 시작 발 높이
+  hero.y += hero.vy;
+  hero.grounded=false;
+  const cx = hero.x + CHW/2;
+  for(const p of platforms){
+    if(cx>p.x-0.5 && cx<p.x+p.w+0.5 && hero.vy>=0 && py0<=p.y+0.6 && hero.y>=p.y){
+      hero.y=p.y; hero.vy=0; hero.grounded=true;   // 발판 윗면에 착지
+    }
+  }
+  for(const g of grounds){ const gl=g[0],gr=g[0]+g[2],gt=g[1],gb=g[1]+g[3];   // 땅: 윗면 착지 + 천장 박치기
+    if(cx<=gl-0.5 || cx>=gr+0.5) continue;
+    if(hero.vy>=0 && py0<=gt+0.6 && hero.y>=gt && py0<=gb){ hero.y=gt; hero.vy=0; hero.grounded=true; }
+    else if(hero.vy<0 && (py0-hero.ch)>=gb-0.6 && hero.y-hero.ch<=gb){ hero.y=gb+hero.ch; hero.vy=0; }
+  }
+  for(const b of breakables) if(b.hurt>0) b.hurt--;   // 부술 벽 피격 번쩍임
+  if(hero.grounded) hero.jumps=hero.maxJumps;      // 땅 딛으면 점프 2회 충전
+  if(hero.grounded){ if(hero.airT>7) hero.landT=8; hero.airT=0; } else hero.airT++;   // 착지 웅크림 트리거
+  if(hero.landT>0) hero.landT--;
+  if(hero.grounded){ safeX=hero.x; safeY=hero.y; }           // 딛은 자리를 안전 위치로 기억
+  if(hero.y > mapH+6){ hero.x=safeX; hero.y=safeY-1; hero.vy=0; hero.invuln=40; }  // 맵 아래로 떨어지면 복귀
+  camX += (camTarget()-camX)*0.12; camY += (camTargetY()-camY)*0.12; clampCam();
+  // ── 전투: 타이머, 적 AI, 피격, 조각, 죽음 ──
+  if(hero.atk>0) hero.atk--;
+  if(hero.invuln>0) hero.invuln--;
+  for(const e of enemies){ if(!e.alive) continue;
+    const ew = e.type==="charger"?CHGW:BOTW;
+    e.vy+=0.055; e.y+=e.vy;                                   // 중력
+    if(e.y>GH+12){ e.alive=false; continue; }                 // 맵 밖으로 떨어진 적 정리
+    const ecx=e.x+ew/2;
+    for(const p of platforms){ if(ecx>p.x && ecx<p.x+p.w && e.vy>=0 && e.y>=p.y && e.y-e.vy<=p.y+0.6){ e.y=p.y; e.vy=0; } }
+    for(const g of grounds){ if(ecx>g[0] && ecx<g[0]+g[2] && e.vy>=0 && e.y>=g[1] && e.y-e.vy<=g[1]+0.6){ e.y=g[1]; e.vy=0; } }   // 땅 윗면
+    const d=(hero.x+CHW/2)-ecx;
+    if(e.hurt>0) e.hurt--;
+    if(e.type==="charger"){                                   // 돌진 적: 접근 → 멈춰 번쩍(준비) → 돌진 → 쉼
+      e.t++;
+      if(e.mode==="walk"){
+        if(Math.abs(d)<70){ e.dir=d>0?1:-1; e.x+=e.dir*0.12; e.moving=true; } else e.moving=false;
+        if(e.t>90 && Math.abs(d)<58 && Math.abs(hero.y-e.y)<10){ e.mode="tele"; e.t=0; }
+      } else if(e.mode==="tele"){ e.moving=false;
+        if(e.t>30){ e.mode="charge"; e.t=0; e.dir=d>0?1:-1; }
+      } else if(e.mode==="charge"){ e.moving=true;
+        e.x+=e.dir*0.55;
+        if(e.t%3===0) spawnDebris(e.x+(e.dir<0?ew-2:2), e.y);
+        if(e.t>44 || e.x<=1 || e.x>=MW-1-ew){ e.mode="rest"; e.t=0; shake=Math.max(shake,3); }
+      } else { e.moving=false; if(e.t>40){ e.mode="walk"; e.t=0; } }   // rest
+    } else {                                                  // 걷는 적
+      if(Math.abs(d)<38){ e.dir=d>0?1:-1; e.x+=e.dir*0.14; e.moving=true; e.anim+=0.12; } else e.moving=false;
+    }
+    if(e.x<1)e.x=1; if(e.x>MW-1-ew)e.x=MW-1-ew;
+    if(hero.invuln<=0 && Math.abs(d)<ew/2+1 && Math.abs(hero.y-e.y)<12){   // 접촉 피격
+      hero.hp--; hero.invuln=70; hero.vy=-0.6; hero.x+=(d>0?-3:3); chaseFlash=0.7;
+    }
+  }
+  // ── 보스 AI: 다가옴 → (가까우면) 멈춰서 번쩍이며 돌진 준비 → 돌진 ──
+  if(boss && boss.alive){
+    boss.t++;
+    boss.vy+=0.055; boss.y+=boss.vy;
+    const bcx=boss.x+BOSSW/2;
+    for(const p of platforms){ if(bcx>p.x && bcx<p.x+p.w && boss.vy>=0 && boss.y>=p.y && boss.y-boss.vy<=p.y+0.6){ boss.y=p.y; boss.vy=0; } }
+    for(const g of grounds){ if(bcx>g[0] && bcx<g[0]+g[2] && boss.vy>=0 && boss.y>=g[1] && boss.y-boss.vy<=g[1]+0.6){ boss.y=g[1]; boss.vy=0; } }   // 땅 윗면
+    const d=(hero.x+CHW/2)-bcx, P2=boss.phase===2;     // 2페이즈: 더 빠르고, 예고 짧고, 연속 두 번 돌진
+    if(boss.mode==="rage"){                            // 2페이즈 돌입 연출: 부들부들 떨며 폭주
+      boss.x += (boss.t%4<2)?0.12:-0.12;
+      if(boss.t%6===0) spawnDebris(boss.x+(boss.t%12<6?2:BOSSW-2), boss.y);
+      if(boss.t>56){ boss.mode="walk"; boss.t=0; }
+    } else if(boss.mode==="walk"){
+      if(Math.abs(d)<60){ boss.dir=d>0?1:-1; boss.x+=boss.dir*(P2?0.17:0.10); }
+      if(boss.t>(P2?170:240) && Math.abs(d)<50){ boss.mode="tele"; boss.t=0; }
+    } else if(boss.mode==="tele"){                     // 돌진 준비: 멈춰서 번쩍임 (피할 시간)
+      if(boss.t>(P2?24:36)){ boss.mode="charge"; boss.t=0; boss.dir=d>0?1:-1; }
+    } else if(boss.mode==="charge"){                   // 돌진! (잔상 + 발밑 먼지)
+      boss.x+=boss.dir*(P2?0.80:0.62);
+      if(boss.t%3===0) bossGhost.push({x:boss.x, y:boss.y, dir:boss.dir, life:1});
+      if(boss.t%4===0) spawnDebris(boss.x+(boss.dir<0?BOSSW-2:2), boss.y);
+      const hitWall = boss.x<=1 || boss.x>=MW-1-BOSSW;
+      if(boss.t>(P2?40:46) || hitWall){                // 돌진 끝/벽 충돌: 쿵! (먼지 폭발 + 화면 흔들림)
+        shake=6;
+        for(let k=0;k<8;k++) spawnDebris(boss.x+(boss.dir>0?BOSSW-2:2)+(k%4)-2, boss.y-(k%3)*5);
+        if(P2 && !boss.chained && !hitWall){ boss.chained=true; boss.mode="tele"; boss.t=0; }   // 한 번 더!
+        else { boss.chained=false; boss.mode="walk"; boss.t=0; }
+      }
+    }
+    if(boss.x<1) boss.x=1; if(boss.x>MW-1-BOSSW) boss.x=MW-1-BOSSW;
+    if(boss.hurt>0) boss.hurt--;
+    if(hero.invuln<=0 && Math.abs(d)<BOSSW/2+3 && Math.abs(hero.y-boss.y)<BOSSH){   // 접촉 피격
+      hero.hp--; hero.invuln=70; hero.vy=-0.6; hero.x+=(d>0?-4:4); chaseFlash=0.7;
+    }
+  }
+  for(let i=debris.length-1;i>=0;i--){ const p=debris[i]; p.vy+=0.03; p.x+=p.vx; p.y+=p.vy; p.life-=0.02; if(p.life<=0) debris.splice(i,1); }
+  for(let i=bossGhost.length-1;i>=0;i--){ bossGhost[i].life-=0.09; if(bossGhost[i].life<=0) bossGhost.splice(i,1); }
+  if(shake>0){ shake*=0.85; if(shake<0.5) shake=0; }
+  // ── 하트 줍기: 닿으면 최대 체력 +1 ──
+  for(let i=curHearts.length-1;i>=0;i--){ const h=curHearts[i];
+    if(Math.abs(hero.x+CHW/2-(h.x+0.5))<5 && Math.abs(hero.y-h.y)<8){
+      heartTaken[scene+":"+h.x+","+h.y]=true; curHearts.splice(i,1);
+      hero.maxHp++; hero.hp=hero.maxHp; heartMsg=110;
+      for(let k=0;k<10;k++) debris.push({x:h.x, y:h.y-3, vx:(Math.random()-0.5)*0.5, vy:-Math.random()*0.5-0.1, life:1});
+    }
+  }
+  if(heartMsg>0) heartMsg--;
+  // ── 부품 줍기: 떨어져 바닥에 앉고, 가까이 가면 자석처럼 딸려와 획득 ──
+  for(let i=parts.length-1;i>=0;i--){ const p=parts[i];
+    if(!p.settled){ p.vy+=0.045; p.x+=p.vx; p.y+=p.vy;
+      for(const pl of platforms){ if(p.x>pl.x && p.x<pl.x+pl.w && p.vy>=0 && p.y>=pl.y && p.y-p.vy<=pl.y+0.9){ p.y=pl.y; p.settled=true; p.vx=0; } }
+      if(p.y>GH+8){ parts.splice(i,1); continue; }
+    }
+    const dd=(hero.x+CHW/2)-p.x, dv=(hero.y-6)-p.y, dist=Math.abs(dd)+Math.abs(dv);
+    if(dist<7){ p.x+=dd*0.28; p.y+=dv*0.28; p.settled=true; }   // 자석
+    if(dist<3){ partsCount++; parts.splice(i,1); }              // 획득
+  }
+  if(hero.hp<=0){ const M=MAPS[scene]; hero.hp=hero.maxHp; hero.x=M.start[0]; hero.y=M.start[1]; hero.vy=0; hero.invuln=90;
+    enemies=spawnEnemies(); chaseFlash=1; }
+  // 붕괴(도망): (지금은 자동 발동 꺼둠 — 나중에 이야기에 맞춰 등장) 파도가 있으면만 진행
+  if(scene==="street" && collapseState==="active" && collapse){
+    collapse.x += 0.24;
+    if(hero.x>=178){ collapseState="safe"; collapse=null; }
+    else if(collapse.x>=hero.x-0.5){ hero.x=88; hero.y=GROUND; hero.vy=0; collapse.x=64; chaseFlash=1; }
+  }
+  // ★ 문(맵 데이터): 문 자리에 닿으면 그 맵으로. 도착 직후엔 문에서 벗어나야 다시 작동 (무한 왕복 방지)
+  if(!trans && !collapse){
+    let near=false;
+    for(const d of (MAPS[scene].doors||[])){
+      if(d.x>=hero.x-1 && d.x<=hero.x+CHW+1 && Math.abs(hero.y-d.y)<8){
+        near=true;
+        const ok = d.down ? (keys["ArrowDown"]||keys["KeyS"]) : true;   // 지하 해치는 ↓ 눌러야 (실수로 안 빠지게)
+        if(ok && doorArm){ startTrans(d.to, d.at[0], d.at[1]); break; }
+      }
+    }
+    if(!near) doorArm=true;
+  }
+}
+
+// 도트 캐릭터 하나를 맵 좌표 wx에 그림 (조명 적용, 왼쪽 보면 뒤집기). 주인공·그녀 공용. gy=발이 닿는 줄
+function drawSpriteWorld(rows, wx, facing, camPx, gy){
+  const ox=Math.round(wx), oy=(gy===undefined?GROUND:gy)-rows.length;
+  for(let j=0;j<rows.length;j++)for(let i=0;i<rows[j].length;i++){
+    const chr=rows[j][i]; if(chr===".")continue;
+    const sx = facing===1 ? (ox+i) : (ox+CHW-1-i);
+    putc(sx*PX-camPx, (oy+j)*PX, PAL[chr], lightAt(sx,oy+j));
+  }
+}
+// 픽셀이 하나둘 빠지며 사라지는 버전 (d: 0=온전 → 1=완전히 사라짐). 마지막 회상의 그녀.
+function drawSpriteDissolve(rows, wx, facing, camPx, gy, d){
+  if(d<=0){ drawSpriteWorld(rows,wx,facing,camPx,gy); return; }
+  const ox=Math.round(wx), oy=(gy===undefined?GROUND:gy)-rows.length;
+  for(let j=0;j<rows.length;j++)for(let i=0;i<rows[j].length;i++){
+    const chr=rows[j][i]; if(chr===".")continue;
+    if(((i*7+j*13+i*j)%17)/17 < d*1.15) continue;      // 픽셀마다 다른 순서로 먼지가 됨
+    const sx = facing===1 ? (ox+i) : (ox+CHW-1-i);
+    putc(sx*PX-camPx, (oy+j)*PX, PAL[chr], lightAt(sx,oy+j));
+  }
+}
+function drawGoldDust(camPx){                          // 금빛 먼지
+  for(const p of goldDust){
+    ctx.fillStyle="rgba(255,220,150,"+(0.85*Math.max(0,p.life)).toFixed(3)+")";
+    ctx.fillRect(p.x*PX-camPx, p.y*PX, 3, 3);
+  }
+}
+// 공격 중 몸 동작: 준비(뒤로 젖힘)→베기(앞으로 찌름)→복귀. 몸·칼이 같은 값 공유.
+function atkLean(){
+  if(hero.atk<=0) return {lx:0, by:0};
+  const ap=1-hero.atk/16;                       // 0→1
+  let lx;
+  if(ap<0.3) lx=-5*(ap/0.3);                    // 0 → -5 (뒤로 젖힘)
+  else if(ap<0.6) lx=-5+19*((ap-0.3)/0.3);      // -5 → +14 (앞으로 찌름)
+  else lx=14*(1-(ap-0.6)/0.4);                  // +14 → 0 (복귀)
+  return {lx:lx*hero.facing, by:(ap>0.3&&ap<0.62)?3:0};   // 찌를 때 살짝 숙임
+}
+function drawGhost(g, camPx){                 // 대시 잔상: 청록빛 실루엣
+  const frame=CHAR_A, ox=Math.round(g.x), oy=Math.round(g.y)-CHH;
+  ctx.globalAlpha=0.4*g.life;
+  for(let j=0;j<frame.length;j++)for(let i=0;i<frame[j].length;i++){
+    if(frame[j][i]===".")continue;
+    const sx = hero.facing===1 ? (ox+i) : (ox+CHW-1-i);
+    ctx.fillStyle="#8fe4ff"; ctx.fillRect(sx*PX-camPx, (oy+j)*PX, PX, PX);
+  }
+  ctx.globalAlpha=1;
+}
+function drawChar(camPx){
+  const airborne = !hero.grounded;
+  const moving = hero.moving && !airborne && hero.landT<=0;
+  // ── 상황별 다리 포즈 ──
+  let legs;
+  if(hero.crouching) legs = CH_CROUCH;                      // 웅크리기(능력)
+  else if(hero.landT>0) legs = CH_CROUCH;                   // 착지 웅크림
+  else if(airborne) legs = (hero.vy<0 ? CH_JUMP : CH_FALL); // 오를 땐 도약 / 내릴 땐 착지 준비
+  else if(hero.moving) legs = WALK_LEGS[Math.floor(hero.anim)%4];   // 걷기 4프레임
+  else legs = CH_LA;                                        // 서있기
+  const frame = CH_UP.concat(legs);
+  const lastRow = frame.length-1;                           // 웅크리면 세로로 눌러(squash) 아주 낮게
+  const L=atkLean();
+  // ── 부드러운 움직임 (px 단위) ──
+  let bodyBob = moving ? -Math.abs(Math.sin(hero.anim*Math.PI))*2 : 0;   // 걸을 때 상하 통통(위로 최대 2px)
+  if(hero.landT>0) bodyBob = (hero.landT/8)*2;                           // 착지 때 몸 살짝 내림
+  const idle = !airborne && !hero.moving && hero.atk<=0 && hero.landT<=0;
+  const breathPx = idle ? (Math.sin(t*0.9)>0 ? 1 : 0) : 0;              // idle 숨쉬기(상체 1px)
+  const headBobPx = moving ? Math.round(Math.sin(hero.anim*Math.PI+0.7)) : 0;   // 걸을 때 머리 까딱(±1)
+  const blink = idle && (Math.floor(t*1.3)%9===0);                     // 가끔 눈 깜빡
+  const lean = hero.running && moving;
+  const ox=Math.round(hero.x), oyTop=Math.round(hero.y)-CHH;
+  for(let j=0;j<frame.length;j++)for(let i=0;i<frame[j].length;i++){
+    let chr=frame[j][i]; if(chr===".")continue;
+    if(blink && j===3 && i===6) chr='z';                    // 눈 감음(피부색)
+    const sx = hero.facing===1 ? (ox+i) : (ox+CHW-1-i);
+    // 웅크림: 발(맨 아래줄)은 그대로, 위로 갈수록 눌러 붙임 (세로 40%)
+    const yCell = hero.crouching ? ((hero.y-1) - (lastRow-j)*0.40) : (oyTop+j);
+    const yb = hero.crouching ? 0 : ((j<=9 ? breathPx : 0) + (j<=5 ? headBobPx : 0));   // px
+    const xl = lean ? (j<=5 ? hero.facing*2 : (j<=9 ? hero.facing : 0)) : 0;   // 달릴 때 머리·가슴 앞으로
+    putc((sx+xl)*PX-camPx+L.lx, yCell*PX + L.by + bodyBob + yb, PAL[chr], lightAt(sx, Math.round(yCell)));
+  }
+}
+// 추억 지점 표시(바닥 은은한 빛 + 떠오르는 불티 + 가까이 가면 "E 추억")
+function drawMarkers(camPx){
+  ctx.textAlign="center";
+  const bossUp = boss && boss.alive;
+  for(const s of memSpots){
+    const sx=s.x*PX-camPx, sy=s.y*PX; if(sx<-30||sx>cv.width+30) continue;
+    const pulse=(0.55+0.35*Math.sin(t*2+s.x))*(bossUp?0.35:1);   // 보스 있으면 흐릿하게
+    ctx.fillStyle="rgba(255,200,120,"+(0.13*pulse).toFixed(3)+")";
+    ctx.beginPath(); ctx.ellipse(sx, sy, 42, 12, 0, 0, Math.PI*2); ctx.fill();
+    for(let kk=0;kk<3;kk++){ const my=sy-((t*22+kk*38+s.x*7)%88);
+      ctx.fillStyle="rgba(255,215,150,"+(0.5*pulse).toFixed(3)+")"; ctx.fillRect(sx-9+kk*9, my, 2, 2); }
+    if(!bossUp && Math.abs(hero.x+CHW/2 - s.x)<5 && Math.abs(hero.y-s.y)<6){
+      glowText("E 추억", sx, sy-46, {font:"13px sans-serif", fill:"rgba(255,246,220,0.95)", glow:"rgba(255,225,170,0.85)", blur:8}); }
+  }
+}
+// 상인(정비공): 등불 불빛 + 살짝 까딱, 가까이 가면 "[E] 상점"
+function drawMerchant(camPx){
+  if(!merchant) return;
+  const bob = Math.sin(t*1.4)*1.5;
+  const ox=Math.round(merchant.x), oy=Math.round(merchant.y)-MERH;
+  const cx=(merchant.x+MERW/2)*PX-camPx, cy=(merchant.y-2)*PX;
+  const g=ctx.createRadialGradient(cx+34,cy-30,4,cx+34,cy-30,90);   // 등불 따뜻한 빛
+  g.addColorStop(0,"rgba(255,190,90,0.30)"); g.addColorStop(1,"rgba(255,190,90,0)");
+  ctx.fillStyle=g; ctx.beginPath(); ctx.arc(cx+34,cy-30,90,0,Math.PI*2); ctx.fill();
+  for(let j=0;j<MERH;j++)for(let i=0;i<MERW;i++){ const ch=CHAR_MERCHANT[j][i]; if(ch===".")continue;
+    putc((ox+i)*PX-camPx, (oy+j+Math.round(bob*0.0))*PX, PAL[ch], lightAt(ox+i,oy+j));
+  }
+  if(nearMerchant() && !shopOpen){
+    const blink=0.6+0.4*Math.sin(t*4);
+    glowText("[E] 정비공", cx, (merchant.y-MERH-1)*PX, {font:"13px sans-serif",
+      fill:"rgba(255,238,190,"+blink.toFixed(2)+")", glow:"rgba(255,210,120,0.85)", blur:9});
+  }
+}
+// 상점 창: 능력 여러 개(↑↓ 선택, E 구입)
+// 부술 수 있는 벽: 금 간 돌벽. 때릴수록 금이 늘고, 맞는 순간 하얗게 번쩍
+function drawBreakables(camPx){
+  for(const b of breakables){
+    const px=Math.round(b.x*PX-camPx), py=Math.round((b.y-b.h)*PX), w=b.w*PX, h=b.h*PX, white=b.hurt>0;
+    ctx.fillStyle = white?"#efe9dc":"#3c3f46"; ctx.fillRect(px,py,w,h);            // 테두리(어두운 돌)
+    ctx.fillStyle = white?"#ffffff":"#4a4e57"; ctx.fillRect(px+3,py+3,w-6,h-6);    // 속돌
+    ctx.strokeStyle="rgba(18,18,22,0.85)"; ctx.lineWidth=2;                        // 벽돌 줄눈
+    for(let gy=py+PX; gy<py+h-2; gy+=PX*2){ ctx.beginPath(); ctx.moveTo(px+2,gy); ctx.lineTo(px+w-2,gy); ctx.stroke(); }
+    const cracks=b.maxHp-b.hp;                                                     // 금: 때린 만큼
+    ctx.strokeStyle="rgba(12,12,15,0.9)"; ctx.lineWidth=3;
+    for(let c=0;c<cracks;c++){ const cy=py+h*(0.22+0.26*c);
+      ctx.beginPath(); ctx.moveTo(px+3,cy); ctx.lineTo(px+w*0.55,cy+PX*0.7); ctx.lineTo(px+w-3,cy-PX*0.4); ctx.stroke(); }
+  }
+}
+// 두 방 사이를 잇는 통로 사각형들. 방 테두리를 2px 덮어서 하나로 이어져 보이게 함
+function corridorRects(a,b){
+  const t=11, e=2;
+  const oy0=Math.max(a.y,b.y), oy1=Math.min(a.y+a.h, b.y+b.h);
+  if(oy1-oy0 > t){                                            // 세로로 겹침 → 가로 통로
+    const y=(oy0+oy1)/2 - t/2;
+    const x0=Math.min(a.x+a.w, b.x+b.w), x1=Math.max(a.x, b.x);
+    return x1>x0 ? [{x:x0-e, y:y, w:(x1-x0)+e*2, h:t}] : [];
+  }
+  const ox0=Math.max(a.x,b.x), ox1=Math.min(a.x+a.w, b.x+b.w);
+  if(ox1-ox0 > t){                                            // 가로로 겹침 → 세로 통로
+    const x=(ox0+ox1)/2 - t/2;
+    const y0=Math.min(a.y+a.h, b.y+b.h), y1=Math.max(a.y, b.y);
+    return y1>y0 ? [{x:x, y:y0-e, w:t, h:(y1-y0)+e*2}] : [];
+  }
+  const ax=a.x+a.w/2, ay=a.y+a.h/2, bx=b.x+b.w/2, by=b.y+b.h/2;   // 어긋나면 ㄱ자로 꺾어 이음
+  return [{x:Math.min(ax,bx), y:ay-t/2, w:Math.abs(bx-ax), h:t},
+          {x:bx-t/2, y:Math.min(ay,by), w:t, h:Math.abs(by-ay)}];
+}
+// ── 세계 지도 화면 (M) ── 가본 곳은 그려지고, 가본 곳에 붙은 미지 구역은 "?"로 힌트
+function drawWorldMap(){
+  ctx.fillStyle="rgba(10,11,15,0.93)"; ctx.fillRect(0,0,cv.width,cv.height);
+  ctx.textAlign="center";
+  ctx.fillStyle="#e2c58c"; ctx.font="bold 22px serif"; ctx.fillText("지  도", cv.width/2, 40);
+  const hint={};                                             // 가본 곳의 문 너머 = 아직 안 가본 곳
+  for(const k in MAPS){ if(!visited[k]) continue;
+    for(const d of (MAPS[k].doors||[])) if(!visited[d.to]) hint[d.to]=true; }
+  const box=k=>{ const M=MAPS[k], n=MAP_NODES[k]; if(!M||!n) return null;
+    const bw=30+M.width*0.35, bh=22+M.height*0.9;            // 방 크기·모양이 지도에 반영됨
+    return {x:n[0]-bw/2, y:n[1]-bh/2, w:bw, h:bh, cx:n[0], cy:n[1]}; };
+  for(const k in MAPS){ const b=box(k); if(!b) continue;
+    const cur=(k===scene);
+    if(visited[k]){
+      ctx.fillStyle = cur ? "rgba(86,116,108,0.55)" : "rgba(60,70,84,0.5)";
+      ctx.fillRect(b.x,b.y,b.w,b.h);
+      ctx.strokeStyle = cur ? "#e0a24a" : "#8f95a0"; ctx.lineWidth = cur?3:1.5;
+      ctx.strokeRect(b.x,b.y,b.w,b.h);
+      ctx.fillStyle = cur ? "#ffe6b8" : "#cfd4dc"; ctx.font=(cur?"bold ":"")+"12px sans-serif";
+      ctx.fillText(MAPS[k].name||k, b.cx, b.cy+4);
+    } else if(hint[k]){
+      ctx.setLineDash([4,4]); ctx.strokeStyle="rgba(150,160,175,0.45)"; ctx.lineWidth=1.5;
+      ctx.strokeRect(b.x,b.y,b.w,b.h); ctx.setLineDash([]);
+      ctx.fillStyle="rgba(170,180,195,0.6)"; ctx.font="14px sans-serif"; ctx.fillText("?", b.cx, b.cy+5);
+    }
+  }
+  // 길목: 방과 방을 잇는 작은 직사각형(통로). 방 위에 덮어 그려 하나로 이어져 보이게
+  const done={};
+  for(const k in MAPS){ if(!visited[k]) continue; const a=box(k); if(!a) continue;
+    for(const d of (MAPS[k].doors||[])){ const b=box(d.to); if(!b) continue;
+      const pair = (k<d.to) ? k+">"+d.to : d.to+">"+k; if(done[pair]) continue;
+      const both = !!visited[d.to]; if(!both && !hint[d.to]) continue;
+      done[pair]=true;
+      ctx.fillStyle = both ? "rgba(72,84,100,0.95)" : "rgba(72,84,100,0.4)";
+      for(const r of corridorRects(a,b)) ctx.fillRect(r.x,r.y,r.w,r.h);
+    } }
+  const cb=box(scene);                                        // 현재 위치 표시
+  if(cb && visited[scene]){
+    const r=4+Math.sin(t*4)*1.5;
+    ctx.fillStyle="#ffd27a"; ctx.beginPath(); ctx.arc(cb.cx, cb.y-10, r, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle="#e0a24a"; ctx.font="11px sans-serif"; ctx.fillText("현재 위치", cb.cx, cb.y-18);
+  }
+  ctx.fillStyle="rgba(190,196,208,0.75)"; ctx.font="12px sans-serif";
+  ctx.fillText("[M] 닫기   ·   가본 곳만 그려짐   ·   ? = 아직 안 가본 곳", cv.width/2, cv.height-16);
+}
+function drawShop(){
+  ctx.fillStyle="rgba(8,7,12,0.72)"; ctx.fillRect(0,0,cv.width,cv.height);
+  const w=380,h=104+SHOP_ITEMS.length*64, bx=(cv.width-w)/2, by=(cv.height-h)/2;
+  ctx.fillStyle="#1c1710"; ctx.fillRect(bx,by,w,h);
+  ctx.strokeStyle="#a07a3e"; ctx.lineWidth=2; ctx.strokeRect(bx+0.5,by+0.5,w,h);
+  ctx.textAlign="center";
+  ctx.fillStyle="#e0b34e"; ctx.font="bold 22px serif"; ctx.fillText("정비공", cv.width/2, by+34);
+  ctx.fillStyle="#b8ae98"; ctx.font="12px sans-serif"; ctx.fillText("부품을 가져오면 잊힌 기술을 되살려주지.", cv.width/2, by+54);
+  // 품목들
+  SHOP_ITEMS.forEach((it,i)=>{
+    const iy=by+64+i*64, owned=abilities[it.key], canBuy=!owned&&partsCount>=it.price, sel=(i===shopSel);
+    ctx.fillStyle=sel?"#33291a":"#241d13"; ctx.fillRect(bx+20,iy,w-40,54);
+    ctx.strokeStyle=sel?(canBuy||owned?"#6fe08a":"#c8792e"):"#4a4436"; ctx.lineWidth=sel?2:1; ctx.strokeRect(bx+20.5,iy+0.5,w-40,54);
+    if(sel){ ctx.fillStyle="#e0b34e"; ctx.textAlign="left"; ctx.font="bold 14px sans-serif"; ctx.fillText("▶", bx+26, iy+31); }
+    ctx.textAlign="left";
+    ctx.fillStyle="#f0e6cc"; ctx.font="bold 17px sans-serif"; ctx.fillText(it.name, bx+44, iy+24);
+    ctx.fillStyle="#9aa0ae"; ctx.font="12px sans-serif"; ctx.fillText(it.desc, bx+44, iy+42);
+    ctx.textAlign="right";
+    if(owned){ ctx.fillStyle="#6fe08a"; ctx.font="bold 15px sans-serif"; ctx.fillText("배웠음 ✓", bx+w-36, iy+31); }
+    else { ctx.fillStyle=canBuy?"#e0b34e":"#8a7a5a"; ctx.font="bold 16px sans-serif"; ctx.fillText("⚙ "+it.price, bx+w-36, iy+31); }
+  });
+  ctx.textAlign="center"; ctx.fillStyle="#c8bfa8"; ctx.font="13px sans-serif";
+  ctx.fillText("보유 부품: ⚙ "+partsCount, cv.width/2, by+h-30);
+  ctx.fillStyle="#9a9078"; ctx.font="12px sans-serif";
+  ctx.fillText("[↑↓] 고르기   [E] 사기   [Space] 닫기", cv.width/2, by+h-12);
+}
+// 보스 돌진 잔상: 주황 실루엣이 뒤에 남음
+function drawBossGhosts(camPx){
+  for(const g of bossGhost){
+    const ox=Math.round(g.x), oy=Math.round(g.y)-BOSSH;
+    ctx.globalAlpha=0.35*g.life; ctx.fillStyle="#ff9a50";
+    for(let j=0;j<CHAR_BOT.length;j++)for(let i=0;i<CHAR_BOT[j].length;i++){
+      if(CHAR_BOT[j][i]===".")continue;
+      const bx = g.dir>0 ? (ox+i*2) : (ox+BOSSW-2-i*2);
+      ctx.fillRect(bx*PX-camPx, (oy+j*2)*PX, PX*2, PX*2);
+    }
+    ctx.globalAlpha=1;
+  }
+}
+// 보스 그리기: 자동인형 2배 크기. 맞으면 하양, 돌진 준비 땐 주황으로 번쩍 + 빛 아우라 + "!"
+function drawBoss(camPx){
+  if(!boss || !boss.alive) return;
+  const ox=Math.round(boss.x), oy=Math.round(boss.y)-BOSSH, P2=boss.phase===2;
+  const white=boss.hurt>0, tele=boss.mode==="tele" && (Math.floor(t*10)%2===0);
+  const rage=boss.mode==="rage" && (Math.floor(t*12)%2===0);   // 2페이즈 돌입 때 빨갛게 점멸
+  if(boss.mode==="tele"){                              // 돌진 예고: 몸 주위 뜨거운 빛 + 머리 위 "!"
+    const cx=(boss.x+BOSSW/2)*PX-camPx, cy=(boss.y-BOSSH/2)*PX;
+    const ac = P2 ? "255,70,50" : "255,150,60";        // 2페이즈는 붉은 아우라
+    const g=ctx.createRadialGradient(cx,cy,6,cx,cy,BOSSW*PX*0.9);
+    g.addColorStop(0,"rgba("+ac+",0.35)"); g.addColorStop(1,"rgba("+ac+",0)");
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(cx,cy,BOSSW*PX*0.9,0,Math.PI*2); ctx.fill();
+    ctx.textAlign="center"; ctx.font="bold 28px sans-serif";
+    ctx.fillStyle="rgba(255,"+(P2?"120,90":"225,130")+","+(0.55+0.45*Math.sin(t*9)).toFixed(3)+")";
+    ctx.fillText(P2?"!!":"!", cx, (boss.y-BOSSH)*PX-10);
+  }
+  for(let j=0;j<CHAR_BOT.length;j++)for(let i=0;i<CHAR_BOT[j].length;i++){
+    const ch=CHAR_BOT[j][i]; if(ch===".")continue;
+    const bx = boss.dir>0 ? (ox+i*2) : (ox+BOSSW-2-i*2);
+    let col, L=null;
+    if(white){ col=[255,255,255]; L=[1,1,1]; }
+    else if(rage){ col=[235,80,66]; L=[1,1,1]; }
+    else if(tele){ col=P2?[255,110,80]:[255,185,90]; L=[1,1,1]; }
+    else col = (P2 && ch==="6") ? [235,80,66] : PAL[ch];   // 2페이즈: 눈이 붉게 타오름
+    for(let dy=0;dy<2;dy++)for(let dx=0;dx<2;dx++){
+      const sx=bx+dx, sy=oy+j*2+dy;
+      putc(sx*PX-camPx, sy*PX, col, L||lightAt(sx,sy));
+    }
+  }
+}
+function drawEnemies(camPx){
+  for(const e of enemies){ if(!e.alive) continue;
+    if(e.type==="charger") drawCharger(e,camPx); else drawWalker(e,camPx);
+  }
+}
+function drawWalker(e,camPx){               // 걷는 자동인형: 다리 애니 + 가끔 눈 깜빡 + 맞으면 하양
+  const ox=Math.round(e.x), oy=Math.round(e.y)-BOTH, white=e.hurt>0;
+  const legs = BOT_LEGS[(e.moving && Math.floor(e.anim)%2===1)?1:0];
+  const blink = (Math.floor(t*2 + e.x*0.7)%11)===0;
+  for(let j=0;j<BOTH;j++){ const row = j<10 ? CHAR_BOT[j] : legs[j-10];
+    for(let i=0;i<row.length;i++){ let ch=row[i]; if(ch===".")continue;
+      if(j===4 && blink && ch==="6") ch="s";               // 눈 감음
+      const sx = e.dir>0 ? (ox+i) : (ox+BOTW-1-i);
+      putc(sx*PX-camPx, (oy+j)*PX, white?[255,255,255]:PAL[ch], white?[1,1,1]:lightAt(sx,oy+j));
+    }
+  }
+}
+function drawCharger(e,camPx){              // 돌진 적: 준비 땐 붉은 아우라 + 번쩍
+  const ox=Math.round(e.x), oy=Math.round(e.y)-CHGH, white=e.hurt>0, tele=e.mode==="tele" && (Math.floor(t*10)%2===0);
+  if(e.mode==="tele"){ const cx=(e.x+CHGW/2)*PX-camPx, cy=(e.y-CHGH/2)*PX;
+    const g=ctx.createRadialGradient(cx,cy,4,cx,cy,CHGW*PX*0.7);
+    g.addColorStop(0,"rgba(255,80,60,0.30)"); g.addColorStop(1,"rgba(255,80,60,0)");
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(cx,cy,CHGW*PX*0.7,0,Math.PI*2); ctx.fill(); }
+  for(let j=0;j<CHGH;j++){ const row=CHAR_CHG[j];
+    for(let i=0;i<row.length;i++){ const ch=row[i]; if(ch===".")continue;
+      const sx = e.dir>0 ? (ox+i) : (ox+CHGW-1-i);
+      putc(sx*PX-camPx, (oy+j)*PX, white?[255,255,255]:(tele?[255,120,90]:PAL[ch]), (white||tele)?[1,1,1]:lightAt(sx,oy+j));
+    }
+  }
+}
+function drawDebris(camPx){ for(const p of debris){ ctx.fillStyle="rgba(210,150,70,"+Math.max(0,p.life).toFixed(2)+")"; ctx.fillRect(Math.round(p.x*PX-camPx), Math.round(p.y*PX), 3,3); } }
+// 부품(재화): 반짝이는 작은 톱니. 바닥에 앉으면 살짝 까딱임
+function drawParts(camPx){
+  for(const p of parts){ const bob=p.settled?Math.sin(t*3+p.spin)*1.4:0;
+    const sx=Math.round(p.x*PX-camPx), sy=Math.round(p.y*PX+bob);
+    ctx.fillStyle="#e0a24a"; ctx.fillRect(sx-3,sy-3,6,6);                         // 몸통
+    ctx.fillStyle="#f0c674"; ctx.fillRect(sx-1,sy-4,2,1); ctx.fillRect(sx-1,sy+3,2,1); ctx.fillRect(sx-4,sy-1,1,2); ctx.fillRect(sx+3,sy-1,1,2); // 톱니
+    ctx.fillStyle="#7a5a2e"; ctx.fillRect(sx-1,sy-1,2,2);                         // 가운데 구멍
+  }
+}
+// 공격: 칼 휘두르기 + 하얀 초승달 베기 이펙트(히트박스만큼 크게, 레퍼런스 참고)
+function drawAttack(camPx){
+  const prog=Math.min(1,(1-hero.atk/16)*1.2), dir=hero.facing, L=atkLean();
+  const cx=(hero.x+CHW/2)*PX-camPx + dir*2.5*PX + L.lx, cy=(hero.y-CHH*0.5)*PX + L.by;   // 앞쪽 + 몸 동작 따라감
+  // 초승달 베기 궤적: 위→아래로 휘두르며 반달 흰 칼자국이 히트박스만큼 크게 나갔다 사라짐
+  const thick=(7*PX)*Math.sin(Math.min(1,prog*1.5)*Math.PI);
+  if(thick>1){
+    const R=11*PX, span=1.05, N=18, ang=-1.7+2.9*prog;
+    ctx.save(); ctx.translate(cx,cy); ctx.scale(dir,1);
+    const cres=(th,col)=>{ ctx.beginPath();
+      for(let k=0;k<=N;k++){ const t=-span+2*span*k/N, w=th*Math.cos(t/span*Math.PI/2), a=ang+t, ro=R+w/2; ctx.lineTo(Math.cos(a)*ro,Math.sin(a)*ro); }
+      for(let k=N;k>=0;k--){ const t=-span+2*span*k/N, w=th*Math.cos(t/span*Math.PI/2), a=ang+t, ri=R-w/2; ctx.lineTo(Math.cos(a)*ri,Math.sin(a)*ri); }
+      ctx.closePath(); ctx.fillStyle=col; ctx.fill(); };
+    cres(thick,"rgba(255,255,255,0.9)");         // 흰 궤적
+    cres(thick*0.5,"rgba(220,242,255,0.95)");    // 밝은 심
+    ctx.restore();
+  }
+  // 칼(스워드): 손잡이 + 금색 가드 + 강철 날
+  const swing=-2.0+2.7*prog, a=dir>0?swing:(Math.PI-swing), BL=6.4*PX;   // 칼 날 길이
+  const tx=cx+Math.cos(a)*BL, ty=cy+Math.sin(a)*BL;
+  const gx=cx+Math.cos(a)*8, gy=cy+Math.sin(a)*8, perp=a+Math.PI/2;
+  ctx.lineCap="round";
+  ctx.strokeStyle="#785632"; ctx.lineWidth=5; ctx.beginPath(); ctx.moveTo(cx-Math.cos(a)*8,cy-Math.sin(a)*8); ctx.lineTo(cx,cy); ctx.stroke();  // 손잡이
+  ctx.strokeStyle="#c9a24a"; ctx.lineWidth=4; ctx.beginPath(); ctx.moveTo(gx+Math.cos(perp)*6,gy+Math.sin(perp)*6); ctx.lineTo(gx-Math.cos(perp)*6,gy-Math.sin(perp)*6); ctx.stroke(); // 가드
+  ctx.strokeStyle="#c8ced6"; ctx.lineWidth=5; ctx.beginPath(); ctx.moveTo(gx,gy); ctx.lineTo(tx,ty); ctx.stroke();  // 강철 날
+  ctx.strokeStyle="#f0f4fa"; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(gx,gy); ctx.lineTo(tx,ty); ctx.stroke();  // 하이라이트
+}
+const HEART=["XX.XX","XXXXX","XXXXX",".XXX.","..X.."];
+// 맵에 놓인 하트 아이템 (먹으면 최대 체력 +1): 동동 뜨며 반짝임
+function drawHearts(camPx){
+  for(const h of curHearts){
+    const bob=Math.sin(t*2+h.x)*3;
+    const cx=(h.x+0.5)*PX-camPx, cy=(h.y-3.5)*PX+bob;
+    ctx.fillStyle="rgba(255,130,140,"+(0.10+0.06*Math.sin(t*3+h.x)).toFixed(3)+")";
+    ctx.beginPath(); ctx.ellipse(cx, cy, 30, 24, 0, 0, Math.PI*2); ctx.fill();
+    const sx=(h.x-2)*PX-camPx, sy=(h.y-6)*PX+bob;
+    for(let j=0;j<HEART.length;j++)for(let i=0;i<HEART[j].length;i++){
+      if(HEART[j][i]===".")continue;
+      ctx.fillStyle=(j<2&&i===1)?"#ff9aa0":"#e0484a";       // 왼쪽 위 하이라이트
+      ctx.fillRect(sx+i*PX, sy+j*PX, PX, PX);
+    }
+  }
+}
+function drawHUD(){                          // 왼쪽 위: 하트 하나 + 숫자 (체력 칸이 늘어도 안 지저분)
+  const bx=12, by=12, alive=hero.hp>0, lowHp=hero.hp<=1;
+  const beat = lowHp ? (1+0.12*Math.sin(t*7)) : 1;         // 체력 1이면 하트가 콩닥거림
+  for(let j=0;j<HEART.length;j++)for(let i=0;i<HEART[j].length;i++){ if(HEART[j][i]===".")continue;
+    ctx.fillStyle= alive?(lowHp?"#ff5a5c":"#e0484a"):"rgba(90,70,72,0.7)";
+    ctx.fillRect(bx+i*4*beat, by+j*4*beat, 4*beat+0.5, 4*beat+0.5); }
+  ctx.textAlign="left"; ctx.textBaseline="middle"; ctx.font="bold 18px sans-serif";
+  ctx.fillStyle="#f0d6d8";
+  ctx.fillText(hero.hp+" / "+hero.maxHp, bx+30, by+11);
+  // 부품(재화): 하트 아래에 작은 톱니 + 개수
+  const gx=bx+3, gy=by+34;
+  ctx.fillStyle="#e0a24a"; ctx.fillRect(gx-3,gy-3,7,7);
+  ctx.fillStyle="#f0c674"; ctx.fillRect(gx-1,gy-4,2,1); ctx.fillRect(gx-1,gy+3,2,1); ctx.fillRect(gx-4,gy-1,1,2); ctx.fillRect(gx+3,gy-1,1,2);
+  ctx.fillStyle="#7a5a2e"; ctx.fillRect(gx-1,gy-1,2,2);
+  ctx.fillStyle="#e8d2a0"; ctx.font="bold 15px sans-serif"; ctx.fillText(partsCount, bx+18, gy+1);
+  ctx.textBaseline="alphabetic";
+}
+// 붕괴 파도: 왼쪽을 어둠으로 삼킴 + 들쭉날쭉 무너지는 가장자리 + 불티/재
+function drawCollapse(camPx){
+  if(!collapse) return;
+  const wx=collapse.x*PX-camPx;
+  ctx.fillStyle="rgba(6,4,8,0.96)";
+  ctx.beginPath(); ctx.moveTo(0,0);
+  for(let y=0;y<=cv.height;y+=8){ const jag=18*Math.sin(y*0.08+t)+10*Math.sin(y*0.21+t*1.3); ctx.lineTo(wx+jag, y); }
+  ctx.lineTo(0,cv.height); ctx.closePath(); ctx.fill();
+  const g=ctx.createLinearGradient(wx-4,0,wx+34,0);           // 무너짐 가장자리의 뜨거운 빛
+  g.addColorStop(0,"rgba(255,120,50,0.5)"); g.addColorStop(1,"rgba(255,120,50,0)");
+  ctx.fillStyle=g; ctx.fillRect(wx-4,0,38,cv.height);
+  for(let k=0;k<24;k++){                                       // 재·불티
+    const ey=(k*37+t*40)%cv.height, jag=18*Math.sin(ey*0.08+t)+10*Math.sin(ey*0.21+t*1.3);
+    const ex=wx+jag+((k*13)%16)-2;
+    ctx.fillStyle= k%3===0?"rgba(255,150,60,0.7)":(k%3===1?"rgba(255,90,40,0.6)":"rgba(150,150,160,0.5)");
+    ctx.fillRect(ex, ey, 2, 2);
+  }
+}
+// 글로우+외곽선 텍스트 (할로우나이트식): 흰 빛 번짐 + 얇은 흰 테두리
+function glowText(txt, x, y, o){
+  ctx.save();
+  ctx.font=o.font; ctx.textAlign=o.align||"center"; ctx.textBaseline=o.baseline||"alphabetic";
+  if(o.alpha!==undefined) ctx.globalAlpha=o.alpha;
+  ctx.shadowColor=o.glow||"rgba(255,255,255,0.85)"; ctx.shadowBlur=o.blur||14;
+  ctx.fillStyle=o.fill; ctx.fillText(txt,x,y);
+  ctx.fillText(txt,x,y);                    // 두 번 = 글로우 진하게
+  ctx.shadowBlur=0;
+  if(o.stroke){ ctx.lineWidth=o.lw||2; ctx.strokeStyle=o.stroke; ctx.lineJoin="round"; ctx.strokeText(txt,x,y); }
+  ctx.restore();
+}
+function drawMemoryText(){
+  const a=Math.min(1,memLevel*1.4);
+  const g=ctx.createLinearGradient(0,cv.height-88,0,cv.height-8);   // 부드러운 그라데이션 패널
+  g.addColorStop(0,"rgba(12,9,7,0)"); g.addColorStop(0.45,"rgba(12,9,7,"+(0.66*a).toFixed(3)+")"); g.addColorStop(1,"rgba(12,9,7,"+(0.66*a).toFixed(3)+")");
+  ctx.fillStyle=g; ctx.fillRect(0, cv.height-88, cv.width, 80);
+  const full=mem.spot.text;                                         // 타자기 효과 (한 글자씩)
+  const n = mem.phase==="out" ? full.length : Math.floor((mem.reveal||0)/1.4);
+  const shown = full.slice(0, Math.min(full.length,n));
+  glowText(shown, cv.width/2, cv.height-44, { font:"20px serif", fill:"rgba(255,246,230,"+a.toFixed(3)+")",
+    glow:"rgba(255,240,208,0.95)", blur:17, stroke:"rgba(255,255,255,"+(0.55*a).toFixed(3)+")", lw:1 });
+  for(let k=0;k<7;k++){                                             // 대사 주위 반짝이는 흰 티끌
+    const px=cv.width/2 + Math.sin(t*1.1+k*1.9)*(130+k*16), py=cv.height-54+Math.sin(t*1.7+k)*7;
+    ctx.fillStyle="rgba(255,255,255,"+(0.28*a*(0.5+0.5*Math.sin(t*3+k*2))).toFixed(3)+")"; ctx.fillRect(px,py,2,2);
+  }
+  if(mem.phase==="hold" && n>=full.length){ const bl=0.55+0.45*Math.sin(t*4);
+    glowText("[스페이스] 계속", cv.width/2, cv.height-22, { font:"12px sans-serif",
+      fill:"rgba(255,242,224,"+(0.75*a*bl).toFixed(3)+")", glow:"rgba(255,255,255,0.5)", blur:7 }); }
+}
+
+// ── 엔딩 타이틀 카드 ── 아파트 옥상 끝에 걸터앉은 남자 + 금색 "Broken City"
+function drawEnding(){
+  const a1=Math.min(1,endingT/60);                       // 세상이 어두워지고
+  ctx.fillStyle="rgba(5,5,10,"+a1.toFixed(3)+")"; ctx.fillRect(0,0,cv.width,cv.height);
+  if(endingT<=60) return;
+  const a=Math.min(1,(endingT-60)/80);                   // 마지막 장면이 떠오름
+  ctx.globalAlpha=a;
+  // 밤하늘
+  const g=ctx.createLinearGradient(0,0,0,cv.height);
+  g.addColorStop(0,"#0b0e1a"); g.addColorStop(0.7,"#1c2438"); g.addColorStop(1,"#141824");
+  ctx.fillStyle=g; ctx.fillRect(0,0,cv.width,cv.height);
+  for(let k=0;k<70;k++){                                 // 별
+    const sx=(k*97)%cv.width, sy=(k*61)%((cv.height*0.55)|0);
+    ctx.fillStyle="rgba(220,228,255,"+(0.25+((k*37)%50)/100*0.5).toFixed(2)+")"; ctx.fillRect(sx,sy,2,2);
+  }
+  // 달 + 달무리
+  const mg=ctx.createRadialGradient(150,110,44,150,110,130);
+  mg.addColorStop(0,"rgba(220,228,250,0.22)"); mg.addColorStop(1,"rgba(220,228,250,0)");
+  ctx.fillStyle=mg; ctx.beginPath(); ctx.arc(150,110,130,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle="rgba(230,235,245,0.95)"; ctx.beginPath(); ctx.arc(150,110,44,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle="rgba(200,208,225,0.5)"; ctx.beginPath(); ctx.arc(163,100,10,0,Math.PI*2); ctx.arc(138,124,7,0,Math.PI*2); ctx.fill();
+  // 먼 도시 스카이라인 (몇 개 창엔 아직 불이)
+  for(let k=0;k<18;k++){
+    const bw=28+(k*23)%36, bx=k*44-10, bh=60+(k*53)%90, by=cv.height-bh;
+    ctx.fillStyle="#1a2233"; ctx.fillRect(bx,by,bw,bh);
+    for(let wy=by+8;wy<cv.height-10;wy+=16)for(let wx=bx+5;wx<bx+bw-5;wx+=11)
+      if((wx*3+wy*7)%13===0){ ctx.fillStyle="rgba(224,162,74,0.5)"; ctx.fillRect(wx,wy,3,4); }
+  }
+  // 앞의 아파트(오른쪽 실루엣) + 옥상 끝에 걸터앉은 남자
+  ctx.fillStyle="#10141f"; ctx.fillRect(cv.width-250, 190, 250, cv.height-190);
+  ctx.fillStyle="#1b2130"; ctx.fillRect(cv.width-250, 190, 250, 7);
+  for(let wy=224;wy<cv.height-20;wy+=34)for(let wx=cv.width-222;wx<cv.width-20;wx+=40){
+    ctx.fillStyle=((wx+wy)%97<8)?"rgba(224,162,74,0.30)":"rgba(38,46,64,0.85)"; ctx.fillRect(wx,wy,14,18); }
+  const mx=cv.width-250+34, my=197;                      // 옥상 모서리, 다리를 늘어뜨리고
+  ctx.fillStyle="#0a0d15";
+  ctx.fillRect(mx+1, my-27, 13, 9);                      // 머리
+  ctx.fillRect(mx-1, my-18, 17, 15);                     // 몸
+  ctx.fillRect(mx-1, my-3, 6, 17); ctx.fillRect(mx+9, my-3, 6, 15);   // 다리
+  ctx.fillStyle="#8a3b3f"; ctx.fillRect(mx-1, my-19, 17, 4);          // 빨간 목도리 (남은 온기)
+  ctx.fillStyle="rgba(138,59,63,0.9)"; ctx.fillRect(mx+14, my-17, 3, 10);   // 바람에 날리는 자락
+  // 금색 제목
+  const ty=cv.height*0.30, tx=cv.width/2-50;             // 제목은 살짝 왼쪽으로 (남자는 오른쪽에)
+  ctx.textAlign="center";
+  const tg=ctx.createLinearGradient(0,ty-44,0,ty+14);
+  tg.addColorStop(0,"#f8e79a"); tg.addColorStop(0.55,"#e3b34e"); tg.addColorStop(1,"#a8771f");
+  ctx.save();
+  ctx.shadowColor="rgba(255,215,120,0.55)"; ctx.shadowBlur=26;
+  ctx.fillStyle=tg; ctx.font="italic bold 58px Georgia, 'Times New Roman', serif";
+  ctx.fillText("Broken City", tx, ty);
+  ctx.shadowBlur=0;
+  ctx.strokeStyle="rgba(90,60,10,0.8)"; ctx.lineWidth=1.2;
+  ctx.strokeText("Broken City", tx, ty);
+  ctx.restore();
+  ctx.strokeStyle="rgba(227,179,78,0.7)"; ctx.lineWidth=1;               // 장식 줄
+  ctx.beginPath(); ctx.moveTo(tx-150,ty+18); ctx.lineTo(tx+150,ty+18); ctx.stroke();
+  if(endingT>150){
+    const bl=0.5+0.5*Math.sin(t*2.5);
+    ctx.fillStyle="rgba(210,200,180,"+(0.65*bl).toFixed(3)+")"; ctx.font="14px sans-serif";
+    ctx.fillText("아무 키나 눌러 처음으로", cv.width/2, cv.height-36);
+  }
+  ctx.globalAlpha=1;
+}
+
+// 타이틀 화면 (게임 위에 덮여 서서히 사라짐)
+function drawTitle(){
+  ctx.fillStyle="rgba(10,12,20,"+(0.80*titleAlpha).toFixed(3)+")"; ctx.fillRect(0,0,cv.width,cv.height);
+  ctx.textAlign="center";
+  const ty0=cv.height*0.40;                                  // 엔딩 카드와 같은 금색 세리프
+  const tg0=ctx.createLinearGradient(0,ty0-40,0,ty0+12);
+  tg0.addColorStop(0,"#f8e79a"); tg0.addColorStop(0.55,"#e3b34e"); tg0.addColorStop(1,"#a8771f");
+  ctx.save(); ctx.globalAlpha=titleAlpha;
+  ctx.shadowColor="rgba(255,215,120,0.5)"; ctx.shadowBlur=22;
+  ctx.fillStyle=tg0; ctx.font="italic bold 52px Georgia, 'Times New Roman', serif";
+  ctx.fillText(GAME_TITLE, cv.width/2, ty0);
+  ctx.shadowBlur=0;
+  ctx.strokeStyle="rgba(90,60,10,0.8)"; ctx.lineWidth=1.2; ctx.strokeText(GAME_TITLE, cv.width/2, ty0);
+  ctx.restore();
+  ctx.fillStyle="rgba(196,186,172,"+(0.85*titleAlpha).toFixed(3)+")"; ctx.font="17px sans-serif";
+  ctx.fillText("— 비 그친 뒤, 식어버린 거리에서 —", cv.width/2, cv.height*0.40+38);
+  const blink=0.55+0.45*Math.sin(t*3);
+  ctx.fillStyle="rgba(222,212,192,"+(0.8*titleAlpha*blink).toFixed(3)+")"; ctx.font="15px sans-serif";
+  ctx.fillText("아무 키나 눌러 시작", cv.width/2, cv.height*0.74);
+}
+
+const sky = ctx.createLinearGradient(0,0,0,cv.height);   // 밤하늘 그라데이션(위 어둡→아래 밝은 도시빛)
+sky.addColorStop(0,"#141a2a"); sky.addColorStop(0.72,"#39445a"); sky.addColorStop(1,"#2a2f3a");
+
+// 젖은 바닥에 가로등 불이 비쳐 흔들리는 반사 (불 켤 때만)
+function drawReflections(camPx){
+  if(flick<=0.02) return;
+  const gy=GROUND*PX;
+  for(const L of curWarm){
+    const sx=L.cx*PX-camPx; if(sx<-40||sx>cv.width+40) continue;
+    const g=ctx.createLinearGradient(0,gy,0,cv.height);
+    g.addColorStop(0,"rgba(255,190,110,"+(0.22*flick).toFixed(3)+")"); g.addColorStop(1,"rgba(255,190,110,0)");
+    ctx.fillStyle=g;
+    const w=22+6*Math.sin(t*3+L.cx);       // 살짝 일렁이는 폭
+    ctx.fillRect(sx-w/2, gy, w, cv.height-gy);
+  }
+}
+// 화면 가장자리를 살짝 어둡게 (영화 같은 느낌)
+const vignette = ctx.createRadialGradient(cv.width/2,cv.height*0.55,cv.height*0.4, cv.width/2,cv.height*0.55,cv.width*0.72);
+vignette.addColorStop(0,"rgba(0,0,0,0)"); vignette.addColorStop(0.6,"rgba(6,6,12,0.05)"); vignette.addColorStop(1,"rgba(6,6,12,0.34)");
+
+function render(){
+  update();
+  const camPx=Math.round(camX*PX), camPy=Math.round(camY*PX);
+  const shx=shake>0?((Math.random()-0.5)*shake*2)|0:0, shy=shake>0?((Math.random()-0.5)*shake)|0:0;   // 화면 흔들림
+  ctx.fillStyle="#0a0b10"; ctx.fillRect(0,0,cv.width,cv.height);   // 기본 배경(탑 등)
+  ctx.save(); ctx.translate(shx,-camPy+shy);                       // ↕ 세로 카메라 + 흔들림
+  if(bgLayers.length){                                   // 거리: 하늘 + 패럴랙스 겹
+    ctx.fillStyle=sky; ctx.fillRect(0,camPy,cv.width,cv.height);
+    for(const L of bgLayers) ctx.drawImage(L.canvas, -Math.round(camX*L.factor*PX), 0);
+  }
+  const c0=Math.floor(camX)-1, c1=c0+GW+2;               // 앞 거리/방 (빛 받는 층)
+  const r0=Math.max(0,Math.floor(camY)-1), r1=Math.min(GH-1,r0+VH+2);   // 화면에 보이는 줄만
+  for(let x=c0;x<=c1;x++){ if(x<0||x>=MW)continue;
+    for(let y=r0;y<=r1;y++){ const base=cells[y][x]; if(!base)continue; putc(x*PX-camPx, y*PX, base, lightAt(x,y)); }
+  }
+  if(scene==="street") drawReflections(camPx);          // 젖은 바닥 반사(인물 뒤)
+  drawBreakables(camPx);                                                                                        // 부술 수 있는 벽
+  if(!mem){ drawBossGhosts(camPx); drawEnemies(camPx); drawBoss(camPx); drawHearts(camPx); drawParts(camPx); }   // 적·보스·하트·부품
+  if(!mem) drawMerchant(camPx);                          // 상인 — 주인공보다 먼저 그려 뒤에 있음(플레이어를 안 가림)
+  // 인물: 추억이 무르익으면 두 사람(과거), 아니면 현재의 주인공(피격 중엔 깜빡)
+  for(const g of hero.ghost) drawGhost(g, camPx);        // 대시 잔상
+  if(mem && (memLevel>=0.5 || (mem.phase==="out" && mem.spot.final))){
+    drawSpriteWorld(CHAR_A, memCx-12, 1, camPx, memCy);
+    const dis = (mem.phase==="out" && mem.spot.final) ? (1-memLevel) : 0;   // 마지막 회상: 그녀가 흩어짐
+    drawSpriteDissolve(CHAR_HER, memCx, -1, camPx, memCy, dis);
+  }
+  else if(!(hero.invuln>0 && Math.floor(t*8)%2===0) || hero.dash>0) drawChar(camPx);
+  drawGoldDust(camPx);                                   // 금빛 먼지 (그녀의 흔적)
+  if(scene!=="room"){ drawDebris(camPx); if(hero.atk>0) drawAttack(camPx); }   // 조각·공격
+  drawForeground(camPx);                                 // 앞 사물(용광로·가로등) — 주인공을 가림
+  if(scene==="street" && !mem){                          // 지하 입구 안내
+    const hd=(MAPS.street.doors||[]).find(d=>d.to==="factory");
+    if(hd){ const sx=(hd.x+0.5)*PX-camPx; if(sx>-40&&sx<cv.width+40){
+      const near=Math.abs(hero.x+CHW/2-hd.x)<6;
+      glowText(near?"↓ 지하 공장":"▼ 지하", sx, 31*PX, {font:"12px sans-serif",
+        fill:"rgba(175,210,235,"+(near?0.98:0.6)+")", glow:"rgba(120,180,230,0.8)", blur:near?9:5}); } }
+  }
+  if(!mem && !collapse) drawMarkers(camPx);
+  if(curVents.length){ updateSteam(); drawSteam(camPx); }                        // 증기(구멍이 있는 맵)
+  if(scene==="street") drawRain(memLevel);                                       // 비(추억 중엔 옅어짐)
+  if(collapse) drawCollapse(camPx);                                              // 무너짐 파도
+  ctx.restore();                                                                // ↕ 세로 카메라 끝(이하 화면 고정 UI)
+  if(collapseState==="active"){ ctx.textAlign="center"; ctx.fillStyle="rgba(255,235,215,"+(0.55+0.45*Math.sin(t*6)).toFixed(2)+")"; ctx.font="bold 22px sans-serif"; ctx.fillText("달려! →", cv.width/2, 42); }
+  if(chaseFlash>0){ ctx.fillStyle="rgba(120,20,20,"+(0.5*chaseFlash).toFixed(3)+")"; ctx.fillRect(0,0,cv.width,cv.height); }
+  if(scene!=="room" && !mem && started && titleAlpha<0.5) drawHUD();   // 하트
+  if(buyMsg>0 && !shopOpen){ ctx.textAlign="center"; ctx.font="bold 17px sans-serif";   // 구입 안내 토스트
+    ctx.fillStyle="rgba(255,225,150,"+Math.min(1,buyMsg/30).toFixed(3)+")"; ctx.fillText(buyMsgTxt, cv.width/2, 80); }
+  if(shopOpen) drawShop();                                             // 상점 창
+  if(mapOpen) drawWorldMap();                                          // 세계 지도(M)
+  if(boss && boss.alive && started && titleAlpha<0.5){                 // 보스 체력 바
+    const bw=220, bx0=(cv.width-bw)/2;
+    ctx.fillStyle="rgba(18,14,18,0.72)"; ctx.fillRect(bx0-4,20,bw+8,16);
+    ctx.fillStyle="#5a2626"; ctx.fillRect(bx0,24,bw,8);
+    ctx.fillStyle=boss.phase===2?"#e83c2e":"#e0684a"; ctx.fillRect(bx0,24,bw*boss.hp/boss.maxHp,8);
+    ctx.textAlign="center"; ctx.fillStyle="rgba(255,230,210,0.9)"; ctx.font="12px sans-serif";
+    ctx.fillText(boss.phase===2?"망각의 파수꾼 — 폭주":"망각의 파수꾼", cv.width/2, 16);
+  }
+  if(heartMsg>0){                                                      // 하트 획득 알림
+    ctx.textAlign="center"; ctx.font="bold 18px sans-serif";
+    ctx.fillStyle="rgba(255,190,200,"+Math.min(1,heartMsg/30).toFixed(3)+")";
+    ctx.fillText("❤ 최대 체력 +1!", cv.width/2, 64);
+  }
+  if(TEST_MODE){ ctx.textAlign="right"; ctx.font="12px sans-serif"; ctx.fillStyle="rgba(150,224,170,0.9)";
+    ctx.fillText("🧪 에디터 맵 테스트 — 에디터에서 고친 뒤 여기서 F5", cv.width-10, 20); }
+  if(mem){
+    ctx.fillStyle="rgba(255,180,90,"+(0.20*memLevel).toFixed(3)+")"; ctx.fillRect(0,0,cv.width,cv.height);
+    for(let kk=0;kk<10;kk++){                             // 추억 속 따뜻한 불티
+      const prog=((t*18+kk*47)%180)/180;
+      const ex=memCx*PX-camPx + Math.sin(kk*1.7+t)*70 + (kk-5)*8;
+      ctx.fillStyle="rgba(255,215,150,"+(0.5*memLevel*(1-prog)).toFixed(3)+")";
+      ctx.fillRect(ex, memCy*PX - camPy - prog*180, 2, 2);
+    }
+    drawMemoryText();
+  }
+  ctx.fillStyle=vignette; ctx.fillRect(0,0,cv.width,cv.height);   // 비네트
+  if(trans){ ctx.fillStyle="rgba(9,9,13,"+Math.max(0,Math.min(1,trans.alpha))+")"; ctx.fillRect(0,0,cv.width,cv.height); }
+  if(titleAlpha>0){ drawTitle(); if(started) titleAlpha=Math.max(0,titleAlpha-0.02); }
+  if(ending) drawEnding();                                        // 엔딩 타이틀 카드 (맨 위)
+  requestAnimationFrame(render);
+}
+
+// 시작: 방의 시작 위치(맵 데이터)에서.
+// 테스트용 지름길: 주소 뒤에 #dev(타이틀 건너뜀) 또는 #dev-street / #dev-tower (그 맵에서 바로 시작)
+let bootScene="room";
+const devHash=location.hash.slice(1);
+if(devHash.startsWith("dev")||devHash.startsWith("test")){
+  started=true; titleAlpha=0;
+  const id=devHash.split("-")[1];
+  if(id && MAPS[id]){ bootScene=id; abilities.doubleJump=true; abilities.crouch=true; abilities.map=true; }   // 특정 맵 dev 부팅 = 게이트 테스트용 능력 켜기
+  if(devHash==="dev-worldmap"){ bootScene="street"; abilities.map=true;   // 지도 화면 미리보기(전부 가본 상태)
+    for(const k in MAPS) visited[k]=true; setTimeout(()=>{ mapOpen=true; }, 100); }
+  if(devHash==="dev-ending"){ ending=1; endingT=140; }   // 엔딩 카드 바로 확인 (전체 플레이·페이드 없이)
+  if(devHash==="dev-shop"){ bootScene="street"; partsCount=20; setTimeout(()=>{ shopOpen=true; }, 100); }   // 상점 창 미리보기
+  if(devHash==="dev-crouch"){ bootScene="street"; devCrouch=true; }   // 웅크림 자세 미리보기
+  if(devHash==="dev-mem"){ bootScene="street"; setTimeout(()=>{ if(memSpots[0]) mem={spot:memSpots[0],phase:"hold",level:1,reveal:24}; }, 100); }   // 회상 대사 미리보기
+}
+if(!MAPS[bootScene]) bootScene=Object.keys(MAPS)[0];   // (에디터에서 room을 지웠을 수도)
+applyAbilities();   // 시작 능력 반영(한 번 점프)
+enter(bootScene);
+hero.x=MAPS[bootScene].start[0]; hero.y=MAPS[bootScene].start[1];
+safeX=hero.x; safeY=hero.y;
+camX=camTarget(); camY=camTargetY(); clampCam();
+render();
+</script>
+</body>
+</html>
