@@ -1,4 +1,11 @@
 <!DOCTYPE html>
+<!--
+  Sketching Fish · 스케치북 낚시  v1.0
+  © 2026 Sketching Fish. All rights reserved.
+  Original game, artwork, text and music. Please don't reupload or redistribute.
+  놀러 와 줘서 고마워요! 소스가 궁금해서 열어봤다면 환영이에요 — 다만 복사해서
+  다른 곳에 올리는 건 하지 말아 주세요. 🎣
+-->
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
@@ -41,6 +48,19 @@
     font-size: 14px; padding: 7px 20px; border-radius: 14px;
     background: #f4ead2; border-width: 2.5px; box-shadow: 0 3px 0 #5c4326;
   }
+  /* 🌐 언어 버튼은 설정 밖에 따로 둔다 — 처음 온 외국인이 바로 찾을 수 있게.
+     라벨에 4개 언어를 같이 써서 어느 나라 사람이든 아는 단어가 하나는 보이도록. */
+  #menu #btn-lang {
+    font-size: 14px; padding: 7px 20px; border-radius: 14px;
+    background: #f4ead2; border-width: 2.5px; box-shadow: 0 3px 0 #5c4326;
+  }
+  #menu .lang-menu { display: none; flex-direction: column; gap: 6px; align-items: center; }
+  #menu .lang-menu.open { display: flex; }
+  #menu .lang-menu button {
+    font-size: 16px; padding: 6px 24px; border-radius: 12px; min-width: 160px;
+    box-shadow: 0 2px 0 #5c4326;
+  }
+  #menu .lang-menu button.cur { background: #ffd23f; }
   #menu button {
     pointer-events: auto; cursor: pointer;
     font-family: "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
@@ -78,9 +98,15 @@
       <button id="btn-achv">도전과제</button>
       <button id="btn-stats">내 기록</button>
     </div>
+    <button id="btn-lang">🌐 언어 · Language · 言語 · 语言</button>
+    <div class="lang-menu" id="lang-menu">
+      <button data-lang="ko">한국어</button>
+      <button data-lang="en">English</button>
+      <button data-lang="ja">日本語</button>
+      <button data-lang="zh">中文</button>
+    </div>
     <button id="btn-settings">⚙ 설정</button>
     <div class="row settings" id="settings-row">
-      <button id="btn-lang">언어 · Language: 한국어</button>
       <button id="btn-sfx">효과음: 켬</button>
       <button id="btn-bgm">음악: 켬</button>
       <button id="btn-vol">음량: 100%</button>
@@ -768,7 +794,7 @@ save.achieved = save.achieved || {};   // { 도전과제id: true }
 save.perfect = save.perfect || 0;      // "딱 맞았어!!"만으로 잡은 횟수
 
 // ============================================================
-// 도전과제 — 이름은 아드님 작명! parts의 fishId가 null이면 아직 안 나온 물고기
+// 도전과제 — 이름은 전부 직접 지음! parts의 fishId가 null이면 아직 안 나온 물고기
 // ============================================================
 const ACHV = [
   { id: 'a4', coins: 100, name: { ko: 'A4용지', en: 'A4 Paper', ja: 'A4用紙', zh: 'A4纸' },
@@ -807,7 +833,7 @@ const ACHV = [
   { id: 'release-master', coins: 30, name: { ko: '방생의 달인', en: 'Master of Release', ja: 'リリースの達人', zh: '放生大师' },
     desc: { ko: '물고기 50번 놓아주기 (…놓치기)', en: 'Let 50 fish go (…accidentally)', ja: '50回逃がす（…逃げられる）', zh: '放走50条（…其实是跑掉的）' },
     prog: () => [{ label: LX({ ko: '놓아준 물고기', en: 'Released', ja: '逃がした魚', zh: '放走的鱼' }), have: Math.min(save.missed, 50), need: 50 }] },
-  // --- 2026-07-25 추가 12개 (2페이지, 아드님 확정) ---
+  // --- 2026-07-25 추가 12개 (2페이지, 기획 확정) ---
   { id: 'legend-doodle', coins: 150, name: { ko: '전설의 낙서', en: 'Legendary Doodle', ja: '伝説のらくがき', zh: '传说涂鸦' },
     desc: { ko: '낙서용 잡기 (호수의 전설을 낚다!)', en: 'Catch the Doodle Dragon!', ja: 'らくがきドラゴンを釣る！', zh: '钓到涂鸦龙！' },
     parts: [{ fishId: 'doodle-dragon', need: 1 }] },
@@ -998,7 +1024,7 @@ function bgmNote(freq, t0, dur, vol, type) {
   o.start(t0);
   o.stop(t0 + dur + 0.05);
 }
-// 지역별 BGM (아드님이 AI로 만든 곡들 — 배포 OK!) — 크레파스 멜로디는 파일 없을 때 예비용
+// 지역별 BGM (직접 만든 오리지널 곡) — 크레파스 멜로디는 파일 없을 때 예비용
 const SPOT_BGM = {
   lake: new Audio('audio/driftwood-and-still-water.mp3'),   // "Driftwood and Still Water"
   sea: new Audio('audio/sunlight-on-the-foam.mp3'),         // "Sunlight on the Foam"
@@ -1065,9 +1091,23 @@ const START_MUL = 3.2;                 // 시작은 목표의 3.2배 크기에�
 // ============================================================
 // 언어 (한국어/English) — 메뉴에서 바꿀 수 있고 저장됨
 // ============================================================
-const LANGS = ['ko', 'en', 'ja', 'zh'];   // 언어 버튼을 누를 때마다 이 순서로 바뀜
+const LANGS = ['ko', 'en', 'ja', 'zh'];
 const LANG_NAMES = { ko: '한국어', en: 'English', ja: '日本語', zh: '中文' };
-let LANG = localStorage.getItem('sketch-fishing-lang') || 'ko';
+// 처음 열었을 땐 브라우저 언어에 맞춰 준다 — 외국인이 한글 화면을 보고 당황하지 않게.
+// (한 번이라도 직접 고르면 그 선택이 저장돼서 이 함수는 다시 안 쓰인다)
+function detectLang() {
+  const list = (navigator.languages && navigator.languages.length)
+    ? navigator.languages : [navigator.language || ''];
+  for (const l of list) {
+    const c = String(l).toLowerCase();
+    if (c.startsWith('ko')) return 'ko';
+    if (c.startsWith('ja')) return 'ja';
+    if (c.startsWith('zh')) return 'zh';
+    if (c.startsWith('en')) return 'en';
+  }
+  return 'en';   // 모르는 언어면 영어 — 세계에서 제일 많이 통한다
+}
+let LANG = localStorage.getItem('sketch-fishing-lang') || detectLang();
 if (!LANGS.includes(LANG)) LANG = 'ko';
 const T = {
   ko: {
@@ -1304,7 +1344,7 @@ const FISH = [
             en: ['It keeps everything together — what a catch!', 'A hundred of them weigh less than one page!'],
             ja: ['書類の間にはさまってました', '100匹でも紙1枚の重さ！'],
             zh: ['刚从文件堆里游出来', '一百条也不到一张纸重！'] },
-    gagWeights: [35, 65] },  // "종이 한 장" 개그가 65%로 더 자주 나옴 (아드님 요청)
+    gagWeights: [35, 65] },  // "종이 한 장" 개그가 65%로 더 자주 나옴 (기획 결정)
   { id: 'pencil-eel', name: { ko: '연필장어', en: 'Pencil Eel', ja: 'えんぴつウナギ', zh: '铅笔鳗' }, weight: 14, speed: 0.92, circles: 3,
     gags: { ko: ['필통에서 탈출한 지 3일째래요', '깎을수록 짧아지니까 아껴 쓰자'],
             en: ['It always has a point — right at the end!', 'Getting sharpened is a shortening experience.'],
@@ -1448,7 +1488,7 @@ const FISH = [
             en: ['That smell? It\'s permanent!', 'It leaves a lasting impression wherever it goes.'],
             ja: ['強烈なにおいの正体はマジック！', 'とっても有名なお客さんです'],
             zh: ['那股味儿是马克笔味！', '远近闻名的客人！'] } },
-  // --- 4차분: 호수 30마리 확장 — 민물고기 18마리 추가 (2026-07-25, 아드님 요청) ---
+  // --- 4차분: 호수 30마리 확장 — 민물고기 18마리 추가 (2026-07-25) ---
   { id: 'protractor-medaka', name: { ko: '각도기송사리', en: 'Protractor Medaka', ja: '分度器メダカ', zh: '量角器小鱼' }, weight: 22, speed: 1.05, circles: 3,
     gags: { ko: ['몸이 반원이라 각도 재기 딱 좋아요', '지금 내 꼬리 각도는 딱 45도!'],
             en: ['It knows all the angles!', 'So, what\'s your angle, little fish?'],
@@ -1539,7 +1579,7 @@ const FISH = [
             en: ['A doodle come alive — the legend of the lake!', 'Drawn yesterday, legendary today!'],
             ja: ['湖の伝説！らくがきが生きてる！', 'ドラゴンを釣ったら日記に書こう！'],
             zh: ['湖中传说！涂鸦活过来了！', '钓到龙了快写进日记！'] } },
-  // --- 4차분: 바다 30마리 확장 — 바다 물고기 12마리 추가 (2026-07-25, 아드님 요청) ---
+  // --- 4차분: 바다 30마리 확장 — 바다 물고기 12마리 추가 (2026-07-25) ---
   { id: 'sticker-clownfish', name: { ko: '스티커흰동가리', en: 'Sticker Clownfish', ja: 'シールクマノミ', zh: '贴纸小丑鱼' }, weight: 15, speed: 0.97, circles: 3,
     gags: { ko: ['주황 스티커에 흰 줄 스티커를 붙였어요', '말미잘 대신 스티커판에 숨어 살아요'],
             en: ['It always sticks with its friends!', 'Peel it off slowly — it tickles!'],
@@ -1600,7 +1640,7 @@ const FISH = [
             en: ['It shines brightest after lights-out!', 'A star is born — and it floats!'],
             ja: ['夜は天井の星シールみたいに光る', '今日は気絶しないって約束！'],
             zh: ['晚上像天花板夜光星一样发光', '说好了今天不晕倒！'] } },
-  // --- 5차분: 늪지 15마리 (2026-07-25, 아드님 기획 — 수는 적지만 패턴이 복잡!) ---
+  // --- 5차분: 늪지 15마리 (2026-07-25 — 수는 적지만 패턴이 복잡!) ---
   { id: 'pompom-beetle', name: { ko: '폼폼물방개', en: 'Pom-Pom Diving Beetle', ja: 'ポンポンゲンゴロウ', zh: '毛球水甲虫' }, weight: 20, speed: 1.0, circles: 3,
     gags: { ko: ['몸이 폭신폭신한 공예 폼폼이에요', '늪에서 제일 귀여운 잠수부!'],
             en: ['Fluffy like a craft pom-pom!', 'The cutest diver in the swamp!'],
@@ -4779,6 +4819,7 @@ const btnSfx = document.getElementById('btn-sfx');
 const btnBoil = document.getElementById('btn-boil');
 const btnSettings = document.getElementById('btn-settings');
 const settingsRow = document.getElementById('settings-row');
+const langMenu = document.getElementById('lang-menu');
 const btnBgm = document.getElementById('btn-bgm');
 const btnVol = document.getElementById('btn-vol');
 const btnBackup = document.getElementById('btn-backup');
@@ -4795,7 +4836,14 @@ function updateMenuTexts() {
   btnShop.textContent = tr('shop');
   btnAchv.textContent = tr('achv');
   btnStats.textContent = tr('stats');
-  btnLang.textContent = '🌐 언어 · Language: ' + LANG_NAMES[LANG];
+  // 언어 버튼 라벨은 일부러 번역하지 않는다 — 4개 언어를 늘 같이 보여줘야 힌트가 된다
+  btnLang.textContent = '🌐 언어 · Language · 言語 · 语言';
+  langMenu.querySelectorAll('button').forEach(b => {
+    const cur = b.dataset.lang === LANG;
+    b.classList.toggle('cur', cur);
+    b.textContent = (cur ? '✔ ' : '') + LANG_NAMES[b.dataset.lang];
+  });
+  document.documentElement.lang = LANG;
   btnSfx.textContent = SFX ? tr('sfxOn') : tr('sfxOff');
   btnBgm.textContent = BGM ? tr('bgmOn') : tr('bgmOff');
   btnVol.textContent = T[LANG].vol(Math.round(VOLUME * 100));
@@ -4807,7 +4855,10 @@ function updateMenuTexts() {
   btnBoil.textContent = BOIL ? tr('boilOn') : tr('boilOff');
   btnSettings.textContent = tr('settings');
 }
-btnSettings.addEventListener('click', () => settingsRow.classList.toggle('open'));
+btnSettings.addEventListener('click', () => {
+  settingsRow.classList.toggle('open');
+  langMenu.classList.remove('open');   // 둘이 동시에 펼쳐지면 메뉴가 너무 길어진다
+});
 btnStart.addEventListener('click', () => {
   startBgm();
   menuEl.classList.add('hidden');
@@ -4818,10 +4869,19 @@ btnDex.addEventListener('click', () => openDex('menu'));
 btnShop.addEventListener('click', () => openShop('menu'));
 btnAchv.addEventListener('click', () => openAchv());
 btnStats.addEventListener('click', () => openStats());
+// 🌐 버튼 = 언어 목록 펼치기 (예전엔 누를 때마다 다음 언어로 넘어가는 순환식이었는데,
+// 中文을 쓰려면 세 번 눌러야 하고 누를 때마다 화면이 모르는 언어로 바뀌어서 목록식으로 바꿈)
 btnLang.addEventListener('click', () => {
-  LANG = LANGS[(LANGS.indexOf(LANG) + 1) % LANGS.length];
-  localStorage.setItem('sketch-fishing-lang', LANG);
-  updateMenuTexts();
+  langMenu.classList.toggle('open');
+  settingsRow.classList.remove('open');
+});
+langMenu.querySelectorAll('button').forEach(b => {
+  b.addEventListener('click', () => {
+    LANG = b.dataset.lang;
+    localStorage.setItem('sketch-fishing-lang', LANG);
+    langMenu.classList.remove('open');
+    updateMenuTexts();
+  });
 });
 btnSfx.addEventListener('click', () => {
   SFX = !SFX;
@@ -5016,7 +5076,7 @@ if (location.hash.startsWith('#dex')) {
   DEV_FAKE = true;
   [12, 100, 5, 3, 2, 1, 1].forEach((n, i) => { save.caught[FISH[i].id] = n; });
   const wanted = decodeURIComponent(location.hash).split('=')[1];
-  // #dex=all — 60마리 전부 잡은 상태로 도감 구경 (아드님 검토용!)
+  // #dex=all — 60마리 전부 잡은 상태로 도감 구경 (검토용!)
   if (wanted === 'all') FISH.forEach(f => { save.caught[f.id] = 1; });
   game.dexDetail = FISH.find(f => f.name.ko === wanted) || null;
   openDex('menu');
