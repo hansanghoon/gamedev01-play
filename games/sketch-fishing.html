@@ -72,6 +72,34 @@
   #menu button:hover { transform: translateY(-2px) rotate(-1deg); }
   #menu button:active { transform: translateY(2px); box-shadow: 0 1px 0 #5c4326; }
   #menu #btn-start { font-size: 26px; padding: 14px 64px; background: #ffd23f; }
+  /* 게임 안에서 쓰는 확인창.
+     브라우저의 confirm()·alert()는 itch.io처럼 제한된 iframe 안에서 막힐 수 있다
+     (막히면 confirm이 조용히 false를 돌려줘서 "초기화·불러오기가 눌러도 아무 일 없음"이 된다).
+     그래서 직접 만들어 쓴다 — 어디서나 확실히 뜨고, 번역도 되고, 게임 그림체와도 맞는다. */
+  #ask {
+    position: fixed; inset: 0; display: none; z-index: 50;
+    align-items: center; justify-content: center;
+    background: rgba(60,50,38,0.55);
+    font-family: "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  }
+  #ask.open { display: flex; }
+  #ask .box {
+    background: #fdf8ec; border: 4px solid #ff9633; border-radius: 18px;
+    padding: 26px 30px; max-width: min(460px, 88vw); text-align: center;
+    box-shadow: 0 8px 0 rgba(0,0,0,0.25);
+  }
+  #ask p {
+    margin: 0 0 20px; color: #7c4f26; font-weight: 800; font-size: 17px;
+    line-height: 1.6; white-space: pre-line;
+  }
+  #ask .row { display: flex; gap: 12px; justify-content: center; }
+  #ask button {
+    cursor: pointer; font-family: inherit; font-weight: 800; font-size: 17px;
+    color: #7c4f26; background: #fdf8ec; border: 3px solid #a9713a;
+    border-radius: 16px; padding: 9px 28px; box-shadow: 0 4px 0 #5c4326;
+  }
+  #ask button:active { transform: translateY(2px); box-shadow: 0 1px 0 #5c4326; }
+  #ask #ask-yes { background: #ffd23f; }
   /* 폰 세로: 가로로 돌려달라는 안내 */
   #rotate {
     position: fixed; inset: 0; display: none;
@@ -85,10 +113,22 @@
 <body>
 <canvas id="c"></canvas>
 <div id="rotate"><div>📱↻<br><span id="rotate-msg">폰을 가로로 돌려줘!</span></div></div>
+<!-- 게임 자체 확인창 (브라우저 confirm/alert 대신) -->
+<div id="ask">
+  <div class="box">
+    <p id="ask-msg"></p>
+    <div class="row">
+      <button id="ask-yes">네</button>
+      <button id="ask-no">아니요</button>
+    </div>
+  </div>
+</div>
 <div id="menu">
   <div style="text-align:center">
     <h1 id="m-title">스케치북 낚시</h1>
     <p class="sub" id="m-sub">Sketching Fish</p>
+    <!-- 브라우저가 저장을 막았을 때만 보이는 안내 (기록이 왜 안 남는지 알려준다) -->
+    <p id="m-nosave" style="display:none; margin:6px 0 0; color:#ffd23f; font-size:14px"></p>
   </div>
   <div class="btns">
     <button id="btn-start">시작하기</button>
@@ -132,10 +172,16 @@
 const canvas = document.getElementById('c');
 const screenCtx = canvas.getContext('2d');
 // 배경(스케치북+풍경)은 무거워서 미리 딴 캔버스에 그려두고(캐시),
-// 매 프레임엔 그 그림을 복사한 뒤 움직이는 것만 새로 그린다
-const sceneCanvas = document.createElement('canvas');
-const sctx = sceneCanvas.getContext('2d');
-let ctx = screenCtx;  // 그리기 함수들이 쓰는 붓 — 캐시를 만들 땐 sctx로 바꿔 낀다
+// 매 프레임엔 그 그림을 복사한 뒤 움직이는 것만 새로 그린다.
+// 게다가 "꿈틀거림(보일)" 3장을 통째로 미리 그려 두고 번갈아 보여준다 —
+// 예전엔 0.7초마다 배경을 다시 그리느라(13~19ms) 화면이 뚝뚝 끊겼다. (2026-07-26)
+const sceneFrames = [0, 1, 2].map(() => {
+  const cv = document.createElement('canvas');
+  return { cv, cx: cv.getContext('2d') };
+});
+let sceneCanvas = sceneFrames[0].cv;   // 지금 화면에 쓰는 장
+let sceneFrameCount = 1;               // 몇 장을 미리 만들어 뒀나 (화면이 너무 크면 1장)
+let ctx = screenCtx;  // 그리기 함수들이 쓰는 붓 — 캐시를 만들 땐 캐시 캔버스로 바꿔 낀다
 let W = 0, H = 0, DPR = 1;
 
 // 장면의 중요 위치들 (그릴 때 채워짐 — 낚싯대 끝, 찌 위치, 호수 범위)
@@ -173,6 +219,8 @@ const C = {
   redDark:   '#d24638',
   pink:      '#ff8fb1',
   skin:      '#ffcf9e',
+  purple:    '#a077d8',   // 부끄럼쟁이 원
+  teal:      '#3fb8a8',   // 날뛰기 원
 };
 
 // ---------- 경로 도우미 ----------
@@ -776,15 +824,29 @@ function drawFlower(cx, cy, r, color, seed) {
 // ============================================================
 // 저장 — 잡은 기록은 절대 사라지면 안 됨! (구조 바꿀 땐 마이그레이션 필수)
 // ============================================================
+// ⚠️ 저장소는 반드시 이 LS 래퍼로만 쓴다 — localStorage를 직접 부르지 말 것!
+// itch.io는 게임을 "다른 도메인의 iframe"으로 띄운다. 그래서 브라우저 설정
+// (사파리의 크로스사이트 추적 방지, 쿠키 전체 차단, 시크릿 모드 등)에 따라
+// localStorage에 손대는 순간 SecurityError가 난다.
+// 예전엔 그 예외가 잡히지 않아 스크립트가 통째로 죽었고 → 게임이 아예 안 열렸다.
+// 이제는 저장만 조용히 실패하고 게임은 정상적으로 돌아간다. (2026-07-26)
+let STORAGE_OK = true;
+const LS = {
+  get(k) { try { return localStorage.getItem(k); } catch (e) { STORAGE_OK = false; return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); return true; } catch (e) { STORAGE_OK = false; return false; } },
+  remove(k) { try { localStorage.removeItem(k); } catch (e) { STORAGE_OK = false; } },
+};
+
 const SAVE_KEY = 'sketch-fishing-save-v1';
 let save;
-try { save = JSON.parse(localStorage.getItem(SAVE_KEY)) || {}; } catch (e) { save = {}; }
+try { save = JSON.parse(LS.get(SAVE_KEY)) || {}; } catch (e) { save = {}; }
 save.caught = save.caught || {};   // { 물고기id: 잡은 수 }
 save.missed = save.missed || 0;
 let DEV_FAKE = false;              // 개발용 가짜 데이터 모드 (#dex) — 절대 저장 안 함
+const FORCE_TUTO = location.hash === '#tuto';   // 개발용: 첫판 안내를 강제로 보기
 function persistSave() {
   if (DEV_FAKE) return;
-  localStorage.setItem(SAVE_KEY, JSON.stringify(save));
+  LS.set(SAVE_KEY, JSON.stringify(save));
 }
 const totalCaught = () => Object.values(save.caught).reduce((a, n) => a + n, 0);
 const caughtKinds = () => FISH.filter(f => save.caught[f.id] > 0).length;
@@ -975,8 +1037,8 @@ const AUTO_DEMO = location.hash === '#auto';
 // ============================================================
 // 효과음 — 소리 파일 없이 웹오디오로 직접 만든다! (메뉴에서 끌 수 있음)
 // ============================================================
-let SFX = localStorage.getItem('sketch-fishing-sfx') !== 'off';
-let VOLUME = parseFloat(localStorage.getItem('sketch-fishing-vol') || '1');
+let SFX = LS.get('sketch-fishing-sfx') !== 'off';
+let VOLUME = parseFloat(LS.get('sketch-fishing-vol') || '1');
 if (![1, 0.6, 0.3].includes(VOLUME)) VOLUME = 1;
 let audioCtx = null;
 function beep(freq, dur, type = 'sine', vol = 0.18, delay = 0, slide = 0) {
@@ -1010,7 +1072,7 @@ const sfx = {
 };
 
 // ---------- 배경음악 — 파일 없이 웹오디오로 연주하는 잔잔한 8초 루프 ----------
-let BGM = localStorage.getItem('sketch-fishing-bgm') !== 'off';
+let BGM = LS.get('sketch-fishing-bgm') !== 'off';
 let bgmTimer = null;
 function bgmNote(freq, t0, dur, vol, type) {
   const o = audioCtx.createOscillator(), g = audioCtx.createGain();
@@ -1084,7 +1146,44 @@ function stopBgm() {
   Object.values(SPOT_BGM).forEach(a => a.pause());
 }
 
-const CIRCLE_DUR = [1300, 1100, 900, 800];  // 뒤로 갈수록 빨라짐
+const CIRCLE_DUR = [1300, 1100, 900, 800, 700];  // (옛 방식 — 리듬이 없는 물고기용 예비)
+
+// ============================================================
+// 리듬 — 물고기마다 "언제 · 어떤 키"를 누를지가 정해져 있다 (Z X C V)
+//   gaps: 앞 박자로부터 몇 박 뒤에 쳐야 하는지 (1 = 한 박, 0.5 = 반 박 = 빨리)
+//   버튼은 스페이스/클릭 하나 — 리듬은 '언제 누르는가'로만 표현된다
+//   ※ 길이는 물고기의 circles(연속 클릭 수)와 반드시 같아야 한다
+// ============================================================
+// 난이도 (2026-07-26 아드님 피드백 "너무 빠르고 어렵다" → 패턴 자체를 느리게)
+//   ※ 판정(맞았다고 쳐주는 폭)은 그대로 두고, 원이 줄어드는 속도와 연타 간격만 늦춘다
+//   한 박 1000 → 1350ms · 반 박 0.5 → 0.7박 (제일 빠른 연타 340ms → 643ms)
+const BASE_BEAT = 1350;   // 한 박의 기본 길이(ms) — 물고기 speed로 조절된다
+const HALF = 0.7;         // "다닥"에서 빨리 오는 박 (1보다 작을수록 촉박하다)
+const RHYTHMS = {
+  // 2박
+  ttakttak:  { gaps: [1, 1] },       // 딱 — 딱
+  dadak:     { gaps: [1, HALF] },     // 딱-다닥 (두 번째가 빨리 온다)
+  // 3박
+  set:       { gaps: [1, 1, 1] },    // 딱 — 딱 — 딱
+  dadatak:   { gaps: [1, HALF, 1] },    // 다닥 — 딱
+  takdada:   { gaps: [1, 1, HALF] },    // 딱 — 다닥
+  jigzag:    { gaps: [1, HALF, HALF] }, // 딱 — 다다닥 (뒤 두 개가 빠르게)
+  // 4박
+  net:       { gaps: [1, 1, 1, 1] }, // 계단 오르기
+  ssangssang:{ gaps: [1, HALF, 1, HALF] }, // 다닥 다닥
+  wangbok:   { gaps: [1, 1, HALF, HALF] }, // 딱 — 딱 — 다다닥 (뒤로 갈수록 빨라짐)
+  // 5박 (전설)
+  legendA:   { gaps: [1, 1, HALF, HALF, 1] },
+  legendB:   { gaps: [1, HALF, HALF, 1, 1] },
+};
+const RHYTHM_BY_LEN = { 2: ['ttakttak', 'dadak'], 3: ['set', 'dadatak', 'takdada', 'jigzag'],
+  4: ['net', 'ssangssang', 'wangbok'], 5: ['legendA', 'legendB'] };
+// 물고기에 rhythm이 없으면 연속 수에 맞는 기본 패턴을 쓴다 (안전장치)
+function rhythmOf(f) {
+  const r = RHYTHMS[f.rhythm];
+  if (r && r.gaps.length === f.circles) return r;
+  return RHYTHMS[RHYTHM_BY_LEN[f.circles][0]];
+}
 const TARGET_R = 27;                   // 목표 원 크기
 const START_MUL = 3.2;                 // 시작은 목표의 3.2배 크기에서 줄어듦
 
@@ -1107,12 +1206,12 @@ function detectLang() {
   }
   return 'en';   // 모르는 언어면 영어 — 세계에서 제일 많이 통한다
 }
-let LANG = localStorage.getItem('sketch-fishing-lang') || detectLang();
+let LANG = LS.get('sketch-fishing-lang') || detectLang();
 if (!LANGS.includes(LANG)) LANG = 'ko';
 const T = {
   ko: {
     waiting: '물고기를 기다리는 중…', shush: '(쉿! 조용히 기다리자)',
-    hint: '주황 원이 줄어들어 목표 원과 겹칠 때 클릭!', bite: '입질이다!!',
+    hint: '박자에 맞춰 스페이스! (물고기마다 리듬이 달라요)', bite: '입질이다!!',
     perfect: '딱 맞았어!!', nice: '좋아!',
     tooFast: '너무 빨랐어! 도망갔다…', tooSlow: '너무 늦었어! 도망갔다…',
     ignored: '앗, 그냥 보냈다! 도망갔다…',
@@ -1137,6 +1236,7 @@ const T = {
     shopClose: '(빈 곳을 클릭하면 닫혀요)',
     gain: n => `+${n} 코인!`,
     gainPerfect: n => `+${n} 코인! (퍼펙트 2배!)`,
+    gainFirst: n => `+${n} 코인! 🎉 첫 물고기 축하 보너스!`,
     stats: '내 기록',
     stPlay: v => `플레이타임: ${v}`,
     stPlayNote: '(오늘부터 재기 시작했어!)',
@@ -1155,6 +1255,17 @@ const T = {
     baitLabel: '미끼: ',
     pageNext: '다음 페이지 ▶', pagePrev: '◀ 이전 페이지',
     closet: '꾸미기', equip: '착용!',
+    hatTitle: '꾸미기 모자 (누르면 쓰기 · 코인으로 구매)',
+    askYes: '네', askNo: '아니요', askOk: '확인',
+    loadBad: '이 파일은 스케치북 낚시 백업이 아닌 것 같아요.\n"백업 저장"으로 만든 .json 파일을 골라 주세요.',
+    backupFail: '이 브라우저에선 파일 저장이 막혀 있어요.\n다른 브라우저에서 해보거나, 게임 페이지를 새 창으로 열어 보세요.',
+    noSave: '⚠ 이 브라우저에선 기록이 저장되지 않아요 (저장공간 차단 상태). 게임은 그대로 할 수 있어요!',
+    traitsBtn: '원 색깔표', traitsTitle: '원 색깔이 뜻하는 것',
+    traitsSub: '물고기마다 원 색이 다르고, 색마다 움직임이 달라요!',
+    traitsClose: '(아무 데나 클릭하면 도감으로 돌아가요)',
+    legendTag: '전설!', rarityLabel: ['흔함','조금 귀함','귀함','아주 귀함','전설'],
+    tutoTitle: '여기를 봐!', tutoL1: '큰 원이 점점 줄어들어',
+    tutoL2: '갈색 목표 원과 딱 겹칠 때 스페이스!', tutoGo: '(클릭이나 스페이스로 시작)',
     bgmOn: '음악: 켬', bgmOff: '음악: 끔',
     backup: '백업 저장', load: '백업 불러오기',
     loadConfirm: '백업 파일의 기록으로 바꿀까요? 지금 기록은 사라져요!',
@@ -1165,7 +1276,7 @@ const T = {
   },
   en: {
     waiting: 'Waiting for a fish…', shush: '(Shh! Stay quiet…)',
-    hint: 'Click when the orange ring meets the target!', bite: 'A bite!!',
+    hint: 'Press Space on the beat! (every fish has its own rhythm)', bite: 'A bite!!',
     perfect: 'PERFECT!!', nice: 'Nice!',
     tooFast: 'Too fast! It got away…', tooSlow: 'Too slow! It got away…',
     ignored: 'Oops, it slipped away…',
@@ -1190,6 +1301,7 @@ const T = {
     shopClose: '(Click empty space to close)',
     gain: n => `+${n} coins!`,
     gainPerfect: n => `+${n} coins! (PERFECT x2!)`,
+    gainFirst: n => `+${n} coins! 🎉 first-catch bonus!`,
     stats: 'My Records',
     stPlay: v => `Play time: ${v}`,
     stPlayNote: '(counting since today!)',
@@ -1208,6 +1320,17 @@ const T = {
     baitLabel: 'Bait: ',
     pageNext: 'Next page ▶', pagePrev: '◀ First page',
     closet: 'Closet', equip: 'Wear!',
+    hatTitle: 'Hats (click to wear · click to buy with coins)',
+    askYes: 'Yes', askNo: 'No', askOk: 'OK',
+    loadBad: 'That doesn\u2019t look like a Sketching Fish backup.\nPlease pick the .json file made by "Save backup".',
+    backupFail: 'This browser is blocking file downloads.\nTry another browser, or open the game page in its own window.',
+    noSave: '⚠ This browser is blocking storage, so your progress won\u2019t be saved. You can still play!',
+    traitsBtn: 'Ring colors', traitsTitle: 'What the ring color means',
+    traitsSub: 'Every fish has its own ring color — and its own move!',
+    traitsClose: '(click anywhere to go back)',
+    legendTag: 'LEGEND!', rarityLabel: ['Common','Uncommon','Rare','Very rare','Legend'],
+    tutoTitle: 'Look here!', tutoL1: 'The big ring keeps shrinking',
+    tutoL2: 'Hit Space when it lands on the brown ring!', tutoGo: '(click or press Space to start)',
     bgmOn: 'Music: ON', bgmOff: 'Music: OFF',
     backup: 'Save backup', load: 'Load backup',
     loadConfirm: 'Replace current progress with this backup file?',
@@ -1218,7 +1341,7 @@ const T = {
   },
   ja: {
     waiting: '魚を待っています…', shush: '（シーッ！静かに…）',
-    hint: 'オレンジの輪がターゲットに重なったらクリック！', bite: 'ヒット!!',
+    hint: 'リズムに合わせてスペース！(魚ごとにリズムがちがう)', bite: 'ヒット!!',
     perfect: 'ピッタリ!!', nice: 'いいね！',
     tooFast: '早すぎた！逃げられた…', tooSlow: '遅すぎた！逃げられた…',
     ignored: 'あっ、逃げちゃった…',
@@ -1243,6 +1366,7 @@ const T = {
     shopClose: '（空いた所をクリックで閉じる）',
     gain: n => `+${n} コイン！`,
     gainPerfect: n => `+${n} コイン！（ピッタリ2倍！）`,
+    gainFirst: n => `+${n} コイン！🎉 はじめての1ぴきボーナス！`,
     stats: 'マイ記録',
     stPlay: v => `プレイ時間: ${v}`,
     stPlayNote: '（今日から計測スタート！）',
@@ -1261,6 +1385,17 @@ const T = {
     baitLabel: 'エサ: ',
     pageNext: '次のページ ▶', pagePrev: '◀ 前のページ',
     closet: 'きせかえ', equip: 'かぶる！',
+    hatTitle: 'ぼうし（クリックでかぶる · コインで買う）',
+    askYes: 'はい', askNo: 'いいえ', askOk: 'OK',
+    loadBad: 'スケッチフィッシュのバックアップではないようです。\n「バックアップ保存」で作った .json を選んでください。',
+    backupFail: 'このブラウザではファイル保存がブロックされています。\n別のブラウザか、別ウィンドウで開いてみてください。',
+    noSave: '⚠ このブラウザでは記録が保存されません（保存がブロック中）。プレイはできます！',
+    traitsBtn: '輪の色表', traitsTitle: '輪の色の意味',
+    traitsSub: '魚ごとに輪の色がちがい、色ごとに動きもちがう！',
+    traitsClose: '（どこかをクリックで図かんへ）',
+    legendTag: 'でんせつ！', rarityLabel: ['ふつう','ちょっとレア','レア','超レア','でんせつ'],
+    tutoTitle: 'ここを見て！', tutoL1: '大きい輪がだんだん小さくなるよ',
+    tutoL2: '茶色の輪とピッタリ重なったらスペース！', tutoGo: '（クリックかスペースで開始）',
     bgmOn: '音楽: ON', bgmOff: '音楽: OFF',
     backup: 'バックアップ保存', load: 'バックアップ読込',
     loadConfirm: 'バックアップの記録に置きかえますか？今の記録は消えます！',
@@ -1271,7 +1406,7 @@ const T = {
   },
   zh: {
     waiting: '正在等鱼上钩…', shush: '（嘘！安静点…）',
-    hint: '橙色圆圈缩到目标圈时点击！', bite: '咬钩啦!!',
+    hint: '跟着节奏按空格！(每条鱼节奏都不同)', bite: '咬钩啦!!',
     perfect: '完美!!', nice: '不错！',
     tooFast: '太快了！鱼跑了…', tooSlow: '太慢了！鱼跑了…',
     ignored: '哎呀，跑掉了…',
@@ -1296,6 +1431,7 @@ const T = {
     shopClose: '（点空白处关闭）',
     gain: n => `+${n} 金币！`,
     gainPerfect: n => `+${n} 金币！（完美×2！）`,
+    gainFirst: n => `+${n} 金币！🎉 第一条鱼奖励！`,
     stats: '我的记录',
     stPlay: v => `游戏时间: ${v}`,
     stPlayNote: '（从今天开始计时！）',
@@ -1314,6 +1450,17 @@ const T = {
     baitLabel: '鱼饵: ',
     pageNext: '下一页 ▶', pagePrev: '◀ 上一页',
     closet: '装扮', equip: '戴上！',
+    hatTitle: '帽子（点击戴上 · 用金币购买）',
+    askYes: '是', askNo: '否', askOk: '确定',
+    loadBad: '这似乎不是《素描钓鱼》的备份文件。\n请选择用“保存备份”生成的 .json 文件。',
+    backupFail: '此浏览器阻止了文件下载。\n请换个浏览器，或在新窗口中打开游戏页面。',
+    noSave: '⚠ 此浏览器阻止了存储，进度不会保存。但仍然可以游玩！',
+    traitsBtn: '圆圈颜色表', traitsTitle: '圆圈颜色代表什么',
+    traitsSub: '每条鱼的圆圈颜色不同，动作也不同！',
+    traitsClose: '（点任意处返回图鉴）',
+    legendTag: '传说！', rarityLabel: ['常见','稍稀有','稀有','非常稀有','传说'],
+    tutoTitle: '看这里！', tutoL1: '大圆圈会慢慢变小',
+    tutoL2: '和棕色圆圈重合时按空格！', tutoGo: '（点击或按空格开始）',
     bgmOn: '音乐: 开', bgmOff: '音乐: 关',
     backup: '保存备份', load: '读取备份',
     loadConfirm: '要用备份文件替换当前记录吗？现在的记录会消失！',
@@ -1334,384 +1481,384 @@ const LX = o => o[LANG] !== undefined ? o[LANG] : (o.en !== undefined ? o.en : o
 // weight: 클수록 잘 잡힘 / speed: 작을수록 원이 빨리 줄어듦 / circles: 클릭 횟수
 // ============================================================
 const FISH = [
-  { id: 'kkobulchi', name: { ko: '꼬불치', en: 'Squigglefish', ja: 'クネクネうお', zh: '弯弯鱼' }, weight: 24, speed: 1.0, circles: 3,
+  { id: 'kkobulchi', name: { ko: '꼬불치', en: 'Squigglefish', ja: 'クネクネうお', zh: '弯弯鱼' }, weight: 24, speed: 1.0, circles: 2, ring: 1.25, trait: 'quick', rhythm: 'ttakttak',
     gags: { ko: ['삐뚤빼뚤해도 물고기는 물고기라고!', '오늘도 꼬불꼬불 헤엄쳤답니다'],
             en: ['A squiggle a day keeps the eraser away!', 'I\'m not messy — I\'m abstract art!'],
             ja: ['クネクネでも魚は魚だもん！', '今日もくねくね泳ぎました'],
             zh: ['歪歪扭扭也是鱼！', '今天也扭来扭去地游了一天'] } },
-  { id: 'clip-anchovy', name: { ko: '클립멸치', en: 'Clip Anchovy', ja: 'クリップいわし', zh: '回形针小鱼' }, weight: 20, speed: 1.05, circles: 3,
+  { id: 'clip-anchovy', name: { ko: '클립멸치', en: 'Clip Anchovy', ja: 'クリップいわし', zh: '回形针小鱼' }, weight: 20, speed: 1.05, circles: 2, ring: 1.3, trait: 'quick', rhythm: 'dadak',
     gags: { ko: ['서류 사이에 끼어 있다가 왔대요', '백 마리 모아도 종이 한 장 무게!'],
             en: ['It keeps everything together — what a catch!', 'A hundred of them weigh less than one page!'],
             ja: ['書類の間にはさまってました', '100匹でも紙1枚の重さ！'],
             zh: ['刚从文件堆里游出来', '一百条也不到一张纸重！'] },
     gagWeights: [35, 65] },  // "종이 한 장" 개그가 65%로 더 자주 나옴 (기획 결정)
-  { id: 'pencil-eel', name: { ko: '연필장어', en: 'Pencil Eel', ja: 'えんぴつウナギ', zh: '铅笔鳗' }, weight: 14, speed: 0.92, circles: 3,
+  { id: 'pencil-eel', name: { ko: '연필장어', en: 'Pencil Eel', ja: 'えんぴつウナギ', zh: '铅笔鳗' }, weight: 14, speed: 0.92, circles: 2, trait: 'wild', rhythm: 'ttakttak',
     gags: { ko: ['필통에서 탈출한 지 3일째래요', '깎을수록 짧아지니까 아껴 쓰자'],
             en: ['It always has a point — right at the end!', 'Getting sharpened is a shortening experience.'],
             ja: ['筆箱から脱走して3日目です', 'けずるたびに短くなるよ'],
             zh: ['从铅笔盒逃跑第三天', '越削越短，省着点用'] } },
-  { id: 'crayon-carp', name: { ko: '크레용잉어', en: 'Crayon Carp', ja: 'クレヨンごい', zh: '蜡笔鲤鱼' }, weight: 11, speed: 0.86, circles: 3,
+  { id: 'crayon-carp', name: { ko: '크레용잉어', en: 'Crayon Carp', ja: 'クレヨンごい', zh: '蜡笔鲤鱼' }, weight: 11, speed: 0.86, circles: 3, ring: 1.15, trait: 'wild', rhythm: 'set',
     gags: { ko: ['만지면 손에 색이 묻으니까 조심!', '오늘은 무슨 색으로 헤엄칠까~?'],
             en: ['It always swims outside the lines!', 'Caught red-handed… and blue, and green!'],
             ja: ['さわると手に色がつくよ！', '今日は何色で泳ごうかな～'],
             zh: ['摸它手上会沾颜色！', '今天要游什么颜色呢～'] } },
-  { id: 'marker-pike', name: { ko: '사인펜꽁치', en: 'Marker Pike', ja: 'サインペンさんま', zh: '记号笔秋刀鱼' }, weight: 9, speed: 0.83, circles: 3, trait: 'dash',
+  { id: 'marker-pike', name: { ko: '사인펜꽁치', en: 'Marker Pike', ja: 'サインペンさんま', zh: '记号笔秋刀鱼' }, weight: 9, speed: 0.83, circles: 3, trait: 'dash', rhythm: 'dadatak',
     gags: { ko: ['뚜껑을 안 닫으면 말라버리니 조심!', '냄새 맡지 마! 사인펜이니까!'],
             en: ['Keep it capped, or the joke dries out!', 'It makes a permanent impression.'],
             ja: ['フタを閉めないと乾いちゃう！', 'においをかがないで！ペンだから！'],
             zh: ['不盖笔帽会干掉的！', '别闻！它是支笔！'] } },
-  { id: 'brush-goldfish', name: { ko: '붓꼬리금붕어', en: 'Brushtail Goldfish', ja: 'ふでお金魚', zh: '毛笔金鱼' }, weight: 8, speed: 0.82, circles: 3,
+  { id: 'brush-goldfish', name: { ko: '붓꼬리금붕어', en: 'Brushtail Goldfish', ja: 'ふでお金魚', zh: '毛笔金鱼' }, weight: 8, speed: 0.82, circles: 3, trait: 'shy', rhythm: 'takdada',
     gags: { ko: ['헤엄칠 때마다 물에 그림을 그린대요', '꼬리가 마르기 전에 놓아주자'],
             en: ['Every stroke of its tail is a masterpiece!', 'It brushes off every compliment.'],
             ja: ['泳ぐたびに水に絵を描くよ', 'しっぽが乾く前に逃がそう'],
             zh: ['一边游一边在水里画画', '趁尾巴没干快放了它'] } },
-  { id: 'eraser-shark', name: { ko: '지우개상어', en: 'Eraser Shark', ja: '消しゴムザメ', zh: '橡皮鲨' }, weight: 6, speed: 0.8, circles: 3, trait: 'dash',
+  { id: 'eraser-shark', name: { ko: '지우개상어', en: 'Eraser Shark', ja: '消しゴムザメ', zh: '橡皮鲨' }, weight: 6, speed: 0.8, circles: 3, trait: 'dash', rhythm: 'jigzag',
     gags: { ko: ['앗!! 내 그림 먹지 마!!', '실수를 먹고 사는 착한 상어래요'],
             en: ['It rubs everyone the wrong way!', 'One bite and your homework disappears!'],
             ja: ['ぼくの絵を食べないで!!', '失敗を食べてくれる優しいサメ'],
             zh: ['别吃我的画!!', '专吃错误的好心鲨鱼'] } },
-  { id: 'paint-puffer', name: { ko: '물감퉁퉁이', en: 'Paint Puffer', ja: 'えのぐフグ', zh: '颜料河豚' }, weight: 4, speed: 0.77, circles: 3,
+  { id: 'paint-puffer', name: { ko: '물감퉁퉁이', en: 'Paint Puffer', ja: 'えのぐフグ', zh: '颜料河豚' }, weight: 4, speed: 0.77, circles: 4, ring: 1.15, trait: 'bounce', rhythm: 'net',
     gags: { ko: ['화나면 퉁퉁 불어서 물감이 튀어요!', '짜면 안 돼! 진짜로 짜면 안 돼!'],
             en: ['Don\'t squeeze — it might burst with color!', 'It blows everything out of proportion.'],
             ja: ['怒るとふくらんで絵の具が飛ぶ！', 'しぼっちゃダメ！絶対ダメ！'],
             zh: ['一生气就鼓起来喷颜料！', '别挤它！千万别挤！'] } },
-  { id: 'paper-ray', name: { ko: '색종이가오리', en: 'Origami Ray', ja: 'おりがみエイ', zh: '折纸鳐鱼' }, weight: 3, speed: 0.75, circles: 3,
+  { id: 'paper-ray', name: { ko: '색종이가오리', en: 'Origami Ray', ja: 'おりがみエイ', zh: '折纸鳐鱼' }, weight: 3, speed: 0.75, circles: 4, ring: 0.85, trait: 'dash', rhythm: 'ssangssang',
     gags: { ko: ['반으로 접으면 반쪽이 되는 걸까?', '비 오는 날엔 눅눅해져서 쉰대요'],
             en: ['It\'s outstanding in its fold!', 'Fold it in half… half a ray?'],
             ja: ['半分に折ったら半分になる？', '雨の日はふにゃふにゃです'],
             zh: ['对折会变成半条吗？', '下雨天会变得软塌塌'] } },
-  { id: 'sketchbook-whale', name: { ko: '스케치북고래', en: 'Sketchbook Whale', ja: 'スケッチブッククジラ', zh: '素描本鲸鱼' }, weight: 1, speed: 0.7, circles: 4, trait: 'legend',
+  { id: 'sketchbook-whale', name: { ko: '스케치북고래', en: 'Sketchbook Whale', ja: 'スケッチブッククジラ', zh: '素描本鲸鱼' }, weight: 1, speed: 0.7, circles: 5, trait: 'legend', rhythm: 'legendA',
     gags: { ko: ['이건 낚은 게 아니라 그냥 그린 거 아니야?', '스케치북보다 큰 고래를 낚다니!'],
             en: ['A whale of a drawing!', 'Too big for the page, too legendary to miss!'],
             ja: ['釣ったんじゃなくて描いたのでは？', 'スケッチブックより大きいクジラ！'],
             zh: ['这是钓的还是画的？', '比素描本还大的鲸鱼！'] } },
   // --- 오마카세 물고기들 (도전과제 "오마카세"용) ---
-  { id: 'deskpad-flounder', name: { ko: '책받침광어', en: 'Desk Pad Flounder', ja: 'したじきヒラメ', zh: '垫板比目鱼' }, weight: 6, speed: 0.84, circles: 3,
+  { id: 'deskpad-flounder', name: { ko: '책받침광어', en: 'Desk Pad Flounder', ja: 'したじきヒラメ', zh: '垫板比目鱼' }, weight: 6, speed: 0.84, circles: 3, ring: 0.85, trait: 'shy', rhythm: 'set',
     gags: { ko: ['납작한 건 책받침이라서 그렇대요', '깔고 앉지 말아 줄래?'],
             en: ['It keeps a low profile — the lowest, actually.', 'Flat-out the flattest fish around!'],
             ja: ['平たいのは下じきだから', 'おしりの下に敷かないでね'],
             zh: ['扁扁的因为是垫板', '请不要坐在我身上'] } },
-  { id: 'paint-tuna', name: { ko: '물감참치', en: 'Paint Tuna', ja: 'えのぐマグロ', zh: '颜料金枪鱼' }, weight: 30, speed: 0.72, circles: 3, trait: 'dash',
+  { id: 'paint-tuna', name: { ko: '물감참치', en: 'Paint Tuna', ja: 'えのぐマグロ', zh: '颜料金枪鱼' }, weight: 30, speed: 0.72, circles: 2, trait: 'dash', rhythm: 'dadak',
     gags: { ko: ['배 속에 빨강·분홍 물감이 부위별로 들었대요', '오마카세의 꽃은 나야 나!'],
             en: ['The reel star of the omakase!', 'Fresh paint inside — don\'t touch the toro!'],
             ja: ['おなかに赤とピンクの絵の具入り', 'おまかせの主役はぼく！'],
             zh: ['肚子里装满红粉颜料', '我是主厨精选的主角！'] } },
   // --- 2차분 나머지 (민물·바다·관상어 자료 기반) ---
-  { id: 'foil-mackerel', name: { ko: '은박지고등어', en: 'Foil Mackerel', ja: 'ホイルサバ', zh: '锡纸青花鱼' }, weight: 13, speed: 0.9, circles: 3,
+  { id: 'foil-mackerel', name: { ko: '은박지고등어', en: 'Foil Mackerel', ja: 'ホイルサバ', zh: '锡纸青花鱼' }, weight: 13, speed: 0.9, circles: 3, trait: 'wild', rhythm: 'dadatak',
     gags: { ko: ['반짝이는 건 은박지 비늘 덕분!', '바다의 보리? 아니, 바다의 은박지!'],
             en: ['That shine is no fluke — it\'s foil!', 'You can\'t top this wrap star!'],
             ja: ['キラキラはホイルのうろこ！', '海のホイル代表です'],
             zh: ['亮闪闪的锡纸鳞片！', '大海的锡纸担当'] } },
-  { id: 'glitter-guppy', name: { ko: '반짝이풀구피', en: 'Glitter Glue Guppy', ja: 'ラメのりグッピー', zh: '亮片胶孔雀鱼' }, weight: 11, speed: 0.97, circles: 3,
+  { id: 'glitter-guppy', name: { ko: '반짝이풀구피', en: 'Glitter Glue Guppy', ja: 'ラメのりグッピー', zh: '亮片胶孔雀鱼' }, weight: 11, speed: 0.97, circles: 3, trait: 'quick', rhythm: 'takdada',
     gags: { ko: ['꼬리에 반짝이풀을 발랐대요', '어항 말고 필통에서 키워 주세요'],
             en: ['It leaves a trail of sparkle wherever it swims!', 'Glitter today, glitter forever — it never lets go.'],
             ja: ['しっぽにラメのりを塗ったよ', '水そうより筆箱で飼ってね'],
             zh: ['尾巴上涂了亮片胶', '请养在铅笔盒里别养鱼缸'] } },
-  { id: 'eraser-shrimp', name: { ko: '지우개새우', en: 'Eraser Shrimp', ja: '消しゴムエビ', zh: '橡皮虾' }, weight: 10, speed: 0.95, circles: 3,
+  { id: 'eraser-shrimp', name: { ko: '지우개새우', en: 'Eraser Shrimp', ja: '消しゴムエビ', zh: '橡皮虾' }, weight: 10, speed: 0.95, circles: 3, trait: 'quick', rhythm: 'jigzag',
     gags: { ko: ['실수를 등에 지고 다니는 새우래요', '진짜 지우개인 줄 알고 깜빡 속았지?'],
             en: ['It corrects its mistakes on the go!', 'Shrimp-ly irresistible — and pink!'],
             ja: ['失敗をせなかに背負うエビ', '本物の消しゴムかと思った？'],
             zh: ['背着错误到处跑的虾', '以为是真橡皮？骗到你啦'] } },
-  { id: 'glue-loach', name: { ko: '풀미꾸라지', en: 'Glue Loach', ja: 'のりドジョウ', zh: '胶水泥鳅' }, weight: 9, speed: 0.8, circles: 3, trait: 'slippery',
+  { id: 'glue-loach', name: { ko: '풀미꾸라지', en: 'Glue Loach', ja: 'のりドジョウ', zh: '胶水泥鳅' }, weight: 9, speed: 0.8, circles: 3, trait: 'slippery', rhythm: 'set',
     gags: { ko: ['미끌미끌한 건 물풀 때문이래요', '잡았다고? 손에서 스르륵~'],
             en: ['Caught it! …Aaand it slipped away.', 'It sticks around, but never in your hands.'],
             ja: ['ぬるぬるは水のりのせい', 'つかまえた？するり～'],
             zh: ['滑溜溜是因为胶水', '抓到了？哧溜~跑了'] } },
-  { id: 'redpen-snapper', name: { ko: '빨간펜도미', en: 'Red-Pen Snapper', ja: '赤ペンダイ', zh: '红笔鲷鱼' }, weight: 8, speed: 0.85, circles: 3, trait: 'picky',
+  { id: 'redpen-snapper', name: { ko: '빨간펜도미', en: 'Red-Pen Snapper', ja: '赤ペンダイ', zh: '红笔鲷鱼' }, weight: 8, speed: 0.85, circles: 3, trait: 'picky', rhythm: 'dadatak',
     gags: { ko: ['백 점짜리 물고기래요! 참 잘했어요 쾅!', '선생님 빨간펜에서 태어났대요'],
             en: ['A+ catch! See me after class.', 'It grades everything — 100 points!'],
             ja: ['100点の魚です！よくできました！', '先生の赤ペンから生まれたよ'],
             zh: ['一百分的鱼！盖章表扬！', '从老师的红笔里诞生'] } },
-  { id: 'scissor-cutlass', name: { ko: '가위갈치', en: 'Scissor Cutlassfish', ja: 'ハサミタチウオ', zh: '剪刀带鱼' }, weight: 7, speed: 0.82, circles: 3, trait: 'dash',
+  { id: 'scissor-cutlass', name: { ko: '가위갈치', en: 'Scissor Cutlassfish', ja: 'ハサミタチウオ', zh: '剪刀带鱼' }, weight: 7, speed: 0.82, circles: 3, trait: 'dash', rhythm: 'takdada',
     gags: { ko: ['종이만 보면 자르고 싶어진대요', '헤엄칠 때 사각사각 소리가 나요'],
             en: ['It always cuts to the chase!', 'Never run with scissors — it swims with them!'],
             ja: ['紙を見ると切りたくなるの', '泳ぐとチョキチョキ音がする'],
             zh: ['看到纸就想剪', '游泳时咔嚓咔嚓响'] } },
-  { id: 'bucket-catfish', name: { ko: '물통메기', en: 'Paint-Cup Catfish', ja: 'バケツナマズ', zh: '涮笔筒鲶鱼' }, weight: 7, speed: 0.83, circles: 3,
+  { id: 'bucket-catfish', name: { ko: '물통메기', en: 'Paint-Cup Catfish', ja: 'バケツナマズ', zh: '涮笔筒鲶鱼' }, weight: 7, speed: 0.83, circles: 3, ring: 1.2, trait: 'shy', rhythm: 'jigzag',
     gags: { ko: ['붓 씻은 물을 제일 좋아한대요', '수염은 사실 붓털이래요'],
             en: ['Its whiskers do all the brushwork!', 'The murkier the water, the artier the fish!'],
             ja: ['筆を洗った水が大好物', 'ひげは実は筆の毛です'],
             zh: ['最爱洗笔水', '胡须其实是笔毛'] } },
-  { id: 'highlighter-sweetfish', name: { ko: '형광펜은어', en: 'Highlighter Sweetfish', ja: 'けいこうペンアユ', zh: '荧光笔香鱼' }, weight: 6, speed: 0.8, circles: 3,
+  { id: 'highlighter-sweetfish', name: { ko: '형광펜은어', en: 'Highlighter Sweetfish', ja: 'けいこうペンアユ', zh: '荧光笔香鱼' }, weight: 6, speed: 0.8, circles: 3, ring: 0.9, trait: 'quick', rhythm: 'set',
     gags: { ko: ['수박 향 대신 형광펜 향이 나요', '중요한 물고기라서 형광펜으로 칠해뒀지!'],
             en: ['The highlight of every fishing trip!', 'Important fish get highlighted!'],
             ja: ['スイカじゃなくてペンの香り', '大事な魚だからマークしといた！'],
             zh: ['不是西瓜味是荧光笔味', '重点鱼，要划荧光！'] } },
   // --- 3차분 (마지막 10마리, 총 30마리 완성!) ---
-  { id: 'notebook-crucian', name: { ko: '공책붕어', en: 'Notebook Crucian', ja: 'ノートぶな', zh: '笔记本鲫鱼' }, weight: 18, speed: 0.95, circles: 3,
+  { id: 'notebook-crucian', name: { ko: '공책붕어', en: 'Notebook Crucian', ja: 'ノートぶな', zh: '笔记本鲫鱼' }, weight: 18, speed: 0.95, circles: 2, ring: 1.2, trait: 'quick', rhythm: 'ttakttak',
     gags: { ko: ['몸에 줄이 그어져 있어서 글씨 연습하기 좋대요', '낚시꾼의 영원한 친구!'],
             en: ['It lives its whole life between the lines.', 'A ruled fish with ruled ambitions!'],
             ja: ['線があるから字の練習にぴったり', '釣り人の永遠の友！'],
             zh: ['身上有格线练字正好', '钓鱼人永远的朋友！'] } },
-  { id: 'ruler-minnow', name: { ko: '자피라미', en: 'Ruler Minnow', ja: 'ものさしハヤ', zh: '尺子小鱼' }, weight: 16, speed: 1.0, circles: 3,
+  { id: 'ruler-minnow', name: { ko: '자피라미', en: 'Ruler Minnow', ja: 'ものさしハヤ', zh: '尺子小鱼' }, weight: 16, speed: 1.0, circles: 2, ring: 1.15, trait: 'picky', rhythm: 'dadak',
     gags: { ko: ['몸에 눈금이 있어서 길이 재기 편해요', '떼로 다니면 30cm 자가 된대요'],
             en: ['The only fish that truly measures up!', 'A school of them makes a full ruler set!'],
             ja: ['目もりで長さが測れるよ', '群れると30cm定規になる'],
             zh: ['身上有刻度能量长度', '一群排起来就是30cm直尺'] } },
-  { id: 'tape-salmon', name: { ko: '테이프연어', en: 'Tape Salmon', ja: 'テープサーモン', zh: '胶带三文鱼' }, weight: 10, speed: 0.85, circles: 3,
+  { id: 'tape-salmon', name: { ko: '테이프연어', en: 'Tape Salmon', ja: 'テープサーモン', zh: '胶带三文鱼' }, weight: 10, speed: 0.85, circles: 3, ring: 1.1, trait: 'wild', rhythm: 'dadatak',
     gags: { ko: ['테이프처럼 강을 되감으며 올라간대요', '초밥집에서 제일 인기 많은 몸이래요'],
             en: ['It rewinds upstream every spring!', 'A sticky situation? It\'s on a roll!'],
             ja: ['テープみたいに川を巻き戻る', 'おすし屋さんの人気者！'],
             zh: ['像胶带一样倒带洄游', '寿司店人气王！'] } },
-  { id: 'ballpoint-rockfish', name: { ko: '볼펜우럭', en: 'Ballpoint Rockfish', ja: 'ボールペンメバル', zh: '圆珠笔石斑' }, weight: 9, speed: 0.86, circles: 3,
+  { id: 'ballpoint-rockfish', name: { ko: '볼펜우럭', en: 'Ballpoint Rockfish', ja: 'ボールペンメバル', zh: '圆珠笔石斑' }, weight: 9, speed: 0.86, circles: 3, trait: 'shy', rhythm: 'takdada',
     gags: { ko: ['가끔 볼펜 똥처럼 잉크가 뭉친대요', '회로도 매운탕으로도 인기 만점!'],
             en: ['It gets straight to the point!', 'If the ink clumps, click it twice.'],
             ja: ['たまにインクがダマになるよ', '書けない時は2回カチカチ'],
             zh: ['偶尔会积墨油', '写不出来就按两下'] } },
-  { id: 'nametag-pollock', name: { ko: '이름표명태', en: 'Name-Tag Pollock', ja: 'なふだタラ', zh: '名牌明太鱼' }, weight: 9, speed: 0.88, circles: 3,
+  { id: 'nametag-pollock', name: { ko: '이름표명태', en: 'Name-Tag Pollock', ja: 'なふだタラ', zh: '名牌明太鱼' }, weight: 9, speed: 0.88, circles: 3, trait: 'wild', rhythm: 'jigzag',
     gags: { ko: ['이름이 너무 많아서 이름표를 달고 다녀요', '얼면 동태, 마르면 북어, 지금은 명태!'],
             en: ['Hello, my name is… all of them!', 'So many names, it wears two tags!'],
             ja: ['名前が多すぎて名札をつけてる', 'こおっても干しても同じ魚！'],
             zh: ['名字太多只好戴名牌', '冻了干了都是它！'] } },
-  { id: 'pencil-trout', name: { ko: '색연필송어', en: 'Colored-Pencil Trout', ja: 'いろえんぴつマス', zh: '彩铅鳟鱼' }, weight: 8, speed: 0.82, circles: 3,
+  { id: 'pencil-trout', name: { ko: '색연필송어', en: 'Colored-Pencil Trout', ja: 'いろえんぴつマス', zh: '彩铅鳟鱼' }, weight: 8, speed: 0.82, circles: 3, trait: 'wild', rhythm: 'set',
     gags: { ko: ['속살이 색연필 심처럼 발그스름해요', '깨끗한 물에만 사는 깔끔쟁이!'],
             en: ['Pink on the inside, sharp on the outside!', 'It only draws in clean water.'],
             ja: ['中身は色えんぴつみたいにピンク', 'きれいな水にしか住みません'],
             zh: ['里面像彩铅芯一样粉', '只住干净的水'] } },
-  { id: 'glue-yellowtail', name: { ko: '풀방어', en: 'Glue-Stick Yellowtail', ja: 'スティックのりブリ', zh: '胶棒鰤鱼' }, weight: 7, speed: 0.8, circles: 3, trait: 'slippery',
+  { id: 'glue-yellowtail', name: { ko: '풀방어', en: 'Glue-Stick Yellowtail', ja: 'スティックのりブリ', zh: '胶棒鰤鱼' }, weight: 7, speed: 0.8, circles: 3, trait: 'slippery', rhythm: 'dadatak',
     gags: { ko: ['풀로 몸을 지켜서 방어라는 이름이 붙었대요(?)', '겨울이 제철이라 지금은 준비 운동 중!'],
             en: ['Its defense really sticks!', 'Nothing gets past this glue line!'],
             ja: ['のりで身を守る…らしい？', '冬が旬なので今は準備運動中'],
             zh: ['用胶棒保护自己（大概）', '冬天最肥，现在在热身'] } },
-  { id: 'ink-snakehead', name: { ko: '먹물가물치', en: 'Ink Snakehead', ja: '墨ライギョ', zh: '墨水黑鱼' }, weight: 6, speed: 0.75, circles: 3, trait: 'picky',
+  { id: 'ink-snakehead', name: { ko: '먹물가물치', en: 'Ink Snakehead', ja: '墨ライギョ', zh: '墨水黑鱼' }, weight: 6, speed: 0.75, circles: 3, trait: 'picky', rhythm: 'takdada',
     gags: { ko: ['먹물처럼 새까매서 밤엔 안 보여요', '먹물 리필용은 아니래요'],
             en: ['At night it\'s pitch-black perfect!', 'Do not shake before use!'],
             ja: ['墨みたいに真っ黒で夜は見えない', '墨の詰めかえには使えません'],
             zh: ['黑得像墨水，晚上隐身', '不能用来加墨水'] } },
-  { id: 'thumbtack-urchin', name: { ko: '압정성게', en: 'Thumbtack Urchin', ja: 'がびょうウニ', zh: '图钉海胆' }, weight: 5, speed: 0.78, circles: 3, trait: 'picky',
+  { id: 'thumbtack-urchin', name: { ko: '압정성게', en: 'Thumbtack Urchin', ja: 'がびょうウニ', zh: '图钉海胆' }, weight: 5, speed: 0.78, circles: 4, trait: 'picky', rhythm: 'wangbok',
     gags: { ko: ['가시가 전부 압정이라 밟으면 큰일!', '속은 노란 물감으로 가득!'],
             en: ['The point is: don\'t step on it!', 'Sharp outside, sunshine inside!'],
             ja: ['トゲが全部がびょう！ふまないで！', '中は黄色い絵の具がぎっしり'],
             zh: ['刺全是图钉，别踩！', '里面全是黄色颜料'] } },
-  { id: 'marker-skate', name: { ko: '매직홍어', en: 'Magic-Marker Skate', ja: 'マジックガンギエイ', zh: '马克笔斑鳐' }, weight: 5, speed: 0.76, circles: 3,
+  { id: 'marker-skate', name: { ko: '매직홍어', en: 'Magic-Marker Skate', ja: 'マジックガンギエイ', zh: '马克笔斑鳐' }, weight: 5, speed: 0.76, circles: 4, trait: 'shy', rhythm: 'net',
     gags: { ko: ['지독한 냄새의 정체는 매직 냄새였어!', '전라도에서 제일 유명한 손님!'],
             en: ['That smell? It\'s permanent!', 'It leaves a lasting impression wherever it goes.'],
             ja: ['強烈なにおいの正体はマジック！', 'とっても有名なお客さんです'],
             zh: ['那股味儿是马克笔味！', '远近闻名的客人！'] } },
   // --- 4차분: 호수 30마리 확장 — 민물고기 18마리 추가 (2026-07-25) ---
-  { id: 'protractor-medaka', name: { ko: '각도기송사리', en: 'Protractor Medaka', ja: '分度器メダカ', zh: '量角器小鱼' }, weight: 22, speed: 1.05, circles: 3,
+  { id: 'protractor-medaka', name: { ko: '각도기송사리', en: 'Protractor Medaka', ja: '分度器メダカ', zh: '量角器小鱼' }, weight: 22, speed: 1.05, circles: 2, ring: 1.15, trait: 'picky', rhythm: 'ttakttak',
     gags: { ko: ['몸이 반원이라 각도 재기 딱 좋아요', '지금 내 꼬리 각도는 딱 45도!'],
             en: ['It knows all the angles!', 'So, what\'s your angle, little fish?'],
             ja: ['半円だから角度が測りやすい', '今のしっぽの角度は45度！'],
             zh: ['半圆身材量角正好', '现在尾巴正好45度！'] } },
-  { id: 'dropper-tadpole', name: { ko: '스포이트올챙이', en: 'Dropper Tadpole', ja: 'スポイトおたまじゃくし', zh: '滴管蝌蚪' }, weight: 20, speed: 1.0, circles: 3,
+  { id: 'dropper-tadpole', name: { ko: '스포이트올챙이', en: 'Dropper Tadpole', ja: 'スポイトおたまじゃくし', zh: '滴管蝌蚪' }, weight: 20, speed: 1.0, circles: 2, trait: 'slippery', rhythm: 'dadak',
     gags: { ko: ['꾹 누르면 물감이 나올 것 같아요', '커서 뭐가 될까? 스포이트 개구리?'],
             en: ['Just a drop in the pond!', 'One squeeze away from modern art!'],
             ja: ['ぎゅっと押すと絵の具が出そう', '大きくなったら何になるの？'],
             zh: ['一捏好像会挤出颜料', '长大会变成什么呢？'] } },
-  { id: 'lead-smelt', name: { ko: '샤프심빙어', en: 'Pencil-Lead Smelt', ja: 'シャー芯ワカサギ', zh: '铅芯公鱼' }, weight: 15, speed: 0.98, circles: 3,
+  { id: 'lead-smelt', name: { ko: '샤프심빙어', en: 'Pencil-Lead Smelt', ja: 'シャー芯ワカサギ', zh: '铅芯公鱼' }, weight: 15, speed: 0.98, circles: 2, ring: 0.85, trait: 'quick', rhythm: 'ttakttak',
     gags: { ko: ['너무 세게 잡으면 뚝 부러져요!', '0.5mm보다 조금 통통한 몸이래요'],
             en: ['Please don\'t snap — it really might!', 'A fine catch. 0.5 mm fine!'],
             ja: ['強くにぎるとポキッと折れる！', '0.5mmよりちょっと太め'],
             zh: ['握太紧会咔嚓折断！', '比0.5mm粗一点点'] } },
-  { id: 'postit-bitterling', name: { ko: '포스트잇납자루', en: 'Sticky-Note Bitterling', ja: 'ふせんタナゴ', zh: '便利贴小鱼' }, weight: 13, speed: 0.95, circles: 3,
+  { id: 'postit-bitterling', name: { ko: '포스트잇납자루', en: 'Sticky-Note Bitterling', ja: 'ふせんタナゴ', zh: '便利贴小鱼' }, weight: 13, speed: 0.95, circles: 3, trait: 'shy', rhythm: 'jigzag',
     gags: { ko: ['몸에 할 일을 적어두면 안 까먹어요', '어디든 착! 붙었다가 잘 떨어져요'],
             en: ['It always sticks to its plans!', 'Note to self: catch this one again!'],
             ja: ['体にやることをメモしてね', 'どこでもピタッ！はがれてもOK'],
             zh: ['把要做的事写在它身上', '哪里都能贴还能撕下来'] } },
-  { id: 'notepad-dace', name: { ko: '연습장버들치', en: 'Notepad Dace', ja: 'れんしゅうちょうウグイ', zh: '练习本小鱼' }, weight: 12, speed: 0.95, circles: 3,
+  { id: 'notepad-dace', name: { ko: '연습장버들치', en: 'Notepad Dace', ja: 'れんしゅうちょうウグイ', zh: '练习本小鱼' }, weight: 12, speed: 0.95, circles: 3, trait: 'wild', rhythm: 'set',
     gags: { ko: ['맑은 물에서 글씨 연습을 한대요', '몸이 연습장이라 낙서 대환영!'],
             en: ['It always stays on the right lines!', 'Doodles welcome, erasers beware!'],
             ja: ['きれいな水で字の練習中', 'らくがき大歓迎！'],
             zh: ['在清水里练字', '欢迎涂鸦！'] } },
-  { id: 'erasercrumb-snail', name: { ko: '지우개똥우렁이', en: 'Eraser-Crumb Snail', ja: '消しカスタニシ', zh: '橡皮屑田螺' }, weight: 11, speed: 0.9, circles: 3,
+  { id: 'erasercrumb-snail', name: { ko: '지우개똥우렁이', en: 'Eraser-Crumb Snail', ja: '消しカスタニシ', zh: '橡皮屑田螺' }, weight: 11, speed: 0.9, circles: 3, ring: 1.2, trait: 'slippery', rhythm: 'dadatak',
     gags: { ko: ['껍질은 지우개 가루를 돌돌 만 거래요', '더러운 게 아니라 열심히 공부한 흔적!'],
             en: ['Slow and steady wins the erase!', 'Its shell is proof of homework done!'],
             ja: ['からは消しカスをまるめたもの', '汚くない！勉強のあかしだよ'],
             zh: ['壳是橡皮屑卷成的', '不脏！是努力学习的证据'] } },
-  { id: 'palette-koi', name: { ko: '파레트향어', en: 'Palette Koi', ja: 'パレットごい', zh: '调色盘鲤鱼' }, weight: 10, speed: 0.9, circles: 3,
+  { id: 'palette-koi', name: { ko: '파레트향어', en: 'Palette Koi', ja: 'パレットごい', zh: '调色盘鲤鱼' }, weight: 10, speed: 0.9, circles: 3, trait: 'wild', rhythm: 'takdada',
     gags: { ko: ['몸 위에서 물감을 섞으면 화내요!', '오늘 쓸 색은 등 위에 다 있어요'],
             en: ['It never runs out of colors!', 'Mixing paint on its back? That crosses a line!'],
             ja: ['背中で絵の具を混ぜないで！', '今日の色は全部そろってます'],
             zh: ['别在它背上调色！', '今天要用的颜色都在背上'] } },
-  { id: 'brushcap-frog', name: { ko: '붓뚜껑개구리', en: 'Brush-Cap Frog', ja: 'ふでキャップガエル', zh: '笔帽青蛙' }, weight: 10, speed: 0.92, circles: 3,
+  { id: 'brushcap-frog', name: { ko: '붓뚜껑개구리', en: 'Brush-Cap Frog', ja: 'ふでキャップガエル', zh: '笔帽青蛙' }, weight: 10, speed: 0.92, circles: 3, trait: 'slippery', rhythm: 'jigzag',
     gags: { ko: ['붓 뚜껑을 모자처럼 쓰고 다녀요', '개굴개굴 대신 슥삭슥삭 운대요'],
             en: ['Cap on, hop on!', 'It croaks \"swish-swish\"!'],
             ja: ['筆のキャップを帽子にしてる', 'ゲロゲロじゃなくサッサッと鳴く'],
             zh: ['把笔帽当帽子戴', '不呱呱叫，是唰唰叫'] } },
-  { id: 'compass-crayfish', name: { ko: '콤파스가재', en: 'Compass Crayfish', ja: 'コンパスザリガニ', zh: '圆规小龙虾' }, weight: 9, speed: 0.88, circles: 3,
+  { id: 'compass-crayfish', name: { ko: '콤파스가재', en: 'Compass Crayfish', ja: 'コンパスザリガニ', zh: '圆规小龙虾' }, weight: 9, speed: 0.88, circles: 3, trait: 'picky', rhythm: 'set',
     gags: { ko: ['집게로 동그라미를 완벽하게 그려요', '뒷걸음질하면서도 원을 그린대요'],
             en: ['It draws a perfect circle every time!', 'Going in circles? That\'s exactly the point!'],
             ja: ['ハサミで完璧な円が描ける', '後ろ歩きでも円が描けるよ'],
             zh: ['钳子能画完美的圆', '倒着走也能画圆'] } },
-  { id: 'pencilcap-bullhead', name: { ko: '연필캡동자개', en: 'Pencil-Cap Bullhead', ja: 'えんぴつキャップナマズ', zh: '笔帽小鲶鱼' }, weight: 8, speed: 0.85, circles: 3,
+  { id: 'pencilcap-bullhead', name: { ko: '연필캡동자개', en: 'Pencil-Cap Bullhead', ja: 'えんぴつキャップナマズ', zh: '笔帽小鲶鱼' }, weight: 8, speed: 0.85, circles: 3, trait: 'shy', rhythm: 'dadatak',
     gags: { ko: ['"빠가빠가" 울어서 빠가사리라고도 해요', '뾰족 가시엔 안전 캡이 필수래요'],
             en: ['Safety first — cap those spikes!', 'It croaks \"bagga-bagga\"!'],
             ja: ['「バガバガ」と鳴くよ', 'トゲには安全キャップが必要！'],
             zh: ['会巴嘎巴嘎地叫', '尖刺必须戴安全帽！'] } },
-  { id: 'painttube-char', name: { ko: '물감튜브산천어', en: 'Paint-Tube Char', ja: 'えのぐチューブヤマメ', zh: '颜料管溪鳟' }, weight: 8, speed: 0.84, circles: 3,
+  { id: 'painttube-char', name: { ko: '물감튜브산천어', en: 'Paint-Tube Char', ja: 'えのぐチューブヤマメ', zh: '颜料管溪鳟' }, weight: 8, speed: 0.84, circles: 3, trait: 'wild', rhythm: 'takdada',
     gags: { ko: ['맑은 계곡물에만 사는 깔끔쟁이', '꼬리를 짜면 초록 물감이 나와요(?)'],
             en: ['Squeeze gently — it\'s a little high-strung!', 'Fresh from the tube, mountain-stream cool!'],
             ja: ['きれいな谷川にだけ住みます', 'しっぽをしぼると緑が出る（？）'],
             zh: ['只住清澈的溪水', '挤尾巴会出绿色颜料（?）'] } },
-  { id: 'namepen-gudgeon', name: { ko: '네임펜모래무지', en: 'Name-Pen Gudgeon', ja: 'ネームペンハゼ', zh: '签字笔沙鱼' }, weight: 7, speed: 0.85, circles: 3,
+  { id: 'namepen-gudgeon', name: { ko: '네임펜모래무지', en: 'Name-Pen Gudgeon', ja: 'ネームペンハゼ', zh: '签字笔沙鱼' }, weight: 7, speed: 0.85, circles: 3, trait: 'shy', rhythm: 'jigzag',
     gags: { ko: ['모래 바닥에 자기 이름을 쓰고 다녀요', '한번 쓰면 안 지워지는 게 자랑!'],
             en: ['It signs the sand — permanently!', 'Autographs available at the bottom!'],
             ja: ['砂に自分の名前を書いて回る', '消えない名前が自慢です'],
             zh: ['在沙子上到处签名', '擦不掉的名字是它的骄傲'] } },
-  { id: 'ddakji-perch', name: { ko: '딱지꺽지', en: 'Ddakji Perch', ja: 'めんこ魚', zh: '方宝鲈鱼' }, weight: 7, speed: 0.83, circles: 3,
+  { id: 'ddakji-perch', name: { ko: '딱지꺽지', en: 'Ddakji Perch', ja: 'めんこ魚', zh: '方宝鲈鱼' }, weight: 7, speed: 0.83, circles: 3, trait: 'picky', rhythm: 'set',
     gags: { ko: ['뒤집히면 잡은 사람 거래요, 딱지니까!', '이름부터 딱지랑 꺽지가 짝꿍이에요'],
             en: ['Flip it over and it\'s yours!', 'A well-folded fish never folds under pressure!'],
             ja: ['ひっくり返したら君のもの！', 'めんこと魚のなかよしコンビ'],
             zh: ['拍翻它就归你！', '方宝和鱼的合体'] } },
-  { id: 'fountainpen-mandarin', name: { ko: '만년필쏘가리', en: 'Fountain-Pen Mandarin', ja: '万年筆ケツギョ', zh: '钢笔桂鱼' }, weight: 6, speed: 0.8, circles: 3, trait: 'picky',
+  { id: 'fountainpen-mandarin', name: { ko: '만년필쏘가리', en: 'Fountain-Pen Mandarin', ja: '万年筆ケツギョ', zh: '钢笔桂鱼' }, weight: 6, speed: 0.8, circles: 3, trait: 'picky', rhythm: 'dadatak',
     gags: { ko: ['얼룩무늬는 만년필 잉크 얼룩이래요', '정말 만 년 동안 쓸 수 있을까?'],
             en: ['A fish of note, with fine ink spots!', 'Will it really write for ten thousand years?'],
             ja: ['もようは万年筆のインクのシミ', '本当に一万年使えるの？'],
             zh: ['花纹是钢笔墨渍', '真能写一万年吗？'] } },
-  { id: 'zipbag-turtle', name: { ko: '지퍼백자라', en: 'Zip-Bag Turtle', ja: 'ジップバッグスッポン', zh: '密封袋甲鱼' }, weight: 5, speed: 0.8, circles: 3,
+  { id: 'zipbag-turtle', name: { ko: '지퍼백자라', en: 'Zip-Bag Turtle', ja: 'ジップバッグスッポン', zh: '密封袋甲鱼' }, weight: 5, speed: 0.8, circles: 4, ring: 0.9, trait: 'slippery', rhythm: 'ssangssang',
     gags: { ko: ['등딱지가 투명해서 속이 다 보여요', '지퍼를 열면 간식이 들었을지도?'],
             en: ['Its shell seals in the freshness!', 'Clear shell, clear conscience!'],
             ja: ['こうらが透明で中が丸見え', 'ジッパーの中におやつがあるかも'],
             zh: ['壳是透明的一览无余', '拉链里说不定有零食'] } },
-  { id: 'setsquare-sturgeon', name: { ko: '삼각자철갑상어', en: 'Set-Square Sturgeon', ja: 'さんかくじょうぎチョウザメ', zh: '三角尺鲟鱼' }, weight: 4, speed: 0.78, circles: 3, trait: 'picky',
+  { id: 'setsquare-sturgeon', name: { ko: '삼각자철갑상어', en: 'Set-Square Sturgeon', ja: 'さんかくじょうぎチョウザメ', zh: '三角尺鲟鱼' }, weight: 4, speed: 0.78, circles: 4, trait: 'picky', rhythm: 'wangbok',
     gags: { ko: ['등판 비늘이 전부 삼각자예요', '공룡 시대부터 수학을 좋아했대요'],
             en: ['It\'s been acute fish since the dinosaurs!', 'Every angle checks out. 90 degrees!'],
             ja: ['背中のうろこが全部三角じょうぎ', '恐竜の時代から算数が好き'],
             zh: ['背上的鳞全是三角尺', '恐龙时代就爱数学'] } },
-  { id: 'sharpener-piranha', name: { ko: '연필깎이피라니아', en: 'Sharpener Piranha', ja: 'えんぴつけずりピラニア', zh: '卷笔刀食人鱼' }, weight: 3, speed: 0.72, circles: 3, trait: 'dash',
+  { id: 'sharpener-piranha', name: { ko: '연필깎이피라니아', en: 'Sharpener Piranha', ja: 'えんぴつけずりピラニア', zh: '卷笔刀食人鱼' }, weight: 3, speed: 0.72, circles: 4, trait: 'dash', rhythm: 'net',
     gags: { ko: ['연필을 넣으면 순식간에 깎아버려요!', '이빨은 무섭지만 종이는 안 먹어요'],
             en: ['It makes a point of every pencil!', 'Scary teeth, but it always spares paper.'],
             ja: ['えんぴつを入れると一瞬でけずる！', '歯はこわいけど紙は食べません'],
             zh: ['铅笔放进去秒削好！', '牙齿吓人但不吃纸'] } },
-  { id: 'doodle-dragon', name: { ko: '낙서용', en: 'Doodle Dragon', ja: 'らくがきドラゴン', zh: '涂鸦龙' }, weight: 1, speed: 0.68, circles: 4, trait: 'legend',
+  { id: 'doodle-dragon', name: { ko: '낙서용', en: 'Doodle Dragon', ja: 'らくがきドラゴン', zh: '涂鸦龙' }, weight: 1, speed: 0.68, circles: 5, trait: 'legend', rhythm: 'legendB',
     gags: { ko: ['호수의 전설! 낙서가 살아난 거래요', '용을 낚다니, 오늘 일기에 꼭 쓰자!'],
             en: ['A doodle come alive — the legend of the lake!', 'Drawn yesterday, legendary today!'],
             ja: ['湖の伝説！らくがきが生きてる！', 'ドラゴンを釣ったら日記に書こう！'],
             zh: ['湖中传说！涂鸦活过来了！', '钓到龙了快写进日记！'] } },
   // --- 4차분: 바다 30마리 확장 — 바다 물고기 12마리 추가 (2026-07-25) ---
-  { id: 'sticker-clownfish', name: { ko: '스티커흰동가리', en: 'Sticker Clownfish', ja: 'シールクマノミ', zh: '贴纸小丑鱼' }, weight: 15, speed: 0.97, circles: 3,
+  { id: 'sticker-clownfish', name: { ko: '스티커흰동가리', en: 'Sticker Clownfish', ja: 'シールクマノミ', zh: '贴纸小丑鱼' }, weight: 15, speed: 0.97, circles: 2, ring: 1.2, trait: 'quick', rhythm: 'dadak',
     gags: { ko: ['주황 스티커에 흰 줄 스티커를 붙였어요', '말미잘 대신 스티커판에 숨어 살아요'],
             en: ['It always sticks with its friends!', 'Peel it off slowly — it tickles!'],
             ja: ['オレンジのシールに白いシマシール', 'イソギンチャクよりシール帳にかくれる'],
             zh: ['橙色贴纸加白条纹贴纸', '不藏海葵，藏贴纸册'] } },
-  { id: 'paperplane-flyingfish', name: { ko: '종이비행기날치', en: 'Paper-Plane Flying Fish', ja: 'かみひこうきトビウオ', zh: '纸飞机飞鱼' }, weight: 14, speed: 1.0, circles: 3, trait: 'dash',
+  { id: 'paperplane-flyingfish', name: { ko: '종이비행기날치', en: 'Paper-Plane Flying Fish', ja: 'かみひこうきトビウオ', zh: '纸飞机飞鱼' }, weight: 14, speed: 1.0, circles: 2, trait: 'dash', rhythm: 'ttakttak',
     gags: { ko: ['잘 접어주면 100미터도 날아가요!', '지느러미가 아니라 날개래요, 날개!'],
             en: ['First-class flier, paper-light weight!', 'It glides on a wing and a crease!'],
             ja: ['上手に折れば100m飛ぶ！', 'ヒレじゃなくてつばさです！'],
             zh: ['折得好能飞一百米！', '那不是鳍，是翅膀！'] } },
-  { id: 'cleartape-jellyfish', name: { ko: '투명테이프해파리', en: 'Clear-Tape Jellyfish', ja: 'とうめいテープクラゲ', zh: '透明胶水母' }, weight: 13, speed: 0.95, circles: 3, trait: 'slippery',
+  { id: 'cleartape-jellyfish', name: { ko: '투명테이프해파리', en: 'Clear-Tape Jellyfish', ja: 'とうめいテープクラゲ', zh: '透明胶水母' }, weight: 13, speed: 0.95, circles: 3, trait: 'slippery', rhythm: 'takdada',
     gags: { ko: ['너무 투명해서 자꾸 부딪혀 다녀요', '만지면 찌릿… 이 아니라 끈적!'],
             en: ['Clearly the stickiest swimmer in the sea!', 'Not a zap — just a very sticky hug!'],
             ja: ['透明すぎてよくぶつかる', 'さわるとビリッ…じゃなくてベタッ！'],
             zh: ['太透明老撞东西', '摸一下不是麻是黏！'] } },
-  { id: 'cutter-crab', name: { ko: '커터칼꽃게', en: 'Cutter Crab', ja: 'カッターガニ', zh: '美工刀螃蟹' }, weight: 12, speed: 0.9, circles: 3,
+  { id: 'cutter-crab', name: { ko: '커터칼꽃게', en: 'Cutter Crab', ja: 'カッターガニ', zh: '美工刀螃蟹' }, weight: 12, speed: 0.9, circles: 3, trait: 'dash', rhythm: 'jigzag',
     gags: { ko: ['집게가 커터칼이라 포장 뜯기 달인!', '옆으로 걸으면서 슥슥 자르고 다녀요'],
             en: ['It cuts corners — literally!', 'Snip, snip — package opened!'],
             ja: ['ハサミがカッターだから開封名人', '横歩きしながらスパスパ切る'],
             zh: ['钳子是美工刀，拆快递大师', '横着走还咔咔剪'] } },
-  { id: 'white-squid', name: { ko: '화이트오징어', en: 'White-Out Squid', ja: '修正液イカ', zh: '涂改液鱿鱼' }, weight: 10, speed: 0.85, circles: 3, trait: 'slippery',
+  { id: 'white-squid', name: { ko: '화이트오징어', en: 'White-Out Squid', ja: '修正液イカ', zh: '涂改液鱿鱼' }, weight: 10, speed: 0.85, circles: 3, trait: 'slippery', rhythm: 'set',
     gags: { ko: ['먹물 대신 수정액을 뿜어요!', '실수를 하얗게 덮어주는 착한 오징어'],
             en: ['It covers up every mistake!', 'White-out! The cleanest getaway in the sea!'],
             ja: ['墨じゃなくて修正液を吐く！', '失敗を白く消してくれる優しいイカ'],
             zh: ['喷的不是墨是涂改液！', '帮你涂白错误的好鱿鱼'] } },
-  { id: 'gluestick-octopus', name: { ko: '딱풀문어', en: 'Glue-Stick Octopus', ja: 'スティックのりダコ', zh: '胶棒章鱼' }, weight: 8, speed: 0.8, circles: 3, trait: 'slippery',
+  { id: 'gluestick-octopus', name: { ko: '딱풀문어', en: 'Glue-Stick Octopus', ja: 'スティックのりダコ', zh: '胶棒章鱼' }, weight: 8, speed: 0.8, circles: 3, trait: 'slippery', rhythm: 'dadatak',
     gags: { ko: ['다리 여덟 개가 전부 딱풀이에요', '한번 안기면 못 떨어져요, 끈적끈적!'],
             en: ['Eight arms, zero escapes!', 'One hug and you\'re stuck!'],
             ja: ['8本の足が全部スティックのり', '抱きつかれたら離れない！'],
             zh: ['八条腿全是胶棒', '被抱住就再也分不开！'] } },
-  { id: 'spring-seahorse', name: { ko: '스프링해마', en: 'Spring Seahorse', ja: 'スプリングタツノオトシゴ', zh: '弹簧海马' }, weight: 6, speed: 0.8, circles: 3, trait: 'slippery',
+  { id: 'spring-seahorse', name: { ko: '스프링해마', en: 'Spring Seahorse', ja: 'スプリングタツノオトシゴ', zh: '弹簧海马' }, weight: 6, speed: 0.8, circles: 3, trait: 'slippery', rhythm: 'takdada',
     gags: { ko: ['꼬리가 스케치북 스프링이랑 똑같아요', '통통 튀면서 헤엄치는 유일한 물고기'],
             en: ['It boings where no fish has boinged before!', 'Fresh out of the sketchbook spring!'],
             ja: ['しっぽがスケッチブックのリングと同じ', 'ピョンピョン泳ぐ唯一の魚'],
             zh: ['尾巴和素描本铁圈一样', '唯一弹着游的鱼'] } },
-  { id: 'pencilcase-anglerfish', name: { ko: '필통아귀', en: 'Pencil-Case Anglerfish', ja: 'ふでばこアンコウ', zh: '铅笔盒灯笼鱼' }, weight: 5, speed: 0.78, circles: 3, trait: 'picky',
+  { id: 'pencilcase-anglerfish', name: { ko: '필통아귀', en: 'Pencil-Case Anglerfish', ja: 'ふでばこアンコウ', zh: '铅笔盒灯笼鱼' }, weight: 5, speed: 0.78, circles: 4, trait: 'picky', rhythm: 'ssangssang',
     gags: { ko: ['입을 열면 필통처럼 뭐든 들어가요', '초롱불은 사실 미니 연필이에요'],
             en: ['It keeps everything — pencils included!', 'Its lure? A tiny No.2 pencil!'],
             ja: ['口を開けると何でも入る筆箱', 'ちょうちんは実はミニえんぴつ'],
             zh: ['嘴巴像铅笔盒什么都装', '小灯其实是迷你铅笔'] } },
-  { id: 'sharp-lobster', name: { ko: '샤프랍스터', en: 'Mechanical-Pencil Lobster', ja: 'シャーペンロブスター', zh: '自动铅笔龙虾' }, weight: 5, speed: 0.76, circles: 3,
+  { id: 'sharp-lobster', name: { ko: '샤프랍스터', en: 'Mechanical-Pencil Lobster', ja: 'シャーペンロブスター', zh: '自动铅笔龙虾' }, weight: 5, speed: 0.76, circles: 4, ring: 0.85, trait: 'dash', rhythm: 'wangbok',
     gags: { ko: ['더듬이가 0.5mm 샤프심이에요', '딸깍! 하면 집게가 튀어나와요'],
             en: ['Click! Out come the claws!', '0.5 mm feelers, 100% attitude!'],
             ja: ['触角が0.5mmのシャー芯', 'カチッ！でハサミが出る'],
             zh: ['触须是0.5mm铅芯', '咔哒一按钳子弹出'] } },
-  { id: 'stapler-moray', name: { ko: '호치키스곰치', en: 'Stapler Moray', ja: 'ホッチキスウツボ', zh: '订书机海鳗' }, weight: 4, speed: 0.75, circles: 3,
+  { id: 'stapler-moray', name: { ko: '호치키스곰치', en: 'Stapler Moray', ja: 'ホッチキスウツボ', zh: '订书机海鳗' }, weight: 4, speed: 0.75, circles: 4, trait: 'dash', rhythm: 'net',
     gags: { ko: ['이빨이 호치키스 심처럼 가지런해요', '물리면 종이 두 장이 딱 붙어요(?)'],
             en: ['Its bite really binds!', 'Teeth in perfect order — office grade!'],
             ja: ['歯がホッチキスの針みたいに整列', 'かまれたら紙が2枚とまる（？）'],
             zh: ['牙齿像订书钉一样整齐', '被咬一口两张纸订好（?）'] } },
-  { id: 'recorder-marlin', name: { ko: '리코더청새치', en: 'Recorder Marlin', ja: 'リコーダーカジキ', zh: '竖笛旗鱼' }, weight: 4, speed: 0.72, circles: 3, trait: 'dash',
+  { id: 'recorder-marlin', name: { ko: '리코더청새치', en: 'Recorder Marlin', ja: 'リコーダーカジキ', zh: '竖笛旗鱼' }, weight: 4, speed: 0.72, circles: 4, trait: 'dash', rhythm: 'ssangssang',
     gags: { ko: ['뾰족한 주둥이로 도레미를 연주해요', '바다에서 제일 빠른 음악가!'],
             en: ['It plays scales on its scales!', 'The fastest do-re-mi in the sea!'],
             ja: ['とがった口でドレミを演奏', '海でいちばん速い音楽家！'],
             zh: ['用尖嘴吹哆来咪', '大海里最快的音乐家！'] } },
-  { id: 'glowstar-sunfish', name: { ko: '야광별개복치', en: 'Glow-Star Sunfish', ja: '夜光星マンボウ', zh: '夜光星翻车鱼' }, weight: 3, speed: 0.7, circles: 3, trait: 'picky',
+  { id: 'glowstar-sunfish', name: { ko: '야광별개복치', en: 'Glow-Star Sunfish', ja: '夜光星マンボウ', zh: '夜光星翻车鱼' }, weight: 3, speed: 0.7, circles: 4, trait: 'picky', rhythm: 'wangbok',
     gags: { ko: ['밤엔 천장의 야광별처럼 빛나요', '오늘은 깜짝 놀라도 기절 안 하기로 약속!'],
             en: ['It shines brightest after lights-out!', 'A star is born — and it floats!'],
             ja: ['夜は天井の星シールみたいに光る', '今日は気絶しないって約束！'],
             zh: ['晚上像天花板夜光星一样发光', '说好了今天不晕倒！'] } },
   // --- 5차분: 늪지 15마리 (2026-07-25 — 수는 적지만 패턴이 복잡!) ---
-  { id: 'pompom-beetle', name: { ko: '폼폼물방개', en: 'Pom-Pom Diving Beetle', ja: 'ポンポンゲンゴロウ', zh: '毛球水甲虫' }, weight: 20, speed: 1.0, circles: 3,
+  { id: 'pompom-beetle', name: { ko: '폼폼물방개', en: 'Pom-Pom Diving Beetle', ja: 'ポンポンゲンゴロウ', zh: '毛球水甲虫' }, weight: 20, speed: 1.0, circles: 2, ring: 1.2, trait: 'quick', rhythm: 'dadak',
     gags: { ko: ['몸이 폭신폭신한 공예 폼폼이에요', '늪에서 제일 귀여운 잠수부!'],
             en: ['Fluffy like a craft pom-pom!', 'The cutest diver in the swamp!'],
             ja: ['ふわふわの工作ポンポンです', '沼でいちばんかわいい潜水士！'],
             zh: ['软乎乎的手工毛球', '沼泽里最可爱的潜水员！'] } },
-  { id: 'chopstick-strider', name: { ko: '나무젓가락소금쟁이', en: 'Chopstick Water Strider', ja: 'わりばしアメンボ', zh: '木筷水黾' }, weight: 13, speed: 0.95, circles: 3, trait: 'dash',
+  { id: 'chopstick-strider', name: { ko: '나무젓가락소금쟁이', en: 'Chopstick Water Strider', ja: 'わりばしアメンボ', zh: '木筷水黾' }, weight: 13, speed: 0.95, circles: 3, trait: 'dash', rhythm: 'jigzag',
     gags: { ko: ['다리가 나무젓가락이라 물에 안 빠져요', '아직 반으로 안 쪼갠 새 젓가락이래요'],
             en: ['Chopstick legs never sink!', 'Still unsplit — brand new!'],
             ja: ['わりばしの足だからしずまない', 'まだ割ってない新品です'],
             zh: ['木筷长腿永不下沉', '还没掰开的新筷子'] } },
-  { id: 'straw-watersnake', name: { ko: '수수깡물뱀', en: 'Craft-Straw Water Snake', ja: 'ストローみずへび', zh: '吸管水蛇' }, weight: 16, speed: 0.9, circles: 3, trait: 'slippery',
+  { id: 'straw-watersnake', name: { ko: '수수깡물뱀', en: 'Craft-Straw Water Snake', ja: 'ストローみずへび', zh: '吸管水蛇' }, weight: 16, speed: 0.9, circles: 2, trait: 'slippery', rhythm: 'ttakttak',
     gags: { ko: ['수수깡이라 가볍게 둥둥 떠다녀요', '꺾으면 뚝! 소리가 나니까 살살~'],
             en: ['Light as a craft straw, it just floats!', 'Bend it and it snaps — gently!'],
             ja: ['かるいからぷかぷか浮くよ', '折るとポキッ！やさしくね'],
             zh: ['轻得像吸管，飘来飘去', '一折就断，轻一点~'] } },
-  { id: 'clay-toad', name: { ko: '지점토두꺼비', en: 'Clay Toad', ja: 'ねんどヒキガエル', zh: '黏土蟾蜍' }, weight: 14, speed: 0.9, circles: 3, trait: 'bounce',
+  { id: 'clay-toad', name: { ko: '지점토두꺼비', en: 'Clay Toad', ja: 'ねんどヒキガエル', zh: '黏土蟾蜍' }, weight: 14, speed: 0.9, circles: 2, trait: 'bounce', rhythm: 'dadak',
     gags: { ko: ['주무르면 모양이 바뀌는 두꺼비', '마르기 전에 돌려놔 주세요!'],
             en: ['Squish it and it changes shape!', 'Put it back before it dries!'],
             ja: ['こねると形が変わるよ', 'かわく前にもどしてね！'],
             zh: ['一捏就变形的蟾蜍', '干掉之前请放回去！'] } },
-  { id: 'gluegun-leech', name: { ko: '글루건거머리', en: 'Glue-Gun Leech', ja: 'グルーガンヒル', zh: '热熔胶水蛭' }, weight: 12, speed: 0.85, circles: 3, trait: 'slippery',
+  { id: 'gluegun-leech', name: { ko: '글루건거머리', en: 'Glue-Gun Leech', ja: 'グルーガンヒル', zh: '热熔胶水蛭' }, weight: 12, speed: 0.85, circles: 3, trait: 'slippery', rhythm: 'set',
     gags: { ko: ['한번 붙으면 뜨끈하게 안 떨어져요', '공작 시간의 최종 보스래요'],
             en: ['Once it sticks, it sticks hot!', 'The final boss of craft class.'],
             ja: ['くっついたら熱々ではなれない', '工作の時間のラスボスです'],
             zh: ['一粘上就热乎乎不撒手', '手工课的最终大魔王'] } },
-  { id: 'sand-loach', name: { ko: '색모래미꾸리', en: 'Color-Sand Loach', ja: 'いろずなドジョウ', zh: '彩砂泥鳅' }, weight: 11, speed: 0.85, circles: 3, trait: 'zigzag',
+  { id: 'sand-loach', name: { ko: '색모래미꾸리', en: 'Color-Sand Loach', ja: 'いろずなドジョウ', zh: '彩砂泥鳅' }, weight: 11, speed: 0.85, circles: 3, trait: 'zigzag', rhythm: 'dadatak',
     gags: { ko: ['비늘이 알록달록 색모래예요', '병에 담아 무지개를 만들고 싶다!'],
             en: ['Scales of rainbow craft sand!', 'Bottle it up for a rainbow!'],
             ja: ['うろこがカラーサンドなんだ', 'ビンにつめて虹をつくりたい！'],
             zh: ['鳞片是彩色装饰砂', '想装进瓶子做彩虹！'] } },
-  { id: 'pipecleaner-waterscorpion', name: { ko: '모루장구애비', en: 'Pipe-Cleaner Water Scorpion', ja: 'モールミズカマキリ', zh: '扭扭棒水蝎' }, weight: 10, speed: 0.83, circles: 3, trait: 'zigzag',
+  { id: 'pipecleaner-waterscorpion', name: { ko: '모루장구애비', en: 'Pipe-Cleaner Water Scorpion', ja: 'モールミズカマキリ', zh: '扭扭棒水蝎' }, weight: 10, speed: 0.83, circles: 3, trait: 'zigzag', rhythm: 'takdada',
     gags: { ko: ['팔다리를 마음대로 구부릴 수 있어요', '모루 공예의 살아있는 전설!'],
             en: ['It bends its arms any way it likes!', 'A living pipe-cleaner sculpture!'],
             ja: ['手足を自由にまげられるよ', 'モール工作の生きる伝説！'],
             zh: ['手脚随便弯来弯去', '扭扭棒手工的活传奇！'] } },
-  { id: 'styrofoam-frog', name: { ko: '스티로폼맹꽁이', en: 'Styrofoam Frog', ja: '発泡スチロールガエル', zh: '泡沫小蛙' }, weight: 9, speed: 0.85, circles: 3, trait: 'bounce',
+  { id: 'styrofoam-frog', name: { ko: '스티로폼맹꽁이', en: 'Styrofoam Frog', ja: '発泡スチロールガエル', zh: '泡沫小蛙' }, weight: 9, speed: 0.85, circles: 3, trait: 'bounce', rhythm: 'jigzag',
     gags: { ko: ['너무 가벼워서 가라앉지를 못해요', '만지면 뽀득뽀득 소리가 나요!'],
             en: ['Too light to ever sink!', 'It squeaks when you touch it!'],
             ja: ['かるすぎてしずめません', 'さわるとキュッキュッと鳴くよ！'],
             zh: ['太轻了根本沉不下去', '一摸就吱吱响！'] } },
-  { id: 'clay-axolotl', name: { ko: '고무찰흙우파루파', en: 'Clay Axolotl', ja: 'ねんどウーパールーパー', zh: '橡皮泥六角恐龙' }, weight: 8, speed: 0.8, circles: 3, trait: 'ghost',
+  { id: 'clay-axolotl', name: { ko: '고무찰흙우파루파', en: 'Clay Axolotl', ja: 'ねんどウーパールーパー', zh: '橡皮泥六角恐龙' }, weight: 8, speed: 0.8, circles: 3, trait: 'ghost', rhythm: 'set',
     gags: { ko: ['부끄러우면 진흙 속으로 사라져요', '항상 웃고 있는 건 찰흙이라 그래요'],
             en: ['It vanishes into the mud when shy!', 'Always smiling — it is clay, after all.'],
             ja: ['はずかしいと泥にきえちゃう', 'いつも笑ってるのは粘土だから'],
             zh: ['害羞就躲进泥里消失', '一直微笑是因为是橡皮泥'] } },
-  { id: 'paintbucket-swampeel', name: { ko: '물감통드렁허리', en: 'Paint-Bucket Swamp Eel', ja: 'えのぐバケツタウナギ', zh: '颜料桶黄鳝' }, weight: 7, speed: 0.8, circles: 3, trait: 'zigzag',
+  { id: 'paintbucket-swampeel', name: { ko: '물감통드렁허리', en: 'Paint-Bucket Swamp Eel', ja: 'えのぐバケツタウナギ', zh: '颜料桶黄鳝' }, weight: 7, speed: 0.8, circles: 3, trait: 'zigzag', rhythm: 'dadatak',
     gags: { ko: ['진흙 속에서 물감을 지키고 있어요', '늪 색깔은 얘가 다 칠한 거래요'],
             en: ['It guards paint deep in the mud!', 'It painted the whole swamp itself.'],
             ja: ['泥の中で絵の具を守ってるよ', '沼の色はこの子がぬったんだって'],
             zh: ['在泥里守护着颜料', '沼泽的颜色都是它涂的'] } },
-  { id: 'cellophane-betta', name: { ko: '셀로판베타', en: 'Cellophane Betta', ja: 'セロハンベタ', zh: '玻璃纸斗鱼' }, weight: 6, speed: 0.78, circles: 3, trait: 'picky',
+  { id: 'cellophane-betta', name: { ko: '셀로판베타', en: 'Cellophane Betta', ja: 'セロハンベタ', zh: '玻璃纸斗鱼' }, weight: 6, speed: 0.78, circles: 3, trait: 'picky', rhythm: 'takdada',
     gags: { ko: ['지느러미가 반짝이는 셀로판지예요', '거울을 보여주면 멋을 부려요'],
             en: ['Fins of shimmering cellophane!', 'Show it a mirror and it poses.'],
             ja: ['ヒレがキラキラのセロハンです', '鏡を見せるとポーズするよ'],
             zh: ['鱼鳍是闪亮的玻璃纸', '给它照镜子就开始摆造型'] } },
-  { id: 'carbon-gator', name: { ko: '먹지악어', en: 'Carbon-Paper Gator', ja: 'カーボンワニ', zh: '复写纸鳄鱼' }, weight: 5, speed: 0.75, circles: 4, trait: 'dash',
+  { id: 'carbon-gator', name: { ko: '먹지악어', en: 'Carbon-Paper Gator', ja: 'カーボンワニ', zh: '复写纸鳄鱼' }, weight: 5, speed: 0.75, circles: 4, trait: 'dash', rhythm: 'net',
     gags: { ko: ['물리면 이빨 자국이 두 장 복사돼요', '늪에서 제일 오래된 문구래요'],
             en: ['One bite copies onto two pages!', 'The oldest stationery in the swamp.'],
             ja: ['かまれると歯型が2枚うつるよ', '沼でいちばん古い文房具です'],
             zh: ['咬一口牙印复写两份', '沼泽里最古老的文具'] } },
-  { id: 'lead-electric-eel', name: { ko: '연필심전기뱀장어', en: 'Pencil-Lead Electric Eel', ja: '鉛筆しんデンキウナギ', zh: '铅笔芯电鳗' }, weight: 5, speed: 0.75, circles: 4, trait: 'ghost',
+  { id: 'lead-electric-eel', name: { ko: '연필심전기뱀장어', en: 'Pencil-Lead Electric Eel', ja: '鉛筆しんデンキウナギ', zh: '铅笔芯电鳗' }, weight: 5, speed: 0.75, circles: 4, trait: 'ghost', rhythm: 'ssangssang',
     gags: { ko: ['연필심은 전기가 통한다는 게 사실이었어!', '찌릿! 은 아니고 사각! 하고 감전돼요'],
             en: ['Pencil lead really does conduct!', 'It shocks you with a scribble!'],
             ja: ['鉛筆のしんは電気が通るんだ！', 'ビリッじゃなくてサラッと感電します'],
             zh: ['铅笔芯真的导电！', '电你一下的感觉是沙沙的'] } },
-  { id: 'bookmark-arapaima', name: { ko: '책갈피피라루쿠', en: 'Bookmark Arapaima', ja: 'しおりピラルクー', zh: '书签巨骨舌鱼' }, weight: 4, speed: 0.72, circles: 4, trait: 'picky',
+  { id: 'bookmark-arapaima', name: { ko: '책갈피피라루쿠', en: 'Bookmark Arapaima', ja: 'しおりピラルクー', zh: '书签巨骨舌鱼' }, weight: 4, speed: 0.72, circles: 4, trait: 'picky', rhythm: 'wangbok',
     gags: { ko: ['늪에서 제일 크고 납작한 책갈피', '어디까지 읽었는지 절대 안 까먹어요'],
             en: ['The biggest, flattest bookmark around!', 'It never forgets your page.'],
             ja: ['沼でいちばん大きくて平たいしおり', 'どこまで読んだか絶対忘れない'],
             zh: ['沼泽里最大最扁的书签', '永远记得你读到哪页'] } },
-  { id: 'doodle-imugi', name: { ko: '낙서이무기', en: 'Almost-Dragon', ja: 'みならいドラゴン', zh: '涂鸦蛟龙' }, weight: 1, speed: 0.68, circles: 4, trait: 'imugi',
+  { id: 'doodle-imugi', name: { ko: '낙서이무기', en: 'Almost-Dragon', ja: 'みならいドラゴン', zh: '涂鸦蛟龙' }, weight: 1, speed: 0.68, circles: 5, trait: 'imugi', rhythm: 'legendA',
     gags: { ko: ['천 년을 기다리면 낙서용이 된대요!', '호수의 그 용, 사실 얘 선배래요'],
             en: ['In 1,000 years it becomes the Doodle Dragon!', 'The lake dragon? Its senior.'],
             ja: ['千年たつとらくがきドラゴンになるって！', '湖のあのドラゴンは先ぱいです'],
@@ -1759,7 +1906,10 @@ const BAITS = [
   { id: 'glitter', name: { ko: '반짝이풀 미끼', en: 'Glitter Glue Bait', ja: 'ラメのりエサ', zh: '亮片胶鱼饵' }, price: 3,
     desc: { ko: '귀한 물고기가 4배 잘 와요 (입질 1번에 1개)', en: 'Rare fish 4× more likely (1 per bite)', ja: 'レアな魚が4倍来やすい（1回で1個）', zh: '稀有鱼上钩率×4（咬钩一次用1个）' } },
   { id: 'goldpaint', name: { ko: '황금 물감 미끼', en: 'Gold Paint Bait', ja: '黄金えのぐエサ', zh: '黄金颜料鱼饵' }, price: 15,
-    desc: { ko: '전설 물고기가 아주 잘 와요! (입질 1번에 1개)', en: 'Legendary fish love it! (1 per bite)', ja: '伝説の魚が大好き！（1回1個）', zh: '传说鱼超爱吃！（一次1个）' } },
+    desc: { ko: '👑 전설이 10번에 1번꼴로 와요! (입질 1번에 1개)',
+      en: '👑 Legend fish ~1 in 10 bites! (1 per bite)',
+      ja: '👑 伝説が10回に1回くらい！（1回1個）',
+      zh: '👑 传说鱼约10次来1次！（一次1个）' } },
 ];
 
 // 꾸미기: 코인으로 사는 모자! (효과 없음, 순수 멋 — 낚시왕의 증표)
@@ -1778,9 +1928,69 @@ const HATS = [
     desc: { ko: '낚시왕의 증표! (제일 비쌈)', en: 'Proof of the Fishing King!', ja: '釣り王のあかし！', zh: '钓鱼之王的证明！' } },
 ];
 
+// 전설 물고기 (낙서용 · 스케치북고래 · 낙서이무기)
+const isLegend = f => f.trait === 'legend' || f.trait === 'imugi';
+
+// ============================================================
+// 성격(원 색깔) 표 — 2026-07-26. 원 색이 곧 "이 물고기가 어떻게 움직이나"다.
+// 게임 속 원 색도 · 도감 성격 칸도 · 색깔표 화면도 전부 여기 하나만 본다 (어긋날 수 없게).
+// legend와 imugi는 둘 다 전설이라 색이 같다 → 색깔표에선 한 줄로 합쳐 보여준다.
+// ============================================================
+const TRAITS = {
+  quick:    { color: C.navy, name: { ko: '잽싸이', en: 'Quickie', ja: 'すばやん', zh: '快快鱼' },
+    desc: { ko: '처음에 확 줄고 끝에서 느려져요', en: 'Shrinks fast, then slows at the end',
+      ja: '最初に速く、最後はゆっくり', zh: '开始很快，最后变慢' } },
+  slippery: { color: C.skyBlue, name: { ko: '미끌이', en: 'Slippery', ja: 'ぬるぬる', zh: '滑溜溜' },
+    desc: { ko: '가다가 중간에 멈칫!', en: 'Pauses once in the middle!',
+      ja: '途中で一瞬止まる！', zh: '中途会停一下！' } },
+  shy:      { color: C.purple, name: { ko: '부끄럼', en: 'Shy', ja: 'はずかしがり', zh: '害羞鱼' },
+    desc: { ko: '목표 근처에서 아주 느려져요', en: 'Crawls near the target ring',
+      ja: '目標の近くでとても遅くなる', zh: '接近目标时变很慢' } },
+  wild:     { color: C.teal, name: { ko: '날뛰기', en: 'Wild', ja: 'あばれんぼう', zh: '狂野鱼' },
+    desc: { ko: '빨랐다 느렸다 두 번 출렁여요', en: 'Speeds up and slows down twice',
+      ja: '速く遅くを二回くり返す', zh: '快慢交替两次' } },
+  picky:    { color: C.pink, name: { ko: '깐깐이', en: 'Picky', ja: 'うるさがた', zh: '挑剔鱼' },
+    desc: { ko: '판정이 좁아요 — 딱 맞춰야 해요', en: 'Narrow timing — be exact!',
+      ja: '判定がせまい — ピッタリで！', zh: '判定很窄 — 要刚刚好！' } },
+  dash:     { color: C.redDark, name: { ko: '돌진', en: 'Dasher', ja: 'とっしん', zh: '冲刺鱼' },
+    desc: { ko: '끝에서 확 빨라져요', en: 'Suddenly speeds up at the end',
+      ja: '最後に急に速くなる', zh: '最后突然加速' } },
+  ghost:    { color: C.gray, name: { ko: '유령', en: 'Ghost', ja: 'ゆうれい', zh: '幽灵鱼' },
+    desc: { ko: '원이 깜빡깜빡 사라져요', en: 'The ring blinks in and out',
+      ja: '輪がチカチカ消える', zh: '圆圈会闪烁消失' } },
+  zigzag:   { color: C.darkGreen, name: { ko: '지그재그', en: 'Zigzag', ja: 'ジグザグ', zh: '之字鱼' },
+    desc: { ko: '두 번이나 멈칫해요', en: 'Pauses twice!',
+      ja: '二回も止まる', zh: '会停两次！' } },
+  bounce:   { color: C.green, name: { ko: '청개구리', en: 'Bouncy', ja: 'あまのじゃく', zh: '弹弹鱼' },
+    desc: { ko: '커졌다 작아졌다 해요', en: 'Grows back before shrinking',
+      ja: '大きくなったり小さくなったり', zh: '会变大又变小' } },
+  legend:   { color: C.yellow, name: { ko: '전설', en: 'Legend', ja: 'でんせつ', zh: '传说' },
+    desc: { ko: '5연타 · 제일 어려운 리듬', en: '5 beats · the hardest rhythm',
+      ja: '5連打・一番むずかしい', zh: '5连击 · 最难的节奏' } },
+  imugi:    { color: C.yellow, name: { ko: '전설', en: 'Legend', ja: 'でんせつ', zh: '传说' },
+    desc: { ko: '5연타 · 제일 어려운 리듬', en: '5 beats · the hardest rhythm',
+      ja: '5連打・一番むずかしい', zh: '5连击 · 最难的节奏' } },
+};
+// 색깔표 화면에 보여줄 순서 (쉬운 것 → 어려운 것, imugi는 legend와 같은 줄이라 뺀다)
+const TRAIT_ORDER = ['quick', 'slippery', 'shy', 'wild', 'picky', 'dash', 'ghost', 'zigzag', 'bounce', 'legend'];
+const traitOf = f => TRAITS[f && f.trait] || TRAITS.quick;
+const traitColor = f => traitOf(f).color;
+
+// 희귀도 별점 — 잘 안 잡히는(weight 작은) 물고기일수록 별이 많다. 전설은 별 대신 왕관!
+function rarityOf(f) {
+  if (isLegend(f)) return 5;
+  if (f.weight <= 5) return 4;
+  if (f.weight <= 9) return 3;
+  if (f.weight <= 14) return 2;
+  return 1;
+}
+
+// 미끼 효과 (2026-07-26 아드님 결정: 황금 미끼는 "전설 사냥용"으로 확실하게)
+//  예전 황금 미끼는 전설 배수가 고래·이무기에만 걸려서 정작 호수의 낙서용엔 효과가 없었다.
+//  → 전설 전체에 40배. 호수 전설 확률 0.32% → 약 11%
 function baitMul(f) {
   if (save.bait === 'glitter') return f.weight <= 6 ? 4 : 1;
-  if (save.bait === 'goldpaint') return (f.id === 'sketchbook-whale' || f.id === 'doodle-imugi') ? 12 : (f.weight <= 6 ? 2 : 1);
+  if (save.bait === 'goldpaint') return isLegend(f) ? 40 : (f.weight <= 6 ? 2 : 1);
   return 1;
 }
 
@@ -1796,7 +2006,20 @@ const PITY = {
   sea: { fish: 'sketchbook-whale', start: 120, end: 139 },
 };
 
+// 지금 낚시터에서 제일 쉬운 물고기 — 연타가 적고 · 원이 크고 · 천천히 줄어들고 · 박자가 고른 순
+function easiestFish() {
+  const list = FISH.filter(f => spotMul(f) > 0 && !isLegend(f));
+  const score = f => f.circles * 100                       // 연타 수가 제일 크게 작용
+    - (f.ring || 1) * 40                                   // 목표 원이 클수록 쉽다
+    - f.speed * 30                                         // speed가 클수록 천천히 줄어든다
+    + (rhythmOf(f).gaps.some(g => g < 1) ? 12 : 0)         // "다닥" 연타가 있으면 어렵다
+    + ((f.trait === 'picky' || f.trait === 'shy' || f.trait === 'dash') ? 10 : 0);
+  return list.sort((a, b) => score(a) - score(b))[0] || FISH[0];
+}
+
 function pickFish() {
+  // 게임을 처음 하는 사람(아직 한 마리도 못 잡음)에겐 제일 쉬운 물고기부터 — 손맛을 익히게
+  if (!AUTO_DEMO && !DEV_FAKE && totalCaught() === 0) return easiestFish();
   let r = Math.random() * FISH.reduce((a, f) => a + fishWeight(f), 0);
   for (const f of FISH) { r -= fishWeight(f); if (r < 0) return f; }
   return FISH[0];
@@ -1810,8 +2033,11 @@ function pickFish() {
 //  ② 패턴 난이도 배수: 어려운 손맛일수록 더 준다!
 //     보통 1배 · 미끌이/돌진 1.5배 · 깐깐이/지그재그/청개구리 2배 · 유령 2.5배 · 전설 3배
 //  ③ 퍼펙트 보너스: "딱 맞았어!!"만으로 잡으면 최종 2배 (endRound에서)
-const TRAIT_MUL = { slippery: 1.5, dash: 1.5, picky: 2, zigzag: 2, bounce: 2, ghost: 2.5, legend: 3, imugi: 3 };
+// 새로 넣은 잽싸이/부끄럼/날뛰기는 배수를 낮게 — 흔한 물고기가 많아서 코인이 확 불어나면 안 된다
+const TRAIT_MUL = { slippery: 1.5, dash: 1.5, picky: 2, zigzag: 2, bounce: 2, ghost: 2.5, legend: 3, imugi: 3,
+  quick: 1, shy: 1.3, wild: 1.2 };
 const fishPrice = f => Math.max(1, Math.round((30 / f.weight) * (TRAIT_MUL[f.trait] || 1)));
+const FIRST_CATCH_BONUS = 10;   // 태어나서 처음 잡은 물고기 축하 보너스 (첫 물고기는 제일 싸니까)
 
 // 낚싯대: 순서대로만 살 수 있고, 사면 바로 갈아 낀다 (화면 속 낚싯대 색도 바뀜!)
 // slow: 타이밍 원이 줄어드는 시간 배율 (클수록 여유) / wait: 입질 대기시간 배율 (작을수록 빨리 옴)
@@ -1877,14 +2103,15 @@ function eulReul(word) {
 // 물고기 성격별 원 패턴 — 잡는 손맛이 다 다르다!
 //  slippery(미끌이): 중간에 멈칫! 하고 다시 줄어듦 / dash(돌진형): 끝에 갑자기 빨라짐
 //  picky(깐깐이): 판정이 좁음 / legend(전설): 빨라지고 판정도 좁음
+// 2026-07-26: 급가속·출렁임이 심한 성격들을 한 단계씩 순하게 (dash 1.8→1.5 등)
 function traitProgress(p, trait) {
-  if (trait === 'dash') return Math.pow(p, 1.8);
+  if (trait === 'dash') return Math.pow(p, 1.5);
   if (trait === 'slippery') {
     if (p < 0.4) return p * 1.3;
     if (p < 0.6) return 0.52;              // 멈칫!
     return 0.52 + (p - 0.6) * 1.2;
   }
-  if (trait === 'legend') return Math.pow(p, 1.4);
+  if (trait === 'legend') return Math.pow(p, 1.25);
   if (trait === 'zigzag') {                   // 두 번 멈칫! (늪지)
     if (p < 0.25) return p * 1.2;
     if (p < 0.4) return 0.3;
@@ -1892,34 +2119,73 @@ function traitProgress(p, trait) {
     if (p < 0.72) return 0.65;
     return 0.65 + (p - 0.72) * 1.25;
   }
-  if (trait === 'bounce') return p - 0.13 * Math.sin(Math.PI * 2 * p);   // 커졌다 작아졌다! (늪지)
-  if (trait === 'imugi') return Math.pow(p, 1.5);   // 늪의 전설
+  if (trait === 'bounce') return p - 0.1 * Math.sin(Math.PI * 2 * p);   // 커졌다 작아졌다! (늪지)
+  if (trait === 'imugi') return Math.pow(p, 1.35);   // 늪의 전설
+  // --- 아래 3개는 호수·바다용으로 추가 (2026-07-26) ---
+  if (trait === 'quick') return Math.pow(p, 0.8);   // 잽싸이: 처음에 확 줄고 끝에서 느려짐
+  if (trait === 'shy') {                            // 부끄럼: 목표 근처에서 아주 느려짐
+    if (p < 0.55) return p * 1.45;
+    return 0.8 + (p - 0.55) * 0.44;
+  }
+  if (trait === 'wild') {                           // 날뛰기: 빨랐다 느렸다 두 번
+    return p + 0.07 * Math.sin(Math.PI * 4 * p);
+  }
   // ghost는 진행은 보통이지만 원이 유령처럼 깜빡인다 (그리기 쪽 참조)
   return p;
+}
+
+// 목표 원 크기 — 물고기마다 다르다 (ring이 작을수록 정확히 맞춰야 해서 어렵다).
+// 시작 크기는 늘 같으므로, 목표가 작으면 판정 폭도 좁아지고 맞는 순간도 늦게 온다.
+function targetR() {
+  return TARGET_R * ((game.fish && game.fish.ring) || 1);
 }
 
 function circleRadius(c, t) {
   const p0 = Math.min(1, (t - c.start) / c.dur);
   const p = traitProgress(p0, game.fish && game.fish.trait);
-  return TARGET_R * (START_MUL - (START_MUL - 0.2) * p);
+  const r0 = TARGET_R * START_MUL;      // 시작 크기는 물고기와 상관없이 고정
+  const r1 = targetR() * 0.2;           // 끝은 목표보다 훨씬 작게
+  return r0 - (r0 - r1) * p;
 }
 
-// 성격별 판정 폭 (깐깐이 70% · 전설 80%)
+// 성격별 판정 폭 (깐깐이 70% · 전설 80% · 부끄럼 85% · 잽싸이는 오히려 넉넉 110%)
+// ※ 판정은 손대지 않는다 (2026-07-26 아드님: "판정 말고 난이도를 고쳐라")
 function judgeMul() {
   const tr2 = game.fish && game.fish.trait;
-  return tr2 === 'picky' ? 0.7 : (tr2 === 'legend' || tr2 === 'imugi') ? 0.8 : 1;
+  if (tr2 === 'picky') return 0.7;
+  if (tr2 === 'legend' || tr2 === 'imugi') return 0.8;
+  if (tr2 === 'shy') return 0.85;
+  if (tr2 === 'quick') return 1.1;   // 빠른 대신 조금 후하게 (초보용 물고기)
+  return 1;
 }
 
-function newCircle(t, idx) {
-  // 호수 안 아무 데나 (가장자리는 피해서)
+// 원이 목표와 딱 겹치는 순간의 진행도 — 성격 곡선마다 다르다.
+// 이걸 알아야 "겹치는 순간"을 정확히 박자에 맞출 수 있다.
+function progAtTarget() {
+  const r0 = TARGET_R * START_MUL, r1 = targetR() * 0.2;
+  const q = (r0 - targetR()) / (r0 - r1);
+  const trait = game.fish && game.fish.trait;
+  for (let p = 0; p <= 1; p += 0.002) if (traitProgress(p, trait) >= q) return p;
+  return 1;
+}
+
+// 원이 뜨는 자리 — 리듬을 타려면 자리가 고정돼야 한다 (아무 데나 뜨면 눈으로 찾아다니게 됨).
+// 만들 때와 그릴 때가 어긋나지 않도록 항상 여기서 계산한다.
+function laneXY() {
   const L = SCENE.lake;
-  const a = Math.random() * Math.PI * 2;
-  const rr = Math.sqrt(Math.random()) * 0.6;
+  return { x: L.cx, y: L.cy };
+}
+
+function newCircle(idx) {
+  const hitAt = game.hitTimes[idx];
+  const startT = idx === 0 ? game.roundStart : game.hitTimes[idx - 1];
+  const p = Math.max(0.15, progAtTarget());
   return {
-    x: L.cx + Math.cos(a) * L.rx * rr,
-    y: L.cy + Math.sin(a) * L.ry * rr,
-    start: t,
-    dur: CIRCLE_DUR[Math.min(idx, CIRCLE_DUR.length - 1)] * game.fish.speed * curRod().slow,
+    x: laneXY().x,
+    y: laneXY().y,
+    start: startT,
+    dur: (hitAt - startT) / p,   // 목표와 겹치는 순간이 정확히 박자 위에 오도록
+    hitAt: hitAt,
   };
 }
 
@@ -1942,7 +2208,9 @@ function startMinigame(t) {
       const chance = n >= rule.end ? 1 : 1 / (rule.end - n + 1);
       if (Math.random() < chance) game.fish = FISH.find(f => f.id === rule.fish);
     }
-    save.pity[save.spot || 'lake'] = game.fish.id === rule.fish ? 0 : n;   // 나오면 처음부터 다시
+    // 카운터는 계속 올라간다. 0으로 되돌리는 건 "전설을 잡았을 때"뿐 (endRound 참조).
+    // 예전엔 전설이 나오기만 하면 리셋돼서, 놓치면 70~120번을 다시 기다려야 했다.
+    save.pity[save.spot || 'lake'] = n;
     persistSave();
   }
   // 미끼 소모 (입질 1번에 1개, 다 쓰면 빵 부스러기로 돌아온다)
@@ -1957,6 +2225,17 @@ function startMinigame(t) {
   game.circle = null;
   game.nextAt = t + 500;      // 찌가 쑥 들어가는 걸 볼 시간
   game.biteFxUntil = t + 600;
+  // --- 리듬 짜기: 이 물고기를 언제·어떤 키로 쳐야 하는지 미리 다 정해둔다 ---
+  // 중요: 내가 언제 눌렀는지와 상관없이 박자는 고정이다 (그래야 리듬이 생긴다)
+  const rh = rhythmOf(game.fish);
+  const beat = BASE_BEAT * game.fish.speed * curRod().slow;
+  game.roundStart = t + 500;
+  game.hitTimes = [];
+  let acc = game.roundStart;
+  for (let i = 0; i < game.fish.circles; i++) {
+    acc += rh.gaps[i] * beat;
+    game.hitTimes.push(acc);
+  }
   sfx.bite();
 }
 
@@ -1966,12 +2245,22 @@ function endRound(t, ok, msg) {
   game.resultMsg = msg;
   game.resultAt = t;
   game.circle = null;
+  // 전설 천장: 잡았으면 카운터를 0으로, 놓쳤으면 "보장 구간 입구"로 되돌린다.
+  //  → 놓쳐도 곧 다시 만날 수 있고, 그렇다고 매 입질마다 전설이 나오지도 않는다.
+  const pRule = PITY[save.spot || 'lake'];
+  if (pRule && !AUTO_DEMO && game.fish && game.fish.id === pRule.fish) {
+    save.pity = save.pity || { lake: 0, sea: 0, swamp: 0 };
+    save.pity[save.spot || 'lake'] = ok ? 0 : pRule.start - 1;
+  }
   if (ok) {
     game.caught++;
     // 잡은 물고기의 전용 개그 한마디 (모여봐요 동물의숲처럼!)
     game.gag = pickGag(game.fish);
     game.wasPerfect = game.roundPerfect;                                // 퍼펙트로만 잡았나?
     game.coinGain = fishPrice(game.fish) * (game.wasPerfect ? 2 : 1);   // 퍼펙트면 코인 2배!
+    // 태어나서 처음 잡은 물고기! 첫판은 제일 쉬운(=제일 싼) 물고기라 그냥 두면 1코인뿐이다
+    game.firstEver = !AUTO_DEMO && totalCaught() === 0;
+    if (game.firstEver) game.coinGain += FIRST_CATCH_BONUS;
     game.isNew = !save.caught[game.fish.id];   // 처음 잡는 물고기면 NEW! 표시
     sfx.catchFish();
     if (!AUTO_DEMO) {  // 자동 시범은 기록에 안 남김
@@ -2016,14 +2305,27 @@ function prevSpotRect() {
   return { x: n.x - w - 10, y: n.y, w, h: 38 };
 }
 
+// 멈춰 있던 시간(d)만큼 모든 타이머를 뒤로 밀어준다 (일시정지·첫판 안내 공용)
+function shiftTimers(d) {
+  game.biteAt += d;
+  game.nextAt += d;
+  game.castAt += d;
+  game.roundStart += d;                                  // 리듬 박자도 통째로 밀어준다
+  if (game.hitTimes) game.hitTimes = game.hitTimes.map(h => h + d);
+  if (game.circle) { game.circle.start += d; game.circle.hitAt += d; }
+}
+
 function onTap(t, px, py) {
+  if (game.tutoAt) {
+    // 첫판 안내 닫기 — 멈춰 있던 만큼 박자를 밀고 진짜 시작!
+    shiftTimers(t - game.tutoAt);
+    game.tutoAt = 0;
+    if (!DEV_FAKE) { save.tutoSeen = true; persistSave(); }   // 한 번 보면 다시 안 나옴
+    return;
+  }
   if (game.paused) {
     // 일시정지 풀기 — 멈춘 시간만큼 타이머를 뒤로 밀어준다
-    const d = t - game.pausedAt;
-    game.biteAt += d;
-    game.nextAt += d;
-    game.castAt += d;
-    if (game.circle) game.circle.start += d;
+    shiftTimers(t - game.pausedAt);
     game.paused = false;
     return;
   }
@@ -2060,41 +2362,27 @@ function onTap(t, px, py) {
     if (px !== undefined) {
       const L = shopLayout();
       const inRect = b => px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h;
-      // 페이지 화살표 (장비 ↔ 꾸미기)
-      const nav = shopNavRects();
-      if (inRect(nav.prev)) {
-        if (game.shopPage > 0) { game.shopPage--; game.shopMsg = null; renderShopToCache(); }
-        return;
-      }
-      if (inRect(nav.next)) {
-        if (game.shopPage < 1) { game.shopPage++; game.shopMsg = null; renderShopToCache(); }
-        return;
-      }
-      if (game.shopPage === 1) {
-        // 꾸미기 페이지: 모자 사기/쓰기
-        const hrow = L.hats.find(inRect);
-        if (hrow) {
-          const ht = hrow.ht;
-          if (ht.price === 0 || save.hats[ht.id]) {
-            save.hat = ht.id;                    // 이미 있으면 바로 착용
-            game.shopMsg = null;
-            persistSave();
-            renderSceneToCache();                // 쓰고 있는 모자가 바뀐다!
-          } else if ((save.coins || 0) >= ht.price) {
-            save.coins -= ht.price;
-            save.hats[ht.id] = true;
-            save.hat = ht.id;
-            game.shopMsg = null;
-            sfx.buy();
-            persistSave();
-            renderSceneToCache();
-          } else {
-            game.shopMsg = tr('needCoins');
-          }
-          renderShopToCache();
-          return;
+      // 꾸미기 코너: 모자 사기/쓰기
+      const hrow = L.hats.find(inRect);
+      if (hrow) {
+        const ht = hrow.ht;
+        if (ht.price === 0 || save.hats[ht.id]) {
+          save.hat = ht.id;                    // 이미 있으면 바로 착용
+          game.shopMsg = null;
+          persistSave();
+          renderSceneToCache();                // 쓰고 있는 모자가 바뀐다!
+        } else if ((save.coins || 0) >= ht.price) {
+          save.coins -= ht.price;
+          save.hats[ht.id] = true;
+          save.hat = ht.id;
+          game.shopMsg = null;
+          sfx.buy();
+          persistSave();
+          renderSceneToCache();
+        } else {
+          game.shopMsg = tr('needCoins');
         }
-        closeShop(t);
+        renderShopToCache();
         return;
       }
       const bait = L.baits.find(inRect);
@@ -2151,6 +2439,8 @@ function onTap(t, px, py) {
       }
     }
     closeShop(t);
+  } else if (game.state === 'traits') {
+    closeTraits();               // 아무 데나 누르면 도감으로 돌아간다
   } else if (game.state === 'dex') {
     if (game.dexDetail) {  // 상세 카드가 열려 있으면 → 카드만 닫고 도감으로
       game.dexDetail = null;
@@ -2160,6 +2450,7 @@ function onTap(t, px, py) {
     if (px !== undefined) {
       const L = dexLayout();
       const inRect = b => px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h;
+      if (inRect(L.traitsBtn)) { openTraits(); return; }   // 원 색깔표 열기
       // 호수/바다 탭 전환
       if (inRect(L.tabLake) || inRect(L.tabSea) || inRect(L.tabSwamp)) {
         const tab = inRect(L.tabSwamp) ? 'swamp' : inRect(L.tabSea) ? 'sea' : 'lake';
@@ -2264,18 +2555,32 @@ function onTap(t, px, py) {
       game.pausedAt = t;
       return;
     }
-    const r = circleRadius(game.circle, t);
-    const diff = Math.abs(r - TARGET_R);
-    if (diff <= TARGET_R * 0.22 * judgeMul()) {
-      hitCircle(t, tr('perfect'));
-    } else if (diff <= TARGET_R * 0.55 * judgeMul()) {
-      game.roundPerfect = false;
-      hitCircle(t, tr('nice'));
-    } else {
-      endRound(t, false, r > TARGET_R ? tr('tooFast') : tr('tooSlow'));
-    }
+    judgeHit(t);   // 화면 아무 데나 (폰에서도 그냥 탭)
   } else if (game.state === 'result' && t - game.resultAt > 500) {
     game.state = 'idle';   // 상자를 닫으면 던지기 대기 상태로
+  }
+}
+
+// 목표를 지난 뒤 언제까지 쳐도 인정되는지 (ms) — 이 시간을 넘기면 놓친 것
+function lateWindow(c) {
+  const rate = (TARGET_R * START_MUL - targetR() * 0.2) / c.dur;   // px per ms
+  return targetR() * 0.55 * judgeMul() / rate;   // "좋아!" 판정 폭과 같아야 한다
+}
+
+// 리듬 판정: 박자에 맞춰 누르기만 하면 된다 (버튼은 스페이스/클릭 하나)
+function judgeHit(t) {
+  const c = game.circle;
+  if (!c) return;
+  const r = circleRadius(c, t);
+  const TR = targetR();
+  const diff = Math.abs(r - TR);
+  if (diff <= TR * 0.22 * judgeMul()) {
+    hitCircle(t, tr('perfect'));
+  } else if (diff <= TR * 0.55 * judgeMul()) {
+    game.roundPerfect = false;
+    hitCircle(t, tr('nice'));
+  } else {
+    endRound(t, false, r > TR ? tr('tooFast') : tr('tooSlow'));
   }
 }
 
@@ -2289,9 +2594,8 @@ function hitCircle(t, text) {
   game.ci++;
   if (game.ci >= game.fish.circles) {
     endRound(t, true, '낚았다!!');
-  } else {
-    game.nextAt = t + 300;
   }
+  // 다음 원이 나올 시각은 리듬(game.hitTimes)이 정한다 — 여기서 정하지 않는다
 }
 
 canvas.addEventListener('pointerdown', e => {
@@ -2308,6 +2612,7 @@ window.addEventListener('keydown', e => {
   if (e.code === 'Escape' && game.state === 'achv') closeAchv();
   if (e.code === 'Escape' && game.state === 'shop') closeShop(performance.now());
   if (e.code === 'Escape' && game.state === 'stats') closeStats();
+  if (e.code === 'Escape' && game.state === 'traits') closeTraits();
   if (e.code === 'Escape' && (game.state === 'waiting' || game.state === 'idle')) {   // Esc → 메뉴로
     game.state = 'menu';
     menuEl.classList.remove('hidden');
@@ -2317,16 +2622,30 @@ window.addEventListener('keydown', e => {
 // ============================================================
 // 그리기 — 배경 캐시 + 움직이는 것들
 // ============================================================
-function renderSceneToCache() {
-  sceneCanvas.width = canvas.width;
-  sceneCanvas.height = canvas.height;
-  sctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  ctx = sctx;                      // 붓을 캐시 캔버스로 바꿔 끼고
+// 배경 한 장 그리기 (지금 boilSeed 기준)
+function renderSceneFrame(f) {
+  f.cv.width = canvas.width;
+  f.cv.height = canvas.height;
+  f.cx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx = f.cx;                      // 붓을 캐시 캔버스로 바꿔 끼고
   const p = drawSketchbook();
   const sceneFn = save.spot === 'sea' ? drawSceneSea : save.spot === 'swamp' ? drawSceneSwamp : drawScene;
   sceneFn(p);   // 지금 펼친 페이지의 풍경
   drawSpiral();
   ctx = screenCtx;                 // 다시 화면 붓으로
+}
+
+// 배경 캐시 다시 만들기 — 꿈틀거림 3장을 한꺼번에 (그래야 나중에 공짜로 바꿔 낄 수 있다).
+// 화면이 아주 크면(4백만 픽셀 초과) 메모리가 아까우니 1장만 만들고 예전처럼 그때그때 다시 그린다.
+function renderSceneToCache() {
+  sceneFrameCount = (BOIL && canvas.width * canvas.height <= 6e6) ? 3 : 1;
+  const keep = boilSeed;
+  for (let i = 0; i < sceneFrameCount; i++) {
+    boilSeed = sceneFrameCount > 1 ? i : keep;
+    renderSceneFrame(sceneFrames[i]);
+  }
+  boilSeed = keep;
+  sceneCanvas = sceneFrames[sceneFrameCount > 1 ? keep % 3 : 0].cv;
 }
 
 // ---------- 도감 화면 (무거우니 열 때 캐시에 그려두고 복사) ----------
@@ -2354,11 +2673,16 @@ function dexLayout() {
   });
   const prev = { x: x0 + 28, y: y0 + bh - 54, w: 48, h: 36 };
   const next = { x: x0 + bw - 76, y: y0 + bh - 54, w: 48, h: 36 };
-  // 호수/바다/늪지 탭 (위 가운데 나란히)
-  const tabLake = { x: W / 2 - 224, y: y0 + 12, w: 144, h: 38 };
-  const tabSea = { x: W / 2 - 72, y: y0 + 12, w: 144, h: 38 };
-  const tabSwamp = { x: W / 2 + 80, y: y0 + 12, w: 144, h: 38 };
-  return { bw, bh, x0, y0, chh, cells, pages, prev, next, tabLake, tabSea, tabSwamp };
+  // 윗줄 = [호수 탭][바다 탭][늪지 탭] + [원 색깔표] 를 한 덩어리로 가운데 정렬.
+  // (화면 가운데(W/2)에 탭을 고정하면 좁은 창에서 색깔표 버튼과 겹친다 — 2026-07-26 수정)
+  const btnW = 140, tabW = 144, tabGap = 8, grpGap = 14;
+  const tabsW = tabW * 3 + tabGap * 2;
+  const gx = x0 + Math.max(10, (bw - (tabsW + grpGap + btnW)) / 2);
+  const tabLake = { x: gx, y: y0 + 12, w: tabW, h: 38 };
+  const tabSea = { x: gx + (tabW + tabGap), y: y0 + 12, w: tabW, h: 38 };
+  const tabSwamp = { x: gx + (tabW + tabGap) * 2, y: y0 + 12, w: tabW, h: 38 };
+  const traitsBtn = { x: gx + tabsW + grpGap, y: y0 + 14, w: btnW, h: 34 };
+  return { bw, bh, x0, y0, chh, cells, pages, prev, next, tabLake, tabSea, tabSwamp, traitsBtn };
 }
 
 function renderDexToCache() {
@@ -2407,7 +2731,13 @@ function renderDexToCache() {
     ctx.fill();
     ctx.restore();
     crayonPath([[cell.x, cell.y], [cell.x + cell.w, cell.y], [cell.x + cell.w, cell.y + cell.h], [cell.x, cell.y + cell.h], [cell.x, cell.y]],
-      { color: n > 0 ? C.orange : C.gray, width: 3.5, seed: 611 + i + game.dexPage * 12, wobble: 1.5, alpha: n > 0 ? 0.95 : 0.6 });
+      { color: isLegend(f) && n > 0 ? C.yellow : n > 0 ? C.orange : C.gray,
+        width: isLegend(f) && n > 0 ? 5 : 3.5, seed: 611 + i + game.dexPage * 12, wobble: 1.5, alpha: n > 0 ? 0.95 : 0.6 });
+    if (n > 0) {
+      // 희귀도 (칸 왼쪽 위 작은 별 · 전설은 왕관)
+      if (isLegend(f)) drawHatIcon('crown', cell.x + 26, cell.y + 20);
+      else for (let k = 0; k < rarityOf(f); k++) drawStar(cell.x + 18 + k * 19, cell.y + 18, 8, true, 351 + k);
+    }
     if (n > 0) {
       ctx.save();
       ctx.translate(cx, cy - 10);
@@ -2422,6 +2752,22 @@ function renderDexToCache() {
       crayonText('???', cx, cy + L.chh / 2 - 30, 15, C.gray);
     }
   });
+  // 원 색깔표 버튼 (원 색이 뭘 뜻하는지 알려주는 화면)
+  {
+    const b = L.traitsBtn;
+    ctx.save();
+    ctx.globalAlpha = 0.92;
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.roundRect(b.x, b.y, b.w, b.h, 10);
+    ctx.fill();
+    ctx.restore();
+    crayonPath([[b.x, b.y], [b.x + b.w, b.y], [b.x + b.w, b.y + b.h], [b.x, b.y + b.h], [b.x, b.y]],
+      { color: C.brown, width: 3, seed: 1905, wobble: 1.2 });
+    crayonPath(ellipsePts(b.x + 20, b.y + b.h / 2, 8, 8, 12),
+      { color: C.skyBlue, width: 3.5, seed: 1906, wobble: 0.8, alpha: 1 });
+    crayonText(tr('traitsBtn'), b.x + 36, b.y + b.h / 2 + 5, 15, C.darkBrown, 'left');
+  }
   crayonText(tr('dexClose'), W / 2, L.y0 + L.bh - 62, 14, C.gray);
   // 페이지 넘김 (◀ 페이지 ▶)
   if (L.pages > 1) {
@@ -2440,7 +2786,7 @@ function renderDexToCache() {
     const f = game.dexDetail, n = save.caught[f.id] || 0;
     ctx.fillStyle = 'rgba(60,50,38,0.3)';
     ctx.fillRect(0, 0, W, H);
-    const dw = Math.min(560, W * 0.82), dh = 302;
+    const dw = Math.min(560, W * 0.82), dh = 372;
     const dx = W / 2 - dw / 2, dy = H / 2 - dh / 2;
     ctx.fillStyle = '#fffdf2';
     ctx.beginPath();
@@ -2454,10 +2800,20 @@ function renderDexToCache() {
     ctx.translate(-W / 2, -(dy + 88));
     drawFish(f, W / 2, dy + 88);
     ctx.restore();
-    crayonText(LX(f.name), W / 2, dy + 172, 28, C.darkBrown);
-    crayonText(T[LANG].dexCount(n), W / 2, dy + 204, 18, C.redDark);
+    crayonText(LX(f.name), W / 2, dy + 168, 28, C.darkBrown);
+    // 희귀도 (별 등급 + 글자) — 어떤 게 전설인지 한눈에! (전설은 왕관이라 가운데)
+    if (rarityOf(f) === 5) {
+      drawRarity(W / 2, dy + 196, f, 10);
+    } else {
+      drawRarity(W / 2 - 62, dy + 196, f, 8);
+      crayonText(T[LANG].rarityLabel[rarityOf(f) - 1], W / 2 + 46, dy + 202, 16, C.gray);
+    }
+    // 성격 (원 색깔) — 이 물고기 원이 무슨 색이고 어떻게 움직이는지
+    // 전설은 바로 위에 "👑 전설!"이 이미 있으니, 여기선 움직임 설명만 (같은 말 두 번 안 하게)
+    drawTraitLine(W / 2, dy + 232, f, 17, isLegend(f));
+    crayonText(T[LANG].dexCount(n), W / 2, dy + 266, 18, C.redDark);
     LX(f.gags).forEach((g, i) => {
-      crayonText(`“${g}”`, W / 2, dy + 236 + i * 26, 16, C.deepBlue);
+      crayonText(`“${g}”`, W / 2, dy + 296 + i * 26, 16, C.deepBlue);
     });
   }
   ctx = screenCtx;
@@ -2552,31 +2908,36 @@ function closeAchv() {
 const shopCanvas = document.createElement('canvas');
 const shctx = shopCanvas.getContext('2d');
 
-function shopNavRects() {
-  const bw = Math.min(680, W * 0.92), bh = Math.min(660, H * 0.92);
-  const x0 = W / 2 - bw / 2, y0 = H / 2 - bh / 2;
-  return {
-    prev: { x: x0 + 24, y: y0 + bh - 52, w: 48, h: 36 },
-    next: { x: x0 + bw - 72, y: y0 + bh - 52, w: 48, h: 36 },
-  };
-}
-
+// 상점은 한 장으로 끝낸다 — 낚싯대 · 미끼는 가로 줄, 모자는 아래 가로 카드 4개
 function shopLayout() {
-  const bw = Math.min(680, W * 0.92), bh = Math.min(660, H * 0.92);
+  const bw = Math.min(700, W * 0.94), bh = Math.min(700, H * 0.95);
   const x0 = W / 2 - bw / 2, y0 = H / 2 - bh / 2;
-  const rowH = (bh - 208) / (RODS.length + BAITS.length);
+  const top = y0 + 62;                  // 제목 아래부터 목록 시작
+  const bottom = y0 + bh - 52;          // 메시지·닫기 안내 자리는 남겨둔다
+  // 모자 카드 줄 높이 — 아이콘·이름·가격 세 줄이 들어가야 해서 88px 아래로는 안 줄인다
+  // (86 이하로 두면 좁은 화면에서 이름과 "사용 중"이 겹쳤다 — 2026-07-26 수정)
+  const hatH = Math.max(88, Math.min(100, (bottom - top) * 0.18));
+  const gap = 20;                       // 코너 제목이 들어갈 틈
+  const rowH = (bottom - top - hatH - gap * 2) / (RODS.length + BAITS.length);
+  const iw = bw - 44;                   // 줄 하나의 너비
+
   const rows = RODS.map((r, i) => ({
-    r, i, x: x0 + 22, y: y0 + 66 + rowH * i, w: bw - 44, h: rowH - 10,
+    r, i, x: x0 + 22, y: top + rowH * i, w: iw, h: rowH - 8,
   }));
-  const by0 = y0 + 66 + rowH * RODS.length + 36;
+  const by0 = top + rowH * RODS.length + gap;
   const baits = BAITS.map((b, i) => ({
-    b, i, x: x0 + 22, y: by0 + rowH * i, w: bw - 44, h: rowH - 10,
+    b, i, x: x0 + 22, y: by0 + rowH * i, w: iw, h: rowH - 8,
   }));
-  // 2페이지(꾸미기): 모자들은 낚싯대 자리와 같은 칸을 쓴다
+  // 모자는 설명이 짧으니 가로로 나란히 (아이콘 + 이름 + 값)
+  const hy0 = by0 + rowH * BAITS.length + gap;
+  const cw = (iw - 10 * (HATS.length - 1)) / HATS.length;
   const hats = HATS.map((ht, i) => ({
-    ht, i, x: x0 + 22, y: y0 + 66 + (rowH + 14) * i, w: bw - 44, h: rowH,
+    ht, i, x: x0 + 22 + (cw + 10) * i, y: hy0, w: cw, h: hatH,
   }));
-  return { bw, bh, x0, y0, rows, baits, hats, baitTitleY: by0 - 12 };
+  return {
+    bw, bh, x0, y0, rows, baits, hats,
+    baitTitleY: by0 - 7, hatTitleY: hy0 - 7,
+  };
 }
 
 // 코인 표시 (노란 동전 + 개수) — x가 오른쪽 끝, 오른쪽 정렬
@@ -2680,55 +3041,8 @@ function renderShopToCache() {
   ctx.fill();
   crayonPath([[L.x0, L.y0], [L.x0 + L.bw, L.y0], [L.x0 + L.bw, L.y0 + L.bh], [L.x0, L.y0 + L.bh], [L.x0, L.y0]],
     { color: C.orange, width: 5, seed: 790, wobble: 2.5 });
-  crayonText(game.shopPage === 1 ? tr('closet') : tr('shopTitle'), W / 2, L.y0 + 42, 26, C.darkBrown);
+  crayonText(tr('shopTitle'), W / 2, L.y0 + 42, 26, C.darkBrown);
   drawCoins(L.x0 + L.bw - 28, L.y0 + 46, 20);   // 내 코인 (오른쪽 위)
-
-  if (game.shopPage === 1) {
-    // ---- 2페이지: 꾸미기 (모자) ----
-    L.hats.forEach(row => {
-      const { ht, i } = row;
-      const owned = ht.price === 0 || save.hats[ht.id];
-      const wearing = save.hat === ht.id;
-      ctx.save();
-      ctx.globalAlpha = 0.65;
-      ctx.fillStyle = '#ffffff';
-      ctx.beginPath();
-      ctx.roundRect(row.x, row.y, row.w, row.h, 10);
-      ctx.fill();
-      ctx.restore();
-      crayonPath([[row.x, row.y], [row.x + row.w, row.y], [row.x + row.w, row.y + row.h], [row.x, row.y + row.h], [row.x, row.y]],
-        { color: wearing ? C.orange : owned ? C.brown : C.gray,
-          width: 3, seed: 1701 + i, wobble: 1.2, alpha: wearing ? 0.95 : owned ? 0.85 : 0.5 });
-      drawHatIcon(ht.id, row.x + 52, row.y + row.h / 2);
-      crayonText(LX(ht.name), row.x + 104, row.y + row.h / 2 - 5, 17, owned || wearing ? C.darkBrown : C.gray, 'left');
-      crayonText(LX(ht.desc), row.x + 104, row.y + row.h / 2 + 17, 12.5, C.gray, 'left');
-      const rx = row.x + row.w - 20;
-      if (wearing) {
-        crayonPath(ellipsePts(rx - 42, row.y + row.h / 2, 42, 18, 18),
-          { color: C.redDark, width: 2.5, seed: 1711 + i, wobble: 1.2 });
-        crayonText(tr('using'), rx - 42, row.y + row.h / 2 + 5, 14, C.redDark);
-      } else if (owned) {
-        crayonText(tr('equip'), rx, row.y + row.h / 2 + 5, 15, C.redDark, 'right');
-      } else {
-        drawCoins(rx, row.y + row.h / 2 - 3, 16, ht.price);
-        crayonText(tr('buy'), rx, row.y + row.h / 2 + 21, 14,
-          (save.coins || 0) >= ht.price ? C.redDark : C.gray, 'right');
-      }
-    });
-    // 페이지 화살표 + 닫기 안내
-    const nav = shopNavRects();
-    [[nav.prev, game.shopPage > 0, -1], [nav.next, game.shopPage < 1, 1]].forEach(([b, on, dir], i) => {
-      crayonPath([[b.x, b.y], [b.x + b.w, b.y], [b.x + b.w, b.y + b.h], [b.x, b.y + b.h], [b.x, b.y]],
-        { color: on ? C.brown : C.gray, width: 3, seed: 1721 + i, wobble: 1, alpha: on ? 0.9 : 0.35 });
-      const mx = b.x + b.w / 2, my = b.y + b.h / 2;
-      crayonPath([[mx - dir * 6, my - 8], [mx + dir * 6, my], [mx - dir * 6, my + 8]],
-        { color: on ? C.darkBrown : C.gray, width: 3.5, seed: 1723 + i, wobble: 0.5, alpha: on ? 1 : 0.4 });
-    });
-    if (game.shopMsg) crayonText(game.shopMsg, W / 2, L.y0 + L.bh - 48, 16, C.redDark);
-    crayonText(tr('shopClose'), W / 2, L.y0 + L.bh - 20, 13, C.gray);
-    ctx = screenCtx;
-    return;
-  }
 
   L.rows.forEach(row => {
     const { r, i } = row;
@@ -2799,18 +3113,96 @@ function renderShopToCache() {
     }
   });
 
-  // 페이지 화살표 (▶ 누르면 꾸미기 페이지!)
-  const nav = shopNavRects();
-  [[nav.prev, false, -1], [nav.next, true, 1]].forEach(([b, on, dir], i) => {
-    crayonPath([[b.x, b.y], [b.x + b.w, b.y], [b.x + b.w, b.y + b.h], [b.x, b.y + b.h], [b.x, b.y]],
-      { color: on ? C.brown : C.gray, width: 3, seed: 1725 + i, wobble: 1, alpha: on ? 0.9 : 0.35 });
-    const mx = b.x + b.w / 2, my = b.y + b.h / 2;
-    crayonPath([[mx - dir * 6, my - 8], [mx + dir * 6, my], [mx - dir * 6, my + 8]],
-      { color: on ? C.darkBrown : C.gray, width: 3.5, seed: 1727 + i, wobble: 0.5, alpha: on ? 1 : 0.4 });
+  // --- 꾸미기 코너 (모자는 가로 카드 4개) ---
+  crayonText(tr('hatTitle'), L.x0 + 30, L.hatTitleY, 15, C.darkBrown, 'left');
+  L.hats.forEach(row => {
+    const { ht, i } = row;
+    const owned = ht.price === 0 || save.hats[ht.id];
+    const wearing = save.hat === ht.id;
+    ctx.save();
+    ctx.globalAlpha = 0.65;
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.roundRect(row.x, row.y, row.w, row.h, 10);
+    ctx.fill();
+    ctx.restore();
+    crayonPath([[row.x, row.y], [row.x + row.w, row.y], [row.x + row.w, row.y + row.h], [row.x, row.y + row.h], [row.x, row.y]],
+      { color: wearing ? C.orange : owned ? C.brown : C.gray,
+        width: 3, seed: 1701 + i, wobble: 1.2, alpha: wearing ? 0.95 : owned ? 0.85 : 0.5 });
+    // 카드 안 세 줄: 아이콘 / 이름 / 상태(사용 중·착용!·가격)
+    const cx = row.x + row.w / 2, iy = row.y + 25, ny = row.y + 57, sy = row.y + row.h - 12;
+    drawHatIcon(ht.id, cx, iy);
+    crayonText(LX(ht.name), cx, ny, 14, owned || wearing ? C.darkBrown : C.gray);
+    if (wearing) {
+      crayonPath(ellipsePts(cx, sy - 5, 34, 13, 18),
+        { color: C.redDark, width: 2.5, seed: 1711 + i, wobble: 1.2 });
+      crayonText(tr('using'), cx, sy, 13, C.redDark);
+    } else if (owned) {
+      crayonText(tr('equip'), cx, sy, 14, C.redDark);
+    } else {
+      drawCoins(cx + 26, sy - 2, 15, ht.price);
+    }
   });
-  if (game.shopMsg) crayonText(game.shopMsg, W / 2, L.y0 + L.bh - 48, 16, C.redDark);
+
+  if (game.shopMsg) crayonText(game.shopMsg, W / 2, L.y0 + L.bh - 46, 16, C.redDark);
   crayonText(tr('shopClose'), W / 2, L.y0 + L.bh - 20, 13, C.gray);
   ctx = screenCtx;
+}
+
+// 별 하나 (크레파스로 쓱쓱 그린 느낌) — on이면 노랗게 칠하고, 아니면 빈 별
+function drawStar(cx, cy, r, on, seed) {
+  const pts = [];
+  for (let i = 0; i <= 10; i++) {
+    const a = -Math.PI / 2 + Math.PI / 5 * i;
+    const rr = i % 2 ? r * 0.44 : r;
+    pts.push([cx + Math.cos(a) * rr, cy + Math.sin(a) * rr]);
+  }
+  if (on) {
+    ctx.save();
+    ctx.globalAlpha = 0.8;
+    ctx.fillStyle = C.yellow;
+    ctx.beginPath();
+    pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+    ctx.fill();
+    ctx.restore();
+  }
+  crayonPath(pts, { color: on ? C.orange : C.gray, width: 2.2, seed, wobble: 0.5, alpha: on ? 1 : 0.45 });
+}
+
+// 희귀도 표시 — 전설은 왕관 + "전설!", 나머지는 별 4개 중 몇 개가 칠해졌나
+function drawRarity(cx, cy, f, r = 9) {
+  if (rarityOf(f) === 5) {
+    // 왕관 + "전설!" — 글자 길이가 언어마다 다르니 재서 나란히 놓는다
+    const size = r * 2.3;
+    ctx.save();
+    ctx.font = `700 ${size}px "Apple SD Gothic Neo", "Malgun Gothic", sans-serif`;
+    const tw = ctx.measureText(tr('legendTag')).width;
+    ctx.restore();
+    const total = 48 + 12 + tw;
+    drawHatIcon('crown', cx - total / 2 + 24, cy);
+    crayonText(tr('legendTag'), cx - total / 2 + 60 + tw / 2, cy + size * 0.36, size, C.orange);
+    return;
+  }
+  const n = rarityOf(f), gap = r * 2.5;
+  for (let i = 0; i < 4; i++) drawStar(cx - gap * 1.5 + gap * i, cy, r, i < n, 341 + i);
+}
+
+// 성격 한 줄: (작은 색 원) 이름 · 어떻게 움직이는지 — 가운데 정렬
+// descOnly면 이름을 빼고 움직임 설명만 (전설처럼 이름이 이미 위에 있는 경우)
+function drawTraitLine(cx, cy, f, size = 17, descOnly = false) {
+  const tt = traitOf(f), nm = descOnly ? '' : LX(tt.name), ds = LX(tt.desc), dsz = size * 0.8;
+  ctx.save();
+  ctx.font = `700 ${size}px "Apple SD Gothic Neo", "Malgun Gothic", sans-serif`;
+  const wn = nm ? ctx.measureText(nm).width : 0;
+  ctx.font = `700 ${dsz}px "Apple SD Gothic Neo", "Malgun Gothic", sans-serif`;
+  const wd = ctx.measureText(ds).width;
+  ctx.restore();
+  const r = size * 0.55, total = r * 2 + 10 + wn + (nm ? 9 : 0) + wd;
+  const x0 = cx - total / 2;
+  crayonPath(ellipsePts(x0 + r, cy - size * 0.3, r, r, 12),
+    { color: tt.color, width: 4, seed: 361, wobble: 0.7, alpha: 1 });
+  if (nm) crayonText(nm, x0 + r * 2 + 10, cy, size, tt.color, 'left');
+  crayonText(ds, x0 + r * 2 + 10 + wn + (nm ? 9 : 0), cy, dsz, C.gray, 'left');
 }
 
 // 모자 그림 (상점용 작은 아이콘)
@@ -2991,6 +3383,56 @@ function renderStatsToCache() {
   ctx = screenCtx;
 }
 
+// ---------- 원 색깔표 (성격 범례) — 도감에서 연다 ----------
+const traitsCanvas = document.createElement('canvas');
+const trctx = traitsCanvas.getContext('2d');
+
+function renderTraitsToCache() {
+  traitsCanvas.width = canvas.width;
+  traitsCanvas.height = canvas.height;
+  trctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx = trctx;
+  ctx.fillStyle = 'rgba(60,50,38,0.35)';
+  ctx.fillRect(0, 0, W, H);
+  const bw = Math.min(940, W * 0.94), bh = Math.min(520, H * 0.86);
+  const x0 = W / 2 - bw / 2, y0 = H / 2 - bh / 2;
+  ctx.fillStyle = '#fdf8ec';
+  ctx.beginPath();
+  ctx.roundRect(x0, y0, bw, bh, 16);
+  ctx.fill();
+  crayonPath([[x0, y0], [x0 + bw, y0], [x0 + bw, y0 + bh], [x0, y0 + bh], [x0, y0]],
+    { color: C.orange, width: 5, seed: 1901, wobble: 2.5 });
+  crayonText(tr('traitsTitle'), W / 2, y0 + 44, 25, C.darkBrown);
+  crayonText(tr('traitsSub'), W / 2, y0 + 70, 15, C.gray);
+  // 두 칸으로 나눠서 5줄씩
+  const rows = Math.ceil(TRAIT_ORDER.length / 2);
+  const cw = (bw - 60) / 2, rh = (bh - 150) / rows;
+  TRAIT_ORDER.forEach((key, i) => {
+    const tt = TRAITS[key];
+    const cx = x0 + 30 + cw * Math.floor(i / rows);
+    const cy = y0 + 100 + rh * (i % rows);
+    // 진짜 게임에서 보는 그 원 (색·굵기 그대로) + 목표 원
+    crayonPath(ellipsePts(cx + 34, cy + rh / 2 - 4, 21, 21, 20),
+      { color: tt.color, width: 5.5, seed: 1910 + i, wobble: 1.6, alpha: 1 });
+    crayonPath(ellipsePts(cx + 34, cy + rh / 2 - 4, 11, 11, 16),
+      { color: C.darkBrown, width: 2.5, seed: 1930 + i, wobble: 1.2, alpha: 0.75 });
+    crayonText(LX(tt.name), cx + 70, cy + rh / 2 - 8, 19, tt.color, 'left');
+    crayonText(LX(tt.desc), cx + 70, cy + rh / 2 + 14, 14, C.gray, 'left');
+  });
+  crayonText(tr('traitsClose'), W / 2, y0 + bh - 22, 14, C.gray);
+  ctx = screenCtx;
+}
+
+function openTraits() {
+  game.state = 'traits';
+  renderTraitsToCache();
+}
+
+function closeTraits() {
+  game.state = 'dex';        // 색깔표는 항상 도감에서 열린다 → 도감으로 돌아간다
+  renderDexToCache();
+}
+
 function openStats() {
   game.statsPage = 0;
   game.state = 'stats';
@@ -3006,7 +3448,6 @@ function closeStats() {
 function openShop(from) {
   game.shopReturn = from;
   game.shopMsg = null;
-  game.shopPage = 0;
   game.state = 'shop';
   if (from === 'menu') menuEl.classList.add('hidden');
   renderShopToCache();
@@ -4590,6 +5031,40 @@ function drawFish(fish, x, y) {
   (d[fish.id] || d['kkobulchi'])();
 }
 
+// 첫판 안내 — 화면을 멈춘 채 원 둘레만 밝게 남기고 설명한다 (한 번만 나옴)
+function drawTutorial(t) {
+  const c = game.circle;
+  if (!c) return;
+  const spot = TARGET_R * START_MUL + 40;   // 밝게 남길 동그란 범위
+  // 가운데는 그대로, 밖으로 갈수록 어두워진다 (그라데이션 밖은 계속 어두움)
+  const g = ctx.createRadialGradient(c.x, c.y, spot * 0.8, c.x, c.y, spot * 1.75);
+  g.addColorStop(0, 'rgba(60,50,38,0)');
+  g.addColorStop(1, 'rgba(60,50,38,0.74)');
+  ctx.save();
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+  // 설명은 화면 맨 위가 아니라 원 바로 옆에! (시선이 원에서 안 떠나게)
+  const above = c.y - spot - 130 > SPIRAL_H;
+  const b = above ? c.y - spot - 22 : c.y + spot + 118;
+  // 글자 뒤에 살짝 어두운 판을 깐다 — 안 그러면 스포트라이트 밝은 쪽에서 흰 글자가 묻힌다
+  ctx.save();
+  ctx.fillStyle = 'rgba(52,43,33,0.55)';
+  ctx.beginPath();
+  ctx.roundRect(c.x - 230, b - 112, 460, 128, 16);
+  ctx.fill();
+  ctx.restore();
+  crayonText(tr('tutoTitle'), c.x, b - 88, 30, C.yellow);
+  crayonText(tr('tutoL1'), c.x, b - 54, 19, '#fdf8ec');
+  crayonText(tr('tutoL2'), c.x, b - 27, 19, '#fdf8ec');
+  if (Math.sin(t / 420) > -0.45) crayonText(tr('tutoGo'), c.x, b, 15, '#fdf8ec');
+  // 원을 가리키는 짧은 화살표 (글자 → 원)
+  const ay = above ? c.y - spot - 8 : c.y + spot + 8, dir = above ? 1 : -1;
+  crayonPath([[c.x, ay], [c.x, ay + dir * 14]], { color: C.yellow, width: 3, seed: 2401, wobble: 0.6, alpha: 0.9 });
+  crayonPath([[c.x - 6, ay + dir * 7], [c.x, ay + dir * 15], [c.x + 6, ay + dir * 7]],
+    { color: C.yellow, width: 3, seed: 2402, wobble: 0.6, alpha: 0.9 });
+}
+
 function drawDynamic(t) {
   const home = SCENE.bobberHome, tip = SCENE.rodTip;
   if (!home) return;
@@ -4692,33 +5167,54 @@ function drawDynamic(t) {
     drawPauseBtn();
     if (game.circle) {
       const c = game.circle;
+      const lp = laneXY();
+      c.x = lp.x; c.y = lp.y;      // 창 크기가 바뀌어도 자리가 안 어긋나게
       const r = circleRadius(c, t);
-      // 목표 원 (갈색, 얇게) + 줄어드는 원 (주황, 굵게)
-      crayonPath(ellipsePts(c.x, c.y, TARGET_R, TARGET_R, 22),
-        { color: C.darkBrown, width: 3.5, seed: 240 + game.ci, wobble: 1.5, alpha: 0.8 });
-      const ringCol = { slippery: C.skyBlue, dash: C.redDark, picky: C.pink, legend: C.yellow,
-        ghost: C.gray, zigzag: C.darkGreen, bounce: C.green, imugi: C.yellow }[game.fish.trait] || C.orange;
+      const ringCol = traitColor(game.fish);   // 색 = 성격 (TRAITS 표 하나만 본다)
       const p0r = Math.min(1, (t - c.start) / c.dur);
       const ghosty = game.fish.trait === 'ghost' || game.fish.trait === 'imugi';
       const blink = ghosty && Math.sin(p0r * Math.PI * 6) < -0.25 ? 0.06 : 1;   // 유령처럼 깜빡!
+      // 원 뒤에 크림색 테두리를 한 겹 깔아준다 — 파란 원(잽싸이·미끌이)이 파란 호수 위에서
+      // 묻혀 보이던 문제 해결. 목표 원과 줄어드는 원 둘 다. (2026-07-26)
+      crayonPath(ellipsePts(c.x, c.y, targetR(), targetR(), 22),
+        { color: '#fdf8ec', width: 8, seed: 239 + game.ci, wobble: 1.5, alpha: 0.75 });
+      crayonPath(ellipsePts(c.x, c.y, r, r, 26),
+        { color: '#fdf8ec', width: 11, seed: 249 + game.ci, wobble: 2, alpha: 0.6 * blink });
+      // 목표 원 (갈색, 얇게) + 줄어드는 원 (성격 색, 굵게)
+      crayonPath(ellipsePts(c.x, c.y, targetR(), targetR(), 22),
+        { color: C.darkBrown, width: 3.5, seed: 240 + game.ci, wobble: 1.5, alpha: 0.8 });
       crayonPath(ellipsePts(c.x, c.y, r, r, 26),
         { color: ringCol, width: 6, seed: 250 + game.ci, wobble: 2, alpha: blink });
       crayonText(`${game.ci + 1} / ${game.fish.circles}`, c.x, c.y + 7, 18, C.darkBrown);
     }
   } else if (game.state === 'result') {
     if (game.result === 'catch') {
-      // 가운데 잡았다! 상자 (모동숲 스타일: 물고기 + 이름 + 개그 한마디)
-      const bw = Math.min(470, W * 0.72), bh = 232;
+      // 가운데 잡았다! 상자 (모동숲 스타일: 물고기 + 이름 + 별 등급 + 개그 한마디)
+      const bw = Math.min(470, W * 0.72), bh = 264;
       const rx0 = W / 2 - bw / 2, ry0 = H * 0.42 - bh / 2;
+      const leg = isLegend(game.fish);
+      if (leg) {   // 전설! — 상자 뒤에서 반짝반짝 터진다
+        const pp = Math.min(1, (t - game.resultAt) / 900);
+        for (let i = 0; i < 12; i++) {
+          const a = i * Math.PI / 6 + pp * 0.5;
+          const d = 50 + pp * (bw * 0.44);
+          const sx = W / 2 + Math.cos(a) * d, sy = ry0 + bh / 2 + Math.sin(a) * d * 0.62;
+          drawStar(sx, sy, 7 + Math.sin(t / 200 + i) * 2.5, true, 330 + i);
+        }
+      }
       ctx.save();
       ctx.globalAlpha = 0.96;
-      ctx.fillStyle = '#fffdf2';
+      ctx.fillStyle = leg ? '#fff8e0' : '#fffdf2';
       ctx.beginPath();
       ctx.roundRect(rx0, ry0, bw, bh, 14);
       ctx.fill();
       ctx.restore();
       crayonPath([[rx0, ry0], [rx0 + bw, ry0], [rx0 + bw, ry0 + bh], [rx0, ry0 + bh], [rx0, ry0]],
-        { color: C.orange, width: 5, seed: 310, wobble: 2.5 });
+        { color: leg ? C.yellow : C.orange, width: leg ? 8 : 5, seed: 310, wobble: 2.5 });
+      if (leg) {   // 황금 테두리를 한 겹 더 (전설은 확실히 달라 보이게)
+        crayonPath([[rx0 - 5, ry0 - 5], [rx0 + bw + 5, ry0 - 5], [rx0 + bw + 5, ry0 + bh + 5], [rx0 - 5, ry0 + bh + 5], [rx0 - 5, ry0 - 5]],
+          { color: C.orange, width: 3.5, seed: 311, wobble: 3 });
+      }
       if (game.isNew) {   // 처음 잡은 물고기! (도감에 새로 등록)
         scribbleFill(ellipseRows(rx0 + 30, ry0 + 8, 32, 15, 5),
           { color: C.yellow, seed: 316, alpha: 0.85, width: 4 });
@@ -4728,9 +5224,12 @@ function drawDynamic(t) {
       }
       drawFish(game.fish, W / 2 - 8, ry0 + 62);
       crayonText(T[LANG].caught(game.fish), W / 2, ry0 + 130, 26, C.redDark);
-      crayonText(game.gag, W / 2, ry0 + 164, 18, C.deepBlue);
-      crayonText((game.wasPerfect ? T[LANG].gainPerfect : T[LANG].gain)(game.coinGain || 0),
-        W / 2, ry0 + 200, 20, game.wasPerfect ? C.redDark : C.orange);
+      drawRarity(W / 2, ry0 + 158, game.fish);      // 별 등급 (전설이면 왕관!)
+      crayonText(game.gag, W / 2, ry0 + 196, 18, C.deepBlue);
+      const gainFmt = game.firstEver ? T[LANG].gainFirst
+        : game.wasPerfect ? T[LANG].gainPerfect : T[LANG].gain;
+      crayonText(gainFmt(game.coinGain || 0), W / 2, ry0 + 232, 20,
+        (game.wasPerfect || game.firstEver) ? C.redDark : C.orange);
       if (t - game.resultAt > 500) {
         crayonText(tr('again'), W / 2, ry0 + bh + 36, 20, C.darkBrown);
       }
@@ -4804,6 +5303,7 @@ function resize() {
   if (game.state === 'achv') renderAchvToCache();
   if (game.state === 'shop') renderShopToCache();
   if (game.state === 'stats') renderStatsToCache();
+  if (game.state === 'traits') renderTraitsToCache();
 }
 window.addEventListener('resize', resize);
 
@@ -4826,7 +5326,7 @@ const btnBackup = document.getElementById('btn-backup');
 const btnLoad = document.getElementById('btn-load');
 const btnReset = document.getElementById('btn-reset');
 const fileLoad = document.getElementById('file-load');
-let BOIL = localStorage.getItem('sketch-fishing-boil') !== 'off';
+let BOIL = LS.get('sketch-fishing-boil') !== 'off';
 
 function updateMenuTexts() {
   document.getElementById('m-title').textContent = tr('title');
@@ -4849,6 +5349,10 @@ function updateMenuTexts() {
   btnVol.textContent = T[LANG].vol(Math.round(VOLUME * 100));
   document.getElementById('rotate-msg').textContent = tr('rotate');
   document.getElementById('m-sub').textContent = tr('sub') + ' · v1.0';
+  // 저장이 막힌 브라우저면 이유를 알려준다 (안 그러면 기록이 사라지는 걸로만 보인다)
+  const nosave = document.getElementById('m-nosave');
+  nosave.style.display = STORAGE_OK ? 'none' : 'block';
+  nosave.textContent = tr('noSave');
   btnBackup.textContent = tr('backup');
   btnLoad.textContent = tr('load');
   btnReset.textContent = tr('reset');
@@ -4878,68 +5382,116 @@ btnLang.addEventListener('click', () => {
 langMenu.querySelectorAll('button').forEach(b => {
   b.addEventListener('click', () => {
     LANG = b.dataset.lang;
-    localStorage.setItem('sketch-fishing-lang', LANG);
+    LS.set('sketch-fishing-lang', LANG);
     langMenu.classList.remove('open');
     updateMenuTexts();
   });
 });
 btnSfx.addEventListener('click', () => {
   SFX = !SFX;
-  localStorage.setItem('sketch-fishing-sfx', SFX ? 'on' : 'off');
+  LS.set('sketch-fishing-sfx', SFX ? 'on' : 'off');
   if (SFX) sfx.good();   // 켜졌다는 걸 소리로 확인!
   updateMenuTexts();
 });
 btnBgm.addEventListener('click', () => {
   BGM = !BGM;
-  localStorage.setItem('sketch-fishing-bgm', BGM ? 'on' : 'off');
+  LS.set('sketch-fishing-bgm', BGM ? 'on' : 'off');
   if (BGM) startBgm(); else stopBgm();
   updateMenuTexts();
 });
 btnVol.addEventListener('click', () => {
   VOLUME = VOLUME === 1 ? 0.6 : VOLUME === 0.6 ? 0.3 : 1;   // 100% → 60% → 30% → 100%
-  localStorage.setItem('sketch-fishing-vol', String(VOLUME));
+  LS.set('sketch-fishing-vol', String(VOLUME));
   Object.values(SPOT_BGM).forEach(a => { a.volume = 0.55 * VOLUME; });
   sfx.good();   // 새 음량으로 확인음!
   updateMenuTexts();
 });
+// ── 게임 자체 확인창 ──────────────────────────────────────────
+// 브라우저의 confirm()·alert()는 itch.io 같은 제한된 iframe에서 막힐 수 있다.
+// 막히면 confirm()이 조용히 false를 돌려줘서 "눌러도 아무 일도 안 일어남"이 된다.
+// (저장소가 막히면 게임이 안 켜지던 것과 같은 종류의 문제 — 2026-07-28)
+const askEl = document.getElementById('ask');
+const askMsg = document.getElementById('ask-msg');
+const askYes = document.getElementById('ask-yes');
+const askNo = document.getElementById('ask-no');
+let askResolve = null;
+
+function askConfirm(message) {          // 예/아니요 → true/false
+  askMsg.textContent = message;
+  askNo.style.display = '';
+  askYes.textContent = tr('askYes');
+  askNo.textContent = tr('askNo');
+  askEl.classList.add('open');
+  return new Promise(res => { askResolve = res; });
+}
+function askTell(message) {             // 알림만 (확인 버튼 하나)
+  askMsg.textContent = message;
+  askNo.style.display = 'none';
+  askYes.textContent = tr('askOk');
+  askEl.classList.add('open');
+  return new Promise(res => { askResolve = res; });
+}
+function askClose(v) {
+  askEl.classList.remove('open');
+  const r = askResolve; askResolve = null;
+  if (r) r(v);
+}
+askYes.addEventListener('click', () => askClose(true));
+askNo.addEventListener('click', () => askClose(false));
+askEl.addEventListener('click', e => { if (e.target === askEl) askClose(false); });
+
 // 백업: 기록을 파일로 저장 (브라우저 데이터가 지워져도 안전!)
+// ⚠️ 잔재주 세 가지가 필요하다:
+//   ① <a>를 문서에 붙였다가 지운다 — 붙이지 않으면 일부 브라우저에서 클릭이 무시된다
+//   ② URL 해제를 나중에 한다 — 바로 해제하면 저장이 취소되는 브라우저가 있다
+//   ③ 다운로드가 막힌 환경(iframe 등)일 수 있으니 실패하면 알려준다
 btnBackup.addEventListener('click', () => {
-  const blob = new Blob([JSON.stringify({ game: 'sketching-fish', save }, null, 2)],
-    { type: 'application/json' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'sketching-fish-save.json';
-  a.click();
-  URL.revokeObjectURL(a.href);
+  try {
+    const blob = new Blob([JSON.stringify({ game: 'sketching-fish', save }, null, 2)],
+      { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'sketching-fish-save.json';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 2000);
+  } catch (e) {
+    askTell(tr('backupFail'));
+  }
 });
 btnLoad.addEventListener('click', () => fileLoad.click());
 fileLoad.addEventListener('change', () => {
   const f = fileLoad.files[0];
   if (!f) return;
   const rd = new FileReader();
-  rd.onload = () => {
+  rd.onload = async () => {
+    let data;
     try {
-      const data = JSON.parse(rd.result);
+      data = JSON.parse(rd.result);
       if (!data.save || !data.save.caught) throw new Error('bad file');
-      if (!confirm(tr('loadConfirm'))) return;
-      localStorage.setItem(SAVE_KEY, JSON.stringify(data.save));
-      location.reload();
     } catch (e) {
-      alert('...?');
+      askTell(tr('loadBad'));       // 예전엔 alert('...?') — 무슨 뜻인지 알 수 없었다
+      return;
     }
+    if (!await askConfirm(tr('loadConfirm'))) return;
+    LS.set(SAVE_KEY, JSON.stringify(data.save));
+    location.reload();
   };
   rd.readAsText(f);
   fileLoad.value = '';
 });
 // 처음부터: 게임 기록만 지운다 (언어·소리 설정은 유지, 백업 파일로 되돌릴 수 있음)
-btnReset.addEventListener('click', () => {
-  if (!confirm(tr('resetConfirm'))) return;
-  localStorage.removeItem(SAVE_KEY);
+btnReset.addEventListener('click', async () => {
+  if (!await askConfirm(tr('resetConfirm'))) return;
+  LS.remove(SAVE_KEY);
   location.reload();
 });
 btnBoil.addEventListener('click', () => {
   BOIL = !BOIL;
-  localStorage.setItem('sketch-fishing-boil', BOIL ? 'on' : 'off');
+  LS.set('sketch-fishing-boil', BOIL ? 'on' : 'off');
+  renderSceneToCache();   // 켜면 꿈틀 3장을 만들고, 끄면 1장만 (메모리 아끼기)
   updateMenuTexts();
 });
 updateMenuTexts();
@@ -4956,15 +5508,22 @@ function tick(t) {
     if (t > nextPlaySave) { nextPlaySave = t + 10000; persistSave(); }
   }
   // 라인 보일: 0.7초마다 배경을 살짝 다르게 다시 그림 (메뉴에서 끌 수 있음)
+  // ⚠️ 배경 다시 그리기는 무겁다 (측정: DPR1 18ms · DPR2 13ms — 한 프레임 예산 16.7ms를 통째로 먹는다).
+  //    타이밍 원이 도는 동안 이게 돌면 0.7초마다 화면이 뚝뚝 끊긴다 → 리듬 게임엔 치명적.
+  //    그래서 미니게임(원이 움직일 때)과 첫판 안내 중엔 배경을 멈춰 둔다. (2026-07-26 아드님 피드백)
+  const boilOK = game.state !== 'minigame' && !game.tutoAt;
   const f = Math.floor(t / 700) % 3;
-  if (BOIL && f !== lastBoil) {
+  if (BOIL && boilOK && f !== lastBoil) {
     lastBoil = f;
     boilSeed = f;
-    renderSceneToCache();
+    // 미리 만들어 둔 장이 있으면 바꿔 끼기만 한다 (0ms). 없으면 예전처럼 다시 그린다.
+    if (sceneFrameCount > 1) sceneCanvas = sceneFrames[f].cv;
+    else renderSceneToCache();
     if (game.state === 'dex') renderDexToCache();    // 도감 그림도 같이 꿈틀
     if (game.state === 'achv') renderAchvToCache();
     if (game.state === 'shop') renderShopToCache();
     if (game.state === 'stats') renderStatsToCache();
+    if (game.state === 'traits') renderTraitsToCache();
   }
 
   // 기다리는 동안 구경거리: 지역 친구가 가끔 지나간다
@@ -4977,17 +5536,31 @@ function tick(t) {
   // 상태 진행 (일시정지 중엔 멈춤!)
   if (game.state === 'idle' && AUTO_DEMO) {
     startWaiting(t);
-  } else if (game.paused) {
-    // 아무것도 진행하지 않는다
+  } else if (game.paused || game.tutoAt) {
+    // 아무것도 진행하지 않는다 (첫판 안내 중에도 원이 멈춰 있어야 설명이 된다)
   } else if (game.state === 'waiting') {
     if (!game.biteAt) startWaiting(t);
     else if (t >= game.biteAt) startMinigame(t);
   } else if (game.state === 'minigame') {
-    if (!game.circle && t >= game.nextAt) game.circle = newCircle(t, game.ci);
-    if (game.circle && AUTO_DEMO && Math.abs(circleRadius(game.circle, t) - TARGET_R) < 1.5) {
-      onTap(t);
+    // 다음 원은 "앞 박자를 쳐야 할 시각"에 정확히 나타난다 (내가 언제 눌렀는지와 무관!)
+    const appearAt = game.ci === 0 ? game.roundStart : game.hitTimes[game.ci - 1];
+    if (!game.circle && game.ci < game.fish.circles && t >= appearAt) {
+      game.circle = newCircle(game.ci);
+      // 게임을 처음 하는 사람이면 첫 원이 나오는 순간 화면을 멈추고 설명해 준다
+      if (game.ci === 0 && !save.tutoSeen && !AUTO_DEMO && (!DEV_FAKE || FORCE_TUTO)) {
+        // 프레임이 밀려서 원이 이미 줄어든 뒤에 멈추면 "큰 원이 점점 줄어들어" 설명이 무색해진다
+        // → 박자를 통째로 밀어 원을 "방금 나온(제일 큰)" 상태로 되감고 멈춘다
+        shiftTimers(t - game.circle.start);
+        game.tutoAt = t;
+      }
     }
-    if (game.circle && t - game.circle.start >= game.circle.dur * 0.95) {
+    if (game.circle && AUTO_DEMO && Math.abs(circleRadius(game.circle, t) - targetR()) < 1.5) {
+      judgeHit(t);
+    }
+    // 박자를 놓쳤나? — 원이 목표를 지나 판정 범위를 벗어나면 도망
+    // (첫판 안내가 뜬 프레임에선 검사하지 않는다. 프레임이 크게 밀리면 원이 나오자마자
+    //  같은 틱에서 "놓침"이 돼버렸다 — 2026-07-26)
+    if (!game.tutoAt && game.circle && t > game.circle.hitAt + lateWindow(game.circle)) {
       endRound(t, false, tr('ignored'));
     }
   }
@@ -5012,12 +5585,13 @@ function tick(t) {
     screenCtx.drawImage(sceneCanvas, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
     screenCtx.restore();
     screenCtx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  } else if (game.state === 'dex' || game.state === 'achv' || game.state === 'shop' || game.state === 'stats') {
-    // 도감/도전과제/상점/내 기록: 배경 위에 캐시를 덮어 그림
+  } else if (game.state === 'dex' || game.state === 'achv' || game.state === 'shop'
+             || game.state === 'stats' || game.state === 'traits') {
+    // 도감/도전과제/상점/내 기록/원 색깔표: 배경 위에 캐시를 덮어 그림
     screenCtx.setTransform(1, 0, 0, 1, 0, 0);
     screenCtx.drawImage(sceneCanvas, 0, 0);
     screenCtx.drawImage(game.state === 'dex' ? dexCanvas : game.state === 'achv' ? achvCanvas
-      : game.state === 'shop' ? shopCanvas : statsCanvas, 0, 0);
+      : game.state === 'shop' ? shopCanvas : game.state === 'traits' ? traitsCanvas : statsCanvas, 0, 0);
     screenCtx.setTransform(DPR, 0, 0, DPR, 0, 0);
   } else {
     // 게임 중: 배경 캐시 복사 + 움직이는 것들
@@ -5035,7 +5609,8 @@ function tick(t) {
       requestAnimationFrame(tick);
       return;
     }
-    drawDynamic(t);
+    drawDynamic(game.tutoAt || t);   // 첫판 안내 중엔 그 순간에 화면이 멈춘다
+    if (game.tutoAt) drawTutorial(t);
     // 페이지 넘김 연출 (0.45초):
     //  호수→바다(fwd)  = 지금 페이지가 스프링 쪽으로 접혀 올라가며 다음 장이 드러남
     //  바다→호수(back) = 앞 장이 스프링에서 아래로 내려와 지금 페이지를 덮음
@@ -5099,7 +5674,22 @@ if (location.hash.startsWith('#shop')) {
   save.bait = 'glitter';
   save.hats = { cap: true, straw: true };
   openShop('menu');
-  if (location.hash === '#shop=2') { game.shopPage = 1; renderShopToCache(); }
+}
+// #traits로 열면 원 색깔표(성격 범례)를 바로 볼 수 있다
+if (location.hash === '#traits') {
+  DEV_FAKE = true;
+  menuEl.style.display = 'none';
+  game.dexReturn = 'menu';
+  openTraits();
+}
+// #tuto로 열면 첫판 안내(멈춤 + 스포트라이트)를 바로 볼 수 있다 (진짜 저장 오염 없음)
+if (location.hash === '#tuto') {
+  DEV_FAKE = true;
+  save.tutoSeen = false;
+  menuEl.style.display = 'none';
+  const now = performance.now();
+  game.state = 'waiting';
+  game.biteAt = now + 300;
 }
 // #sea로 열면 바다 페이지 기다림 화면을 미리 볼 수 있다 (진짜 저장 오염 없음)
 if (location.hash === '#sea') {
