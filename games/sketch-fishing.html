@@ -842,6 +842,8 @@ let save;
 try { save = JSON.parse(LS.get(SAVE_KEY)) || {}; } catch (e) { save = {}; }
 save.caught = save.caught || {};   // { 물고기id: 잡은 수 }
 save.missed = save.missed || 0;
+save.dexPaid = save.dexPaid || {}; // 도감 등록 보너스를 이미 받은 물고기 { 물고기id: 1 }
+                                   // (빈 채로 시작 → 업데이트 전에 잡아둔 물고기도 전부 받을 수 있다)
 let DEV_FAKE = false;              // 개발용 가짜 데이터 모드 (#dex) — 절대 저장 안 함
 const FORCE_TUTO = location.hash === '#tuto';   // 개발용: 첫판 안내를 강제로 보기
 function persistSave() {
@@ -1012,6 +1014,7 @@ const game = {
   dexDetail: null,    // 도감에서 클릭한 물고기 (상세 카드)
   dexPage: 0,         // 도감 현재 페이지
   dexTab: 'lake',     // 도감 탭: 호수(민물) | 바다
+  dexPop: null,       // 도감 보너스를 방금 받은 자리 (코인 +N 튀어오르는 연출)
   achvQueue: [],      // 방금 달성해서 배너로 보여줄 도전과제들
   achvBanner: null,   // 지금 보여주는 중인 배너
   achvBannerUntil: 0,
@@ -1237,6 +1240,9 @@ const T = {
     gain: n => `+${n} 코인!`,
     gainPerfect: n => `+${n} 코인! (퍼펙트 2배!)`,
     gainFirst: n => `+${n} 코인! 🎉 첫 물고기 축하 보너스!`,
+    dexClaimTag: '받기!',                       // 도감 칸의 "누르면 코인" 표시
+    dexGot: n => `+${n} 코인!`,                  // 눌렀을 때 튀어나오는 글씨
+    dexClaimHint: '도감에서 코인 받기!',          // 잡았다 상자의 NEW! 옆 안내
     stats: '내 기록',
     stPlay: v => `플레이타임: ${v}`,
     stPlayNote: '(오늘부터 재기 시작했어!)',
@@ -1302,6 +1308,9 @@ const T = {
     gain: n => `+${n} coins!`,
     gainPerfect: n => `+${n} coins! (PERFECT x2!)`,
     gainFirst: n => `+${n} coins! 🎉 first-catch bonus!`,
+    dexClaimTag: 'TAP!',
+    dexGot: n => `+${n} coins!`,
+    dexClaimHint: 'Tap it in the collection for coins!',
     stats: 'My Records',
     stPlay: v => `Play time: ${v}`,
     stPlayNote: '(counting since today!)',
@@ -1367,6 +1376,9 @@ const T = {
     gain: n => `+${n} コイン！`,
     gainPerfect: n => `+${n} コイン！（ピッタリ2倍！）`,
     gainFirst: n => `+${n} コイン！🎉 はじめての1ぴきボーナス！`,
+    dexClaimTag: 'タップ！',
+    dexGot: n => `+${n} コイン！`,
+    dexClaimHint: '図鑑でタップするとコイン！',
     stats: 'マイ記録',
     stPlay: v => `プレイ時間: ${v}`,
     stPlayNote: '（今日から計測スタート！）',
@@ -1432,6 +1444,9 @@ const T = {
     gain: n => `+${n} 金币！`,
     gainPerfect: n => `+${n} 金币！（完美×2！）`,
     gainFirst: n => `+${n} 金币！🎉 第一条鱼奖励！`,
+    dexClaimTag: '点我！',
+    dexGot: n => `+${n} 金币！`,
+    dexClaimHint: '在图鉴里点一下就有金币！',
     stats: '我的记录',
     stPlay: v => `游戏时间: ${v}`,
     stPlayNote: '（从今天开始计时！）',
@@ -2039,6 +2054,17 @@ const TRAIT_MUL = { slippery: 1.5, dash: 1.5, picky: 2, zigzag: 2, bounce: 2, gh
 const fishPrice = f => Math.max(1, Math.round((30 / f.weight) * (TRAIT_MUL[f.trait] || 1)));
 const FIRST_CATCH_BONUS = 10;   // 태어나서 처음 잡은 물고기 축하 보너스 (첫 물고기는 제일 싸니까)
 
+// 도감 등록 보너스 (2026-08-01) — 잡을 때 주는 코인은 그대로!
+//  도감에 새로 들어온 물고기 칸을 **직접 눌러야** 별 등급만큼 코인을 받는다 (딱 한 번).
+//  별1=5 · 별2=6 · 별3=7 · 별4=8 · 전설(왕관)=10
+const DEX_BONUS = { 1: 5, 2: 6, 3: 7, 4: 8, 5: 10 };
+const dexBonusOf = f => DEX_BONUS[rarityOf(f)] || 5;
+// 아직 안 받은 칸인가? (잡았는데 보너스를 안 받은 물고기)
+const dexClaimable = f => (save.caught[f.id] || 0) > 0 && !save.dexPaid[f.id];
+// 받을 게 몇 칸 남았나 — hab을 주면 그 낚시터 도감만 센다
+const dexClaimCount = hab =>
+  FISH.filter(f => (!hab || habitatOf(f) === hab) && dexClaimable(f)).length;
+
 // 낚싯대: 순서대로만 살 수 있고, 사면 바로 갈아 낀다 (화면 속 낚싯대 색도 바뀜!)
 // slow: 타이밍 원이 줄어드는 시간 배율 (클수록 여유) / wait: 입질 대기시간 배율 (작을수록 빨리 옴)
 const RODS = [
@@ -2466,8 +2492,10 @@ function onTap(t, px, py) {
         if (inRect(L.prev) && game.dexPage > 0) { game.dexPage--; renderDexToCache(); return; }
         if (inRect(L.next) && game.dexPage < L.pages - 1) { game.dexPage++; renderDexToCache(); return; }
       }
-      // 잡은 물고기 칸을 클릭하면 → 상세 카드
+      // 아직 안 받은 칸을 클릭하면 → 코인부터 받는다 (상세 카드는 한 번 더 누르면 열림)
       const cell = L.cells.find(inRect);
+      if (cell && dexClaimable(cell.f)) { claimDexBonus(cell, t); return; }
+      // 잡은 물고기 칸을 클릭하면 → 상세 카드
       if (cell && (save.caught[cell.f.id] || 0) > 0) {
         game.dexDetail = cell.f;
         renderDexToCache();
@@ -2685,6 +2713,68 @@ function dexLayout() {
   return { bw, bh, x0, y0, chh, cells, pages, prev, next, tabLake, tabSea, tabSwamp, traitsBtn };
 }
 
+// 도감 칸을 눌러서 등록 보너스 받기 — 코인이 팡! 튀어나오고, 그 칸은 이제 조용해진다
+function claimDexBonus(cell, t) {
+  const f = cell.f, amount = dexBonusOf(f);
+  save.dexPaid[f.id] = 1;
+  save.coins = (save.coins || 0) + amount;
+  save.coinEarned = (save.coinEarned || 0) + amount;
+  persistSave();
+  checkAchievements();          // 코인 누적 과제(부자 화가 등)도 바로 반영
+  sfx.buy();
+  // 자리(x,y)를 저장하지 않고 물고기만 기억한다 — 창 크기가 바뀌거나 페이지를 넘겨도
+  // 연출이 엉뚱한 칸에 뜨지 않게, 그릴 때마다 그 물고기 칸을 다시 찾는다.
+  game.dexPop = { fishId: f.id, amount, born: t };
+  renderDexToCache();
+}
+
+// 도감 화면 위에 매 프레임 그리는 움직이는 것들
+//  1) 아직 안 받은 칸은 노란 테두리가 반짝반짝 (여기 눌러!)
+//  2) 방금 받은 자리에서 코인 +N 이 위로 튀어오르며 사라짐
+function drawDexOverlay(t) {
+  ctx = screenCtx;
+  const L = dexLayout();
+  if (!game.dexDetail) {
+    const pulse = 0.35 + 0.35 * Math.sin(t / 260);
+    L.cells.forEach((cell, i) => {
+      if (!dexClaimable(cell.f)) return;
+      crayonPath([[cell.x - 3, cell.y - 3], [cell.x + cell.w + 3, cell.y - 3],
+                  [cell.x + cell.w + 3, cell.y + cell.h + 3], [cell.x - 3, cell.y + cell.h + 3],
+                  [cell.x - 3, cell.y - 3]],
+        { color: C.yellow, width: 6, seed: 1310 + i, wobble: 2, alpha: pulse });
+    });
+  }
+  if (game.dexPop) {
+    const p = (t - game.dexPop.born) / 1100;
+    if (p >= 1) { game.dexPop = null; return; }
+    const from = L.cells.find(c => c.f.id === game.dexPop.fishId);
+    if (!from) return;          // 페이지를 넘겼으면 그 칸이 안 보이니 그리지 않는다
+    // 코인 그림 + "+6 코인!"을 한 덩어리(칩)로 묶어서 칸 안에서만 살짝 떠오르게 한다
+    const a = p < 0.7 ? 1 : 1 - (p - 0.7) / 0.3;        // 끝에서 스르륵 사라짐
+    const msg = T[LANG].dexGot(game.dexPop.amount);
+    const px = from.cx, py = from.cy + 6 - 34 * p;
+    ctx.save();
+    ctx.font = '700 20px "Apple SD Gothic Neo", "Malgun Gothic", sans-serif';
+    const tw = ctx.measureText(msg).width;
+    const chipW = tw + 46, chipX = px - chipW / 2;
+    ctx.globalAlpha = 0.9 * a;                           // 물고기 위에 겹쳐도 읽히게 흰 바탕
+    ctx.fillStyle = '#fffdf2';
+    ctx.beginPath();
+    ctx.roundRect(chipX, py - 17, chipW, 32, 14);
+    ctx.fill();
+    ctx.fillStyle = C.redDark;
+    ctx.textAlign = 'center';
+    ctx.fillText(msg, px + 14, py + 6);
+    ctx.restore();
+    const coinX = chipX + 20;
+    scribbleFill(ellipseRows(coinX, py, 9, 9, 4), { color: C.yellow, seed: 1330, alpha: 0.9 * a, width: 4 });
+    crayonPath(ellipsePts(coinX, py, 11, 11, 12), { color: C.orange, width: 3, seed: 1331, wobble: 0.7, alpha: a });
+    crayonPath([[chipX, py - 17], [chipX + chipW, py - 17], [chipX + chipW, py + 15],
+                [chipX, py + 15], [chipX, py - 17]],
+      { color: C.orange, width: 3, seed: 1332, wobble: 1.2, alpha: 0.9 * a });
+  }
+}
+
 function renderDexToCache() {
   dexCanvas.width = canvas.width;
   dexCanvas.height = canvas.height;
@@ -2717,6 +2807,14 @@ function renderDexToCache() {
     crayonPath([[b.x, b.y], [b.x + b.w, b.y], [b.x + b.w, b.y + b.h], [b.x, b.y + b.h], [b.x, b.y]],
       { color: on ? C.orange : C.gray, width: 3.5, seed: 615 + i, wobble: 1.2, alpha: on ? 0.95 : 0.5 });
     crayonText(fmt(k, list.length), b.x + b.w / 2, b.y + 25, 17, on ? C.darkBrown : C.gray);
+    // 그 낚시터 도감에 안 받은 칸이 있으면 탭 오른쪽 위에 코인 개수 알림
+    const waiting = dexClaimCount(tab);
+    if (waiting > 0) {
+      const nx = b.x + b.w - 6, ny = b.y + 2;
+      scribbleFill(ellipseRows(nx, ny, 11, 11, 5), { color: C.yellow, seed: 697 + i, alpha: 0.95, width: 4 });
+      crayonPath(ellipsePts(nx, ny, 13, 13, 14), { color: C.orange, width: 3, seed: 698 + i, wobble: 0.8 });
+      crayonText(String(waiting), nx, ny + 5, 13, C.redDark);
+    }
   });
   // 물고기 칸들 (테두리 네모 + 그림)
   L.cells.forEach((cell, i) => {
@@ -2746,7 +2844,16 @@ function renderDexToCache() {
       drawFish(f, cx, cy - 10);
       ctx.restore();
       crayonText(LX(f.name), cx, cy + L.chh / 2 - 30, 15, C.darkBrown);
-      crayonText('×' + n, cx, cy + L.chh / 2 - 12, 14, C.gray);
+      // 아직 안 받은 칸: 오른쪽 위에 코인(몇 개인지) + 아래에 "받기!"
+      if (dexClaimable(f)) {
+        const bx = cell.x + cell.w - 26, by = cell.y + 20;
+        scribbleFill(ellipseRows(bx, by, 12, 12, 5), { color: C.yellow, seed: 693 + i, alpha: 0.9, width: 4 });
+        crayonPath(ellipsePts(bx, by, 14, 14, 14), { color: C.orange, width: 3, seed: 694 + i, wobble: 0.8 });
+        crayonText(String(dexBonusOf(f)), bx, by + 5, 14, C.redDark);
+        crayonText(tr('dexClaimTag'), cx, cy + L.chh / 2 - 12, 14, C.redDark);
+      } else {
+        crayonText('×' + n, cx, cy + L.chh / 2 - 12, 14, C.gray);
+      }
     } else {
       crayonText('?', cx, cy + 4, 44, C.gray);
       crayonText('???', cx, cy + L.chh / 2 - 30, 15, C.gray);
@@ -5147,6 +5254,14 @@ function drawDynamic(t) {
         { color: C.brown, width: 3.5, seed: 601 + bi, wobble: 1.2 });
       crayonText(label, b.x + b.w / 2, b.y + 26, 17, C.darkBrown);
     });
+    // 도감에 안 받은 코인이 있으면 도감 버튼에 알림 (몇 칸 남았는지)
+    const waiting = dexClaimCount();
+    if (waiting > 0) {
+      const b = dexBtnRect(), nx = b.x + b.w - 4, ny = b.y + 2;
+      scribbleFill(ellipseRows(nx, ny, 12, 12, 5), { color: C.yellow, seed: 1340, alpha: 0.95, width: 4 });
+      crayonPath(ellipsePts(nx, ny, 14, 14, 14), { color: C.orange, width: 3, seed: 1341, wobble: 0.8 });
+      crayonText(String(waiting), nx, ny + 5, 14, C.redDark);
+    }
     // 페이지 넘김 버튼 (◀ 이전 / 다음 ▶) — 끝 페이지에선 흐리게
     const si = SPOTS.indexOf(save.spot || 'lake');
     [[prevSpotRect(), tr('pagePrev'), si > 0], [nextSpotRect(), tr('pageNext'), si < SPOTS.length - 1]].forEach(([b, label, on], bi) => {
@@ -5221,6 +5336,8 @@ function drawDynamic(t) {
         crayonPath(ellipsePts(rx0 + 30, ry0 + 8, 37, 19, 16),
           { color: C.orange, width: 3, seed: 317, wobble: 1.5 });
         crayonText('NEW!', rx0 + 30, ry0 + 14, 17, C.redDark);
+        // 도감 등록 보너스는 도감에서 직접 눌러 받는다 → 그걸 알려주는 안내
+        crayonText(tr('dexClaimHint'), rx0 + bw - 16, ry0 + 16, 15, C.orange, 'right');
       }
       drawFish(game.fish, W / 2 - 8, ry0 + 62);
       crayonText(T[LANG].caught(game.fish), W / 2, ry0 + 130, 26, C.redDark);
@@ -5593,6 +5710,8 @@ function tick(t) {
     screenCtx.drawImage(game.state === 'dex' ? dexCanvas : game.state === 'achv' ? achvCanvas
       : game.state === 'shop' ? shopCanvas : game.state === 'traits' ? traitsCanvas : statsCanvas, 0, 0);
     screenCtx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    // 도감 위에 얹는 움직이는 것들 (캐시 그림 위에 매 프레임 새로 그린다)
+    if (game.state === 'dex') drawDexOverlay(t);
   } else {
     // 게임 중: 배경 캐시 복사 + 움직이는 것들
     screenCtx.setTransform(1, 0, 0, 1, 0, 0);
