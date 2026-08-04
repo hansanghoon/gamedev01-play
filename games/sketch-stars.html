@@ -1,0 +1,1522 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>스케치북 별자리</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #2b2438; }
+  canvas { display: block; touch-action: none; }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<script src="crayon.js"></script>
+<script>
+// ============================================================
+// 스케치북 별자리 · Sketching Stars       (HF Doodle Studio 4탄)
+//
+// 밤 종이에 흩어진 별을 **마음대로** 이으면, 게임이 그 모양을 보고
+// "오, 국자 닮았네! 국자자리 발견!" 하고 알아맞혀 준다. 정답이 없는 게임.
+//
+// 제약은 **흰 크레파스가 닳는 것** — 먼 별까지 갈수록 많이 쓴다.
+// 그래서 선 하나 그을 때마다 "여기까지 갈 가치가 있나"를 고민하게 된다.
+// (낙서 긁기의 "버릴까 끝까지 갈까"와 같은 자리 — 판 안에 결정을 만드는 장치)
+// ============================================================
+
+const TEST_MODE = location.hash.startsWith('#test');
+
+// ---------- 1. 글 ----------
+const T = {
+  title:    { ko: '스케치북 별자리', en: 'Sketching Stars' },
+  tapPlay:  { ko: '눌러서 시작', en: 'Tap to Play' },
+  howto:    { ko: '별을 이어서 나만의 별자리를 만들어요', en: 'Connect stars into your own constellation' },
+  crayon:   { ko: '흰 크레파스', en: 'White crayon' },
+  book:     { ko: '도감 %1/%2', en: 'Book %1/%2' },
+  finish:   { ko: '이 별자리 완성!', en: 'Finish!' },
+  undo:     { ko: '되돌리기', en: 'Undo' },
+  endNight: { ko: '밤 끝내기', en: 'End night' },
+  hint:     { ko: '별을 눌러서 이어보세요', en: 'Tap stars to connect them' },
+  hint2:    { ko: '다 이었으면 아래 「완성!」', en: 'Done? Tap Finish below' },
+  isNew:    { ko: '처음 발견!', en: 'New discovery!' },
+  again:    { ko: '또 만났네', en: 'Seen before' },
+  noCrayon: { ko: '크레파스가 모자라요', en: 'Not enough crayon' },
+  result:   { ko: '오늘 밤 별자리 %1개', en: '%1 constellations tonight' },
+  newFound: { ko: '처음 보는 별자리 %1개!', en: '%1 seen for the first time!' },
+  bookNow:  { ko: '도감 %1 / %2', en: 'Book %1 / %2' },
+  playAgain:{ ko: '한 번 더', en: 'Play Again' },
+  rotate:   { ko: '화면을 옆으로 돌려주세요', en: 'Please rotate your device' },
+  langBtn:  { ko: 'English', en: '한국어' },
+  // 도감
+  bookBtn:  { ko: '도감', en: 'Star Book' },
+  bookTitle:{ ko: '별자리 도감', en: 'Star Book' },
+  close:    { ko: '닫기', en: 'Close' },
+  back:     { ko: '뒤로', en: 'Back' },
+  pageN:    { ko: '%1 / %2 쪽', en: 'Page %1 / %2' },
+  prevBtn:  { ko: '이전', en: 'Prev' },
+  nextBtn:  { ko: '다음', en: 'Next' },
+  locked:   { ko: '???', en: '???' },
+  notYet:   { ko: '아직 못 찾았어요', en: 'Not found yet' },
+  howTo:    { ko: '이렇게 만들면 ▸ %1', en: 'How to get it ▸ %1' },
+  myShape:  { ko: '내가 만든 모양', en: 'The shape you made' },
+  needShape:{ ko: '한 번 더 만들면 그림이 남아요', en: 'Make it again to save its shape' },
+  replaceBtn:{ ko: '도감 그림을 이걸로 바꾸기', en: 'Use this in the book' },
+  replaced: { ko: '도감 그림을 바꿨어요!', en: 'Book picture updated!' },
+  rar1:     { ko: '흔함', en: 'Common' },
+  rar2:     { ko: '보통', en: 'Uncommon' },
+  rar3:     { ko: '귀함', en: 'Rare' },
+  rar4:     { ko: '아주 귀함', en: 'Very rare' },
+};
+
+const SAVE_KEY = 'sketch-stars-v1';
+
+// ============================================================
+// 2. 별자리 판별기 — 이 게임의 심장
+// ------------------------------------------------------------
+// 만들기 전에 node로 30가지 모양을 먼저 시험해서 다듬었다. (#test 에 그대로 들어있음)
+// 규칙은 사람이 읽을 수 있게 썼다 — 점수가 아니라 "고리 1개 + 꼬리 1개" 같은 말로.
+// ============================================================
+
+function analyze(stars, edges) {
+  const used = new Set();
+  for (const [a, b] of edges) { used.add(a); used.add(b); }
+  const ids = [...used].sort((p, q) => p - q);
+  const n = ids.length, e = edges.length;
+  if (e === 0) return { empty: true };
+
+  const adj = new Map(ids.map(i => [i, []]));
+  for (const [a, b] of edges) { adj.get(a).push(b); adj.get(b).push(a); }
+  const deg = new Map(ids.map(i => [i, adj.get(i).length]));
+
+  // 떨어진 덩어리 세기
+  const seen = new Set();
+  let compCount = 0;
+  for (const s of ids) {
+    if (seen.has(s)) continue;
+    compCount++;
+    const stack = [s];
+    seen.add(s);
+    while (stack.length) {
+      const c = stack.pop();
+      for (const nb of adj.get(c)) if (!seen.has(nb)) { seen.add(nb); stack.push(nb); }
+    }
+  }
+
+  const cycles = e - n + compCount;               // 고리 개수 (오일러 공식)
+  const ends = ids.filter(i => deg.get(i) === 1).length;
+  const hubs = ids.filter(i => deg.get(i) >= 3).length;
+
+  const xs = ids.map(i => stars[i].x), ys = ids.map(i => stars[i].y);
+  const bw = Math.max(...xs) - Math.min(...xs);
+  const bh = Math.max(...ys) - Math.min(...ys);
+
+  const f = {
+    n, e, cycles, ends, hubs, comps: compCount,
+    bw, bh, aspect: bw / Math.max(1, bh), empty: false,
+  };
+
+  // 끝점이 어디에 몰렸나 — 나무(밑동 하나)와 사람(다리 둘)을 가르는 값
+  if (bh > 0) {
+    const lo = Math.min(...ys);
+    const endIds = ids.filter(i => deg.get(i) === 1);
+    f.lowEnds = endIds.filter(i => (stars[i].y - lo) / bh > 0.72).length;
+  } else f.lowEnds = 0;
+
+  if (cycles === 0 && hubs === 0 && compCount === 1) Object.assign(f, chainShape(stars, adj, ids, deg));
+  if (cycles === 1 && compCount === 1) Object.assign(f, ringShape(stars, adj, ids, deg));
+  if (hubs === 1 && cycles === 0) {
+    const hub = ids.find(i => deg.get(i) >= 3);
+    f.branches = deg.get(hub);
+    f.branchLens = adj.get(hub).map(nb => branchLength(stars, adj, deg, hub, nb));
+    f.branchEven = evenness(f.branchLens);
+    f.spread = angleSpread(stars, hub, adj.get(hub));
+  }
+  return f;
+}
+
+// 한 줄로 이어진 사슬 — 끝에서 끝까지 따라가며 꺾인 모양을 본다
+function chainShape(stars, adj, ids, deg) {
+  const start = ids.find(i => deg.get(i) === 1);
+  if (start == null) return {};
+  const order = [start];
+  let prev = null, cur = start;
+  while (true) {
+    const nb = adj.get(cur).find(x => x !== prev);
+    if (nb == null) break;
+    order.push(nb);
+    prev = cur; cur = nb;
+  }
+  const turns = [];
+  for (let i = 1; i < order.length - 1; i++) {
+    const A = stars[order[i - 1]], B = stars[order[i]], C = stars[order[i + 1]];
+    const v1x = B.x - A.x, v1y = B.y - A.y, v2x = C.x - B.x, v2y = C.y - B.y;
+    const cross = v1x * v2y - v1y * v2x, dot = v1x * v2x + v1y * v2y;
+    turns.push({ ang: Math.atan2(Math.abs(cross), dot) * 180 / Math.PI, side: Math.sign(cross) });
+  }
+  const bent = turns.filter(t => t.ang > 25);
+  const sharp = turns.filter(t => t.ang > 65).length;
+  let flips = 0;
+  for (let i = 1; i < bent.length; i++) if (bent[i].side !== bent[i - 1].side) flips++;
+  return {
+    bends: bent.length, sharpBends: sharp, flips,
+    sameSide: bent.length >= 2 && flips === 0,     // 한쪽으로만 휘면 곡선
+  };
+}
+
+// 고리 하나짜리 — 고리에 낀 별 수, 둥글기, 붙어 있는 꼬리들
+function ringShape(stars, adj, ids, deg) {
+  const d = new Map(deg);
+  const alive = new Set(ids);
+  let changed = true;
+  while (changed) {                       // 끝점을 계속 떼어내면 고리만 남는다
+    changed = false;
+    for (const i of [...alive]) {
+      if (d.get(i) <= 1) {
+        alive.delete(i);
+        for (const nb of adj.get(i)) if (alive.has(nb)) d.set(nb, d.get(nb) - 1);
+        changed = true;
+      }
+    }
+  }
+  const ring = [...alive];
+  const ringLen = ring.length;
+
+  // ⚠️ 꼬리는 개수만 세면 안 된다 — 풍선과 올챙이가 구조상 똑같아서
+  //    "고리에 비해 꼬리가 긴가"로만 갈린다. 그래서 실제 길이도 잰다.
+  const tails = [], tailPx = [];
+  for (const r of ring) {
+    for (const nb of adj.get(r)) {
+      if (alive.has(nb)) continue;
+      const t = tailLength(stars, adj, alive, r, nb);
+      tails.push(t.count); tailPx.push(t.px);
+    }
+  }
+  tails.sort((a, b) => b - a);
+  tailPx.sort((a, b) => b - a);
+
+  let ringSpan = 0, round = 0;
+  if (ringLen >= 3) {
+    const rxs = ring.map(i => stars[i].x), rys = ring.map(i => stars[i].y);
+    ringSpan = Math.max(Math.max(...rxs) - Math.min(...rxs), Math.max(...rys) - Math.min(...rys));
+    const cx = rxs.reduce((s, v) => s + v, 0) / ringLen, cy = rys.reduce((s, v) => s + v, 0) / ringLen;
+    const rs = ring.map(i => Math.hypot(stars[i].x - cx, stars[i].y - cy));
+    const avg = rs.reduce((s, v) => s + v, 0) / rs.length;
+    const dev = rs.reduce((s, v) => s + Math.abs(v - avg), 0) / rs.length;
+    // ⚠️ 편차를 그대로 쓰면 눈에 띄게 찌그러진 고리도 0.9가 나온다 (사람 눈보다 관대).
+    //    2.5배 부풀려서 "정말 동그란 것"만 높은 점수가 되게 한다.
+    round = 1 - Math.min(1, dev / Math.max(1, avg) * 2.5);
+  }
+  return { ringLen, tails, tailPx, tailCount: tails.length, round, ringSpan };
+}
+
+function tailLength(stars, adj, ringSet, from, first) {
+  let prev = from, cur = first, count = 1;
+  let px = Math.hypot(stars[from].x - stars[first].x, stars[from].y - stars[first].y);
+  while (true) {
+    const nb = adj.get(cur).filter(x => x !== prev && !ringSet.has(x));
+    if (nb.length !== 1) break;
+    px += Math.hypot(stars[cur].x - stars[nb[0]].x, stars[cur].y - stars[nb[0]].y);
+    prev = cur; cur = nb[0]; count++;
+  }
+  return { count, px };
+}
+
+function branchLength(stars, adj, deg, hub, first) {
+  let prev = hub, cur = first;
+  let len = Math.hypot(stars[hub].x - stars[first].x, stars[hub].y - stars[first].y);
+  while (deg.get(cur) === 2) {
+    const nb = adj.get(cur).find(x => x !== prev);
+    if (nb == null) break;
+    len += Math.hypot(stars[cur].x - stars[nb].x, stars[cur].y - stars[nb].y);
+    prev = cur; cur = nb;
+  }
+  return len;
+}
+
+function evenness(list) {
+  if (!list.length) return 1;
+  const avg = list.reduce((s, v) => s + v, 0) / list.length;
+  const dev = list.reduce((s, v) => s + Math.abs(v - avg), 0) / list.length;
+  return 1 - Math.min(1, dev / Math.max(1, avg));
+}
+
+function angleSpread(stars, hub, nbs) {
+  const angs = nbs.map(i => Math.atan2(stars[i].y - stars[hub].y, stars[i].x - stars[hub].x)).sort((a, b) => a - b);
+  const ideal = Math.PI * 2 / angs.length;
+  const dev = angs.reduce((s, a, i) => {
+    const next = i === angs.length - 1 ? angs[0] + Math.PI * 2 : angs[i + 1];
+    return s + Math.abs((next - a) - ideal);
+  }, 0) / angs.length;
+  return 1 - Math.min(1, dev / ideal);
+}
+
+// ---------- 별자리 목록 ----------
+// 위에서부터 보고 처음 맞는 것을 쓴다 → **구체적인 것을 위에** 둘 것.
+// rarity: 1 흔함 · 2 보통 · 3 귀함 · 4 아주 귀함
+const SHAPES = [
+  { key: 'flock', ko: '철새떼자리', en: 'Flock', rarity: 3,
+    why: { ko: '떨어진 덩어리가 %1개나 되네!', en: '%1 separate groups!' },
+    test: f => f.comps >= 3 && [f.comps] },
+  { key: 'twins', ko: '쌍둥이자리', en: 'Twins', rarity: 2,
+    why: { ko: '똑 떨어진 덩어리 두 개', en: 'Two separate groups' },
+    test: f => f.comps === 2 && [] },
+
+  { key: 'glasses', ko: '안경자리', en: 'Glasses', rarity: 3,
+    why: { ko: '고리 두 개가 나란히 — 안경 같아!', en: 'Two rings side by side' },
+    test: f => f.cycles === 2 && f.aspect > 1.4 && [] },
+  { key: 'snowman', ko: '눈사람자리', en: 'Snowman', rarity: 3,
+    why: { ko: '고리 두 개가 위아래로 포개졌어', en: 'Two rings stacked up' },
+    test: f => f.cycles === 2 && f.aspect < 0.8 && [] },
+  { key: 'bicycle', ko: '자전거자리', en: 'Bicycle', rarity: 3,
+    why: { ko: '고리 두 개에 뼈대까지 — 자전거!', en: 'Two rings with a frame' },
+    test: f => f.cycles === 2 && [] },
+  { key: 'cloud', ko: '구름자리', en: 'Cloud', rarity: 4,
+    why: { ko: '고리가 %1개나 뭉게뭉게', en: '%1 rings all puffed up' },
+    test: f => f.cycles >= 3 && [f.cycles] },
+
+  { key: 'spider', ko: '거미자리', en: 'Spider', rarity: 4,
+    why: { ko: '몸통 고리에 다리가 %1개!', en: 'A ring body with %1 legs' },
+    test: f => f.cycles === 1 && f.tailCount >= 5 && [f.tailCount] },
+  { key: 'crab', ko: '게자리', en: 'Crab', rarity: 3,
+    why: { ko: '고리 몸통에 집게 네 개', en: 'A ring body with four claws' },
+    test: f => f.cycles === 1 && f.tailCount === 4 && [] },
+  { key: 'rocket', ko: '로켓자리', en: 'Rocket', rarity: 3,
+    why: { ko: '머리 하나에 불꽃 세 줄기 — 발사!', en: 'A head with three flames' },
+    test: f => f.cycles === 1 && f.tailCount === 3 && f.aspect < 0.8 && [] },
+  { key: 'key', ko: '열쇠자리', en: 'Key', rarity: 3,
+    why: { ko: '고리 손잡이에 삐죽삐죽 이빨', en: 'A ring handle with teeth' },
+    test: f => f.cycles === 1 && f.tailCount === 3 && [] },
+  { key: 'candy', ko: '사탕자리', en: 'Candy', rarity: 2,
+    why: { ko: '가운데 고리에 양쪽 꼬리 — 사탕 포장!', en: 'A ring with two wrapper ends' },
+    test: f => f.cycles === 1 && f.tailCount === 2 && [] },
+  { key: 'dipper', ko: '국자자리', en: 'Dipper', rarity: 2,
+    why: { ko: '동그란 통에 긴 손잡이 — 국자!', en: 'A bowl with a long handle' },
+    test: f => f.cycles === 1 && f.tailCount === 1 && f.tails[0] >= 3 && [] },
+  // ⚠️ 풍선과 올챙이는 구조가 똑같다 (고리 1 + 꼬리 1). 가르는 건 오직 비율.
+  { key: 'tadpole', ko: '올챙이자리', en: 'Tadpole', rarity: 2,
+    why: { ko: '작은 머리에 긴 꼬리가 흔들흔들', en: 'A small head with a long tail' },
+    test: f => f.cycles === 1 && f.tailCount === 1 && f.tailPx[0] > f.ringSpan * 1.25 && [] },
+  { key: 'balloon', ko: '풍선자리', en: 'Balloon', rarity: 1,
+    why: { ko: '동그란 풍선에 실 한 줄', en: 'A round balloon on a string' },
+    test: f => f.cycles === 1 && f.tailCount === 1 && [] },
+
+  { key: 'cone', ko: '생일고깔자리', en: 'Party Hat', rarity: 1,
+    why: { ko: '별 셋으로 만든 세모', en: 'A triangle from three stars' },
+    test: f => f.cycles === 1 && f.tailCount === 0 && f.ringLen === 3 && [] },
+  { key: 'kite', ko: '가오리연자리', en: 'Kite', rarity: 1,
+    why: { ko: '네모난 고리 — 연처럼!', en: 'A four-star ring, like a kite' },
+    test: f => f.cycles === 1 && f.tailCount === 0 && f.ringLen === 4 && [] },
+  { key: 'house', ko: '집자리', en: 'House', rarity: 2,
+    why: { ko: '별 다섯이 지붕 있는 집을 만들었어', en: 'Five stars make a house' },
+    test: f => f.cycles === 1 && f.tailCount === 0 && f.ringLen === 5 && [] },
+  { key: 'beehive', ko: '벌집자리', en: 'Beehive', rarity: 2,
+    why: { ko: '육각형 벌집!', en: 'A six-sided honeycomb' },
+    test: f => f.cycles === 1 && f.tailCount === 0 && f.ringLen === 6 && [] },
+  { key: 'moon', ko: '보름달자리', en: 'Full Moon', rarity: 4,
+    why: { ko: '별 %1개가 거의 완벽한 동그라미', en: '%1 stars in a near-perfect circle' },
+    test: f => f.cycles === 1 && f.tailCount === 0 && f.ringLen >= 7 && f.round > 0.82 && [f.ringLen] },
+  { key: 'lake', ko: '호수자리', en: 'Lake', rarity: 2,
+    why: { ko: '별 %1개로 두른 널찍한 고리', en: 'A wide ring of %1 stars' },
+    test: f => f.cycles === 1 && f.tailCount === 0 && [f.ringLen] },
+  { key: 'ringOther', ko: '반지자리', en: 'Ring', rarity: 2,
+    why: { ko: '고리 하나에 뭔가 붙었네', en: 'A ring with something attached' },
+    test: f => f.cycles === 1 && [] },
+
+  { key: 'sun', ko: '해님자리', en: 'Sun', rarity: 4,
+    why: { ko: '한 별에서 빛이 %1갈래로!', en: 'One star with %1 rays' },
+    test: f => f.hubs === 1 && f.branches >= 6 && [f.branches] },
+  { key: 'firework', ko: '불꽃자리', en: 'Firework', rarity: 3,
+    why: { ko: '다섯 갈래로 팡 터졌어', en: 'Burst into five directions' },
+    test: f => f.hubs === 1 && f.branches === 5 && [] },
+  { key: 'pinwheel', ko: '바람개비자리', en: 'Pinwheel', rarity: 3,
+    why: { ko: '네 날개가 고르게 퍼졌어 — 빙글빙글!', en: 'Four evenly spread blades' },
+    test: f => f.hubs === 1 && f.branches === 4 && f.spread > 0.7 && f.branchEven > 0.65 && [] },
+  { key: 'cross', ko: '네거리자리', en: 'Crossroads', rarity: 2,
+    why: { ko: '네 갈래로 갈라진 길', en: 'A road splitting four ways' },
+    test: f => f.hubs === 1 && f.branches === 4 && [] },
+  { key: 'slingshot', ko: '새총자리', en: 'Slingshot', rarity: 1,
+    why: { ko: '세 갈래로 갈라진 Y자', en: 'A three-way Y shape' },
+    test: f => f.hubs === 1 && f.branches === 3 && [] },
+
+  // ⚠️ 사람과 나무도 구조가 같다. 사람은 **아래로 뻗은 다리가 둘**, 나무는 밑동 하나.
+  { key: 'person', ko: '춤꾼자리', en: 'Dancer', rarity: 3,
+    why: { ko: '팔다리를 쫙 폈어 — 춤추고 있잖아!', en: 'Arms and legs out — it is dancing!' },
+    test: f => f.cycles === 0 && f.hubs === 2 && f.ends >= 4 && f.aspect < 1 && f.lowEnds >= 2 && [] },
+  { key: 'tree', ko: '나무자리', en: 'Tree', rarity: 2,
+    why: { ko: '가지를 뻗고 위로 자랐네', en: 'Branching upward like a tree' },
+    test: f => f.cycles === 0 && f.hubs >= 2 && f.aspect < 0.85 && [] },
+  { key: 'river', ko: '강자리', en: 'River', rarity: 2,
+    why: { ko: '옆으로 길게 갈라져 흐르는 물줄기', en: 'Branching sideways like a river' },
+    test: f => f.cycles === 0 && f.hubs >= 2 && f.aspect > 1.5 && [] },
+  { key: 'antler', ko: '사슴뿔자리', en: 'Antlers', rarity: 3,
+    why: { ko: '갈림길이 %1군데나 되는 뿔', en: 'Antlers with %1 forks' },
+    test: f => f.cycles === 0 && f.hubs >= 2 && [f.hubs] },
+
+  { key: 'lightning', ko: '번개자리', en: 'Lightning', rarity: 3,
+    why: { ko: '지그재그로 확확 꺾였어 — 번쩍!', en: 'Sharp zigzag — flash!' },
+    test: f => f.hubs === 0 && f.cycles === 0 && f.flips >= 2 && f.sharpBends >= 2 && [] },
+  { key: 'stairs', ko: '계단자리', en: 'Stairs', rarity: 2,
+    why: { ko: '한 칸씩 올라가는 계단', en: 'Stepping up one at a time' },
+    test: f => f.hubs === 0 && f.cycles === 0 && f.flips >= 2 && f.bends >= 3 && [] },
+  { key: 'snake', ko: '뱀자리', en: 'Snake', rarity: 2,
+    why: { ko: '구불구불 기어가는 모양', en: 'Slithering back and forth' },
+    test: f => f.hubs === 0 && f.cycles === 0 && f.flips >= 1 && f.n >= 5 && [] },
+  { key: 'rainbow', ko: '무지개자리', en: 'Rainbow', rarity: 3,
+    why: { ko: '한쪽으로만 부드럽게 휘었어', en: 'Curving gently one way' },
+    test: f => f.hubs === 0 && f.cycles === 0 && f.sameSide && f.aspect > 1.1 && f.n >= 4 && [] },
+  { key: 'bow', ko: '활자리', en: 'Bow', rarity: 3,
+    why: { ko: '한쪽으로 팽팽하게 휜 활', en: 'Bent like a drawn bow' },
+    test: f => f.hubs === 0 && f.cycles === 0 && f.sameSide && f.n >= 4 && [] },
+  { key: 'boomerang', ko: '부메랑자리', en: 'Boomerang', rarity: 1,
+    why: { ko: '가운데가 한 번 꺾였어', en: 'One bend in the middle' },
+    test: f => f.hubs === 0 && f.cycles === 0 && f.bends === 1 && [] },
+  { key: 'rail', ko: '기찻길자리', en: 'Railway', rarity: 2,
+    why: { ko: '별 %1개가 곧게 한 줄로!', en: '%1 stars in a straight line' },
+    test: f => f.hubs === 0 && f.cycles === 0 && f.bends === 0 && f.n >= 4 && [f.n] },
+  { key: 'stick', ko: '젓가락자리', en: 'Chopstick', rarity: 1,
+    why: { ko: '짧고 곧은 젓가락 한 짝', en: 'One short straight chopstick' },
+    test: f => f.hubs === 0 && f.cycles === 0 && f.bends === 0 && [] },
+  // 맨 마지막 그물 — 위에서 다 빠져나온 모양은 전부 여기로 온다.
+  // "낙서자리"라는 이름 자체가 이 게임의 대답이다. 아무렇게나 이어도 그건 낙서다.
+  { key: 'wander', ko: '낙서자리', en: 'Doodle', rarity: 1,
+    why: { ko: '별 %1개를 마음 가는 대로 이었어', en: '%1 stars connected however you liked' },
+    test: f => [f.n] },     // ← 맨 마지막 그물. 위에서 다 빠져나와도 여기 걸린다
+];
+
+// ---------- 별자리 전설 ----------
+// 판별 규칙(SHAPES)과 읽을거리(LORE)를 일부러 갈라놨다.
+// 규칙을 건드릴 땐 숫자만 보게, 이야기를 쓸 땐 이야기만 보게.
+//   lore  도감에서 읽는 한 줄 전설
+//   hint  "이렇게 만들면 나와요" — 아직 못 찾은 별자리도 노릴 수 있게 알려준다
+const LORE = {
+  flock:    { lore: { ko: '따로 떨어져 날지만 가는 곳은 같다. 밤하늘의 이사 행렬.',
+                      en: 'They fly apart but land together — the night sky moving house.' },
+              hint: { ko: '따로 떨어진 덩어리를 3개 이상', en: 'Three or more separate groups' } },
+  twins:    { lore: { ko: '누가 형인지 아직도 다투는 중. 밤새 결론이 안 난다.',
+                      en: 'Still arguing over who is older. All night, every night.' },
+              hint: { ko: '따로 떨어진 덩어리를 2개', en: 'Two separate groups' } },
+  glasses:  { lore: { ko: '밤하늘이 잘 안 보일 때 별들이 빌려주는 안경.',
+                      en: 'The stars lend these out when the sky gets blurry.' },
+              hint: { ko: '고리 두 개를 옆으로 나란히', en: 'Two rings side by side' } },
+  snowman:  { lore: { ko: '여름에도 안 녹는다. 별이라서.',
+                      en: 'Never melts, not even in summer. Being a star helps.' },
+              hint: { ko: '고리 두 개를 위아래로 포개서', en: 'Two rings stacked vertically' } },
+  bicycle:  { lore: { ko: '페달을 밟는 사람은 아직 아무도 못 봤다.',
+                      en: 'Nobody has ever seen who pedals it.' },
+              hint: { ko: '고리 두 개에 뼈대를 이어서', en: 'Two rings joined by a frame' } },
+  cloud:    { lore: { ko: '비는 안 온다. 대신 별가루가 떨어진다.',
+                      en: 'It never rains from this one — only stardust.' },
+              hint: { ko: '고리를 세 개 이상 뭉쳐서', en: 'Three or more rings bunched up' } },
+  spider:   { lore: { ko: '은하수가 이 거미줄에 걸린 거라는 소문이 있다.',
+                      en: 'Rumor says the Milky Way got caught in this web.' },
+              hint: { ko: '고리 몸통에 다리를 5개 이상', en: 'A ring body with 5+ legs' } },
+  crab:     { lore: { ko: '옆으로만 걷다가 밤하늘 끝까지 가버렸다.',
+                      en: 'Walked sideways so long it reached the edge of the sky.' },
+              hint: { ko: '고리 몸통에 집게를 넷', en: 'A ring body with four claws' } },
+  rocket:   { lore: { ko: '발사한 지 백 년째. 아직 같은 자리.',
+                      en: 'Launched a hundred years ago. Still right there.' },
+              hint: { ko: '세로로 긴 고리에 불꽃 세 줄기', en: 'A tall ring with three flames' } },
+  key:      { lore: { ko: '어느 문의 열쇠인지 잊어버렸다.',
+                      en: 'Nobody remembers which door it opens.' },
+              hint: { ko: '고리 손잡이에 삐죽삐죽 세 갈래', en: 'A ring handle with three teeth' } },
+  candy:    { lore: { ko: '포장지만 남았다. 누가 먹었을까?',
+                      en: 'Only the wrapper is left. Who ate it?' },
+              hint: { ko: '고리 양쪽에 꼬리를 하나씩', en: 'A ring with a tail on each side' } },
+  dipper:   { lore: { ko: '별국을 퍼먹던 국자. 아직도 국물이 뚝뚝.',
+                      en: 'Used for scooping star soup. Still dripping.' },
+              hint: { ko: '동그란 고리에 별 3개 넘는 긴 손잡이', en: 'A ring with a long 3+ star handle' } },
+  tadpole:  { lore: { ko: '개구리 되는 걸 깜빡하고 그냥 별이 됐다.',
+                      en: 'Forgot to become a frog and became a star instead.' },
+              hint: { ko: '작은 고리에 고리보다 긴 꼬리', en: 'A small ring with a longer tail' } },
+  balloon:  { lore: { ko: '놓친 풍선은 전부 여기로 온다.',
+                      en: 'Every balloon anyone ever let go ends up here.' },
+              hint: { ko: '큰 고리에 짧은 실 한 줄', en: 'A big ring with one short string' } },
+  cone:     { lore: { ko: '누구 생일인지는 아무도 모른다. 매일 밤 파티.',
+                      en: "Nobody knows whose birthday. The party never stops." },
+              hint: { ko: '별 셋으로 세모를 닫아서', en: 'Close a triangle with three stars' } },
+  kite:     { lore: { ko: '실이 끊어져 하늘에 눌러앉았다.',
+                      en: 'The string snapped, so it just stayed up there.' },
+              hint: { ko: '별 넷으로 고리를 닫아서', en: 'Close a ring with four stars' } },
+  house:    { lore: { ko: '불이 켜져 있다. 아무도 안 사는데.',
+                      en: 'The light is on. Nobody lives there.' },
+              hint: { ko: '별 다섯으로 고리를 닫아서', en: 'Close a ring with five stars' } },
+  beehive:  { lore: { ko: '꿀 대신 별빛이 고인다.',
+                      en: 'Fills up with starlight instead of honey.' },
+              hint: { ko: '별 여섯으로 고리를 닫아서', en: 'Close a ring with six stars' } },
+  moon:     { lore: { ko: '달이 부러운 별들이 힘을 합쳐 만든 가짜 달.',
+                      en: 'A fake moon the jealous stars built together.' },
+              hint: { ko: '별 7개 이상으로 아주 동그란 고리', en: 'A very round ring of 7+ stars' } },
+  lake:     { lore: { ko: '들여다보면 또 다른 밤하늘이 있다.',
+                      en: 'Look in and you will find another night sky.' },
+              hint: { ko: '별을 많이 둘러 널찍한 고리', en: 'A wide ring of many stars' } },
+  ringOther:{ lore: { ko: '누가 잃어버린 반지. 주인은 안 나타난다.',
+                      en: 'Someone lost this ring. No one came back for it.' },
+              hint: { ko: '고리 하나에 뭔가 붙이면', en: 'A ring with something attached' } },
+  sun:      { lore: { ko: '밤에 몰래 해 흉내를 낸다. 아침이 오면 시치미.',
+                      en: 'Plays the sun at night, then pretends it never happened.' },
+              hint: { ko: '별 하나에서 6갈래 이상 뻗어서', en: 'One star with 6+ rays' } },
+  firework: { lore: { ko: '터진 채로 멈췄다. 소리는 아직 안 났다.',
+                      en: 'Frozen mid-burst. The bang has not arrived yet.' },
+              hint: { ko: '별 하나에서 다섯 갈래로', en: 'One star with five branches' } },
+  pinwheel: { lore: { ko: '바람이 없어도 돈다. 별이니까.',
+                      en: 'Spins without wind. It is a star, after all.' },
+              hint: { ko: '별 하나에서 네 갈래를 고르게', en: 'Four evenly spread branches' } },
+  cross:    { lore: { ko: '네 방향 다 밤하늘. 어디로 가도 상관없다.',
+                      en: 'Night sky in all four directions. Pick any.' },
+              hint: { ko: '별 하나에서 네 갈래로', en: 'One star with four branches' } },
+  slingshot:{ lore: { ko: '쏘려던 돌이 그대로 별이 됐다.',
+                      en: 'The pebble it was about to fire became a star.' },
+              hint: { ko: '별 하나에서 세 갈래로', en: 'One star with three branches' } },
+  person:   { lore: { ko: '음악이 없는데 천 년째 춤춘다.',
+                      en: 'A thousand years of dancing, with no music.' },
+              hint: { ko: '팔 두 개, 아래로 다리 두 개', en: 'Two arms and two legs pointing down' } },
+  tree:     { lore: { ko: '열매는 별. 흔들면 우수수.',
+                      en: 'The fruit is starlight. Shake it and it rains.' },
+              hint: { ko: '갈림길을 여럿 두고 위로 자라게', en: 'Several forks, growing upward' } },
+  river:    { lore: { ko: '물은 없다. 그래도 흐른다.',
+                      en: 'No water in it. It flows anyway.' },
+              hint: { ko: '갈림길을 여럿 두고 옆으로 길게', en: 'Several forks, spreading sideways' } },
+  antler:   { lore: { ko: '사슴은 어디 갔는지 뿔만 남았다.',
+                      en: 'The deer is long gone. The antlers stayed.' },
+              hint: { ko: '갈림길을 두 군데 이상', en: 'Two or more forks' } },
+  lightning:{ lore: { ko: '치는 순간 굳어버렸다. 아직 천둥을 기다리는 중.',
+                      en: 'Froze mid-strike. Still waiting on the thunder.' },
+              hint: { ko: '지그재그로 확확 꺾어서', en: 'Sharp zigzags back and forth' } },
+  stairs:   { lore: { ko: '올라가면 어디가 나올까. 아무도 끝까지 안 가봤다.',
+                      en: 'Where do they lead? Nobody has climbed to the top.' },
+              hint: { ko: '한 칸씩 번갈아 꺾어 올라가게', en: 'Step up, turning each time' } },
+  snake:    { lore: { ko: '밤새 기어가지만 아침이면 늘 제자리.',
+                      en: 'Crawls all night, always back where it started by dawn.' },
+              hint: { ko: '별 5개 이상을 구불구불', en: 'Five or more stars, wiggling' } },
+  rainbow:  { lore: { ko: '비 온 뒤에만 나오는 낮 무지개의 밤 버전.',
+                      en: 'The night shift of the rainbow after rain.' },
+              hint: { ko: '한쪽으로만 부드럽게, 옆으로 넓게', en: 'Curving one way, wide' } },
+  bow:      { lore: { ko: '화살은 이미 쐈다. 어디로 갔는지는 모른다.',
+                      en: 'The arrow was loosed long ago. Nobody knows where.' },
+              hint: { ko: '한쪽으로만 팽팽하게 휘어서', en: 'Bent steadily to one side' } },
+  boomerang:{ lore: { ko: '던진 사람에게 아직 안 돌아왔다.',
+                      en: 'Still has not come back to whoever threw it.' },
+              hint: { ko: '가운데를 딱 한 번 꺾어서', en: 'Exactly one bend in the middle' } },
+  rail:     { lore: { ko: '기차는 안 온다. 백 년째 기다리는 중.',
+                      en: 'No train yet. It has been a hundred years.' },
+              hint: { ko: '별 4개 이상을 곧게 한 줄로', en: 'Four or more stars in a straight line' } },
+  stick:    { lore: { ko: '한 짝이 없다. 나머지 한 짝은 어느 별에.',
+                      en: 'Its partner is missing, somewhere among the stars.' },
+              hint: { ko: '별 두셋을 곧게', en: 'Two or three stars, straight' } },
+  wander:   { lore: { ko: '그리다 만 것 같지만, 사실 이게 완성이다.',
+                      en: 'Looks unfinished. It is not.' },
+              hint: { ko: '아무렇게나 이으면 여기로 온다', en: 'Anything that fits nowhere else' } },
+};
+
+// 모양을 보고 별자리를 알아맞힌다. **반드시 하나는 나온다** (꽝 없음)
+function identify(stars, edges) {
+  const f = analyze(stars, edges);
+  if (f.empty) return null;
+  const lang = crayonLang();
+  for (const s of SHAPES) {
+    const r = s.test(f);
+    if (!r) continue;
+    let why = LX(s.why);
+    r.forEach((v, i) => { why = why.split('%' + (i + 1)).join(v); });
+    return { key: s.key, name: lang === 'en' ? s.en : s.ko, why, rarity: s.rarity };
+  }
+  return null;
+}
+
+// ============================================================
+// 3. 게임
+// ============================================================
+const cv = document.getElementById('cv');
+crayonFit(cv);
+crayonLangInit({ key: SAVE_KEY + '-lang', langs: ['ko', 'en'], table: T });
+crayonAudioInit({ key: SAVE_KEY, silent: TEST_MODE });
+
+const ctx = cv.getContext('2d');
+
+// 밤하늘 색
+const NIGHT = {
+  paper:  '#16203f',
+  deep:   '#0d1430',
+  desk:   '#2b2438',
+  star:   '#fff6da',
+  dim:    '#5a6a92',
+  line:   '#ffffff',
+  gauge:  '#ffd23f',
+};
+// 완성한 별자리에 차례로 입히는 색 (파스텔)
+const DONE_COLORS = ['#ffd23f', '#8fd0ea', '#ff8fb1', '#a077d8', '#6fb04c', '#ff9633'];
+
+// 크레파스 총량 — 이 값이 곧 난이도다.
+// 400으로 해보니 별자리를 7~8개나 만들 수 있어서 "아껴 쓴다"는 느낌이 안 났다.
+// 300이면 대략 4~5개 — 별 26개를 거의 다 쓰는 양이라 고민이 생긴다.
+const CRAYON_MAX = 300;
+const STAR_COUNT = 26;
+
+// 도감 — 발견한 별자리 key 목록
+// ⚠️ 검증 모드는 빈 도감에서 시작한다. 안 그러면 이미 플레이한 사람이 #test 를 열었을 때
+//    "처음 발견" 시험이 실패한다 — 시험이 저장된 기록에 따라 결과가 달라지면 안 된다.
+const found = new Set(TEST_MODE ? [] : (LS.get(SAVE_KEY + '-book') || '').split(',').filter(Boolean));
+function saveBook() { if (!TEST_MODE) LS.set(SAVE_KEY + '-book', [...found].join(',')); }
+
+// ⭐ 도감 그림은 **처음 발견했을 때 직접 이은 그 모양**이다.
+//    이 게임은 별자리마다 정해진 그림이 없다 (플레이어가 만드는 거니까).
+//    그래서 대표 그림을 미리 그려두는 대신, 그때 그 모양을 통째로 저장한다.
+//    → 같은 국자자리라도 사람마다·판마다 도감 그림이 다르다.
+let shots = {};
+if (!TEST_MODE) {
+  try { shots = JSON.parse(LS.get(SAVE_KEY + '-shots') || '{}') || {}; } catch (e) { shots = {}; }
+}
+
+function saveShots() { if (!TEST_MODE) LS.set(SAVE_KEY + '-shots', JSON.stringify(shots)); }
+
+function makeShot(edges) {
+  const idx = [...new Set(edges.flat())];
+  const map = new Map(idx.map((v, i) => [v, i]));
+  const pts = idx.map(i => game.stars[i]);
+  const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
+  const minX = Math.min(...xs), minY = Math.min(...ys);
+  const w = Math.max(...xs) - minX, h = Math.max(...ys) - minY;
+  // ⚠️ 가로세로를 따로 정규화하면 모양이 찌그러진다 (납작한 국자가 동그래짐).
+  //    긴 쪽 하나로 같이 나누고, 짧은 쪽은 가운데로 밀어준다.
+  const sc = Math.max(w, h) || 1;
+  const ox = (sc - w) / 2, oy = (sc - h) / 2;
+  return {
+    p: pts.map(p => [+((p.x - minX + ox) / sc).toFixed(3), +((p.y - minY + oy) / sc).toFixed(3)]),
+    e: edges.map(([a, b]) => [map.get(a), map.get(b)]),
+  };
+}
+
+function recordShape(key, edges) { shots[key] = makeShot(edges); saveShots(); }
+
+const game = {
+  state: 'menu',      // 'menu' | 'play' | 'result'
+  stars: [],
+  edges: [],          // 지금 그리는 중인 선 [[별번호, 별번호], ...]
+  sel: null,          // 지금 잡고 있는 별
+  done: [],           // 오늘 밤 완성한 별자리들
+  crayon: CRAYON_MAX,
+  hover: null,        // 마우스 위치 (미리보기 선)
+  flash: null,        // 방금 완성한 별자리 알림
+  replace: null,      // 도감 그림을 바꿀지 물어보는 중 { key, name, shot }
+  paper: null,
+  btns: {},
+  book: { page: 0, sel: null, from: 'menu' },   // 도감 — sel 이 있으면 그 별자리 상세
+};
+
+// ---------- 도감 ----------
+const BOOK_COLS = 5, BOOK_ROWS = 3;
+
+// ⚠️ 도감에 늘어놓는 순서는 판별 순서와 **다르다**.
+//    SHAPES는 "구체적인 것부터" 놓여 있어서 앞쪽이 전부 귀한 별자리다.
+//    그 순서로 도감을 열면 첫 쪽이 통째로 ??? 라 뭘 해야 할지 알 수 없다.
+//    그래서 흔한 것부터 보여준다 — 첫 쪽이 곧 "이건 금방 만들 수 있어" 하는 안내가 된다.
+const BOOK_ORDER = SHAPES.map((_, i) => i)
+  .sort((a, b) => SHAPES[a].rarity - SHAPES[b].rarity || a - b);
+
+function shapeName(sh) { return crayonLang() === 'en' ? sh.en : sh.ko; }
+
+function bookLayout() {
+  const p = game.paper;
+  const top = p.y + 56, bot = p.y + p.h - 54;
+  return {
+    x0: p.x + 18, top, bot,
+    gw: (p.w - 36) / BOOK_COLS,
+    gh: (bot - top) / BOOK_ROWS,
+    per: BOOK_COLS * BOOK_ROWS,
+    pages: Math.ceil(SHAPES.length / (BOOK_COLS * BOOK_ROWS)),
+  };
+}
+
+function bookCell(i) {
+  const L = bookLayout();
+  return {
+    x: L.x0 + (i % BOOK_COLS) * L.gw + 5,
+    y: L.top + Math.floor(i / BOOK_COLS) * L.gh + 5,
+    w: L.gw - 10, h: L.gh - 10,
+  };
+}
+
+function openBook(from) {
+  game.book.from = from;
+  game.book.sel = null;
+  game.state = 'book';
+  bgDirty = true;
+  sfx.tap();
+}
+
+function closeBook() {
+  game.state = game.book.from;
+  bgDirty = true;
+  sfx.tap();
+}
+
+// 저장해둔 모양을 원하는 자리에 원하는 크기로 그린다 (0~1 좌표라 크기가 자유롭다)
+function miniPoints(shot, cx, cy, size) {
+  return shot.p.map(([x, y]) => [cx + (x - 0.5) * size, cy + (y - 0.5) * size]);
+}
+
+function drawMini(shot, cx, cy, size, color, seed) {
+  const pts = miniPoints(shot, cx, cy, size);
+  for (const [a, b] of shot.e) {
+    crayonPath([pts[a], pts[b]], {
+      color, width: Math.max(1.6, size * 0.028), seed: seed + a * 7 + b,
+      alpha: 0.92, wobble: 1.4, step: 7, passes: 1,
+    });
+  }
+}
+
+// drawSketchbook 과 같은 계산 — 그리기 전에도 종이 영역을 알아야 별을 뿌린다
+function paperArea() {
+  const s = crayonScreen();
+  const spiralH = Math.max(26, s.h * 0.05);
+  const m = Math.min(s.w, s.h) * 0.015;
+  const py = spiralH * 0.55;
+  return { x: m, y: py, w: s.w - m * 2, h: s.h - py - m };
+}
+
+// 별 뿌리기 — 너무 가까우면 이을 때 헷갈리니 최소 거리를 지킨다
+function scatterStars() {
+  const p = paperArea();
+  const s = crayonScreen();
+  const pad = Math.min(s.w, s.h) * 0.09;
+  const minD = Math.min(s.w, s.h) * 0.115;
+  const area = { x: p.x + pad, y: p.y + pad * 0.9, w: p.w - pad * 2, h: p.h - pad * 2.1 };
+  const out = [];
+  let guard = 0;
+  while (out.length < STAR_COUNT && guard++ < STAR_COUNT * 300) {
+    const x = area.x + Math.random() * area.w;
+    const y = area.y + Math.random() * area.h;
+    if (out.every(st => Math.hypot(st.x - x, st.y - y) > minD)) {
+      out.push({
+        x, y,
+        big: Math.random() < 0.28,                  // 큰 별 = 눈에 띄는 기준점
+        seed: Math.floor(Math.random() * 9999),
+        used: false,                                // 완성한 별자리에 쓰인 별은 잠긴다
+        tw: Math.random() * 6.28,                   // 반짝임 위상
+      });
+    }
+  }
+  return out;
+}
+
+// 선 하나의 크레파스 값 — 화면 크기와 상관없게 짧은 변 기준으로 잰다
+function costOf(a, b) {
+  const s = crayonScreen();
+  return Math.hypot(a.x - b.x, a.y - b.y) / Math.min(s.w, s.h) * 100;
+}
+
+function startNight() {
+  game.state = 'play';
+  game.stars = scatterStars();
+  game.edges = [];
+  game.sel = null;
+  game.done = [];
+  game.crayon = CRAYON_MAX;
+  game.flash = null;
+  game.replace = null;
+  bgDirty = true;
+  sfx.appear();
+}
+
+// 별을 눌렀을 때 — 처음이면 잡고, 다음이면 잇는다
+function tapStar(i) {
+  const st = game.stars[i];
+  if (st.used) { sfx.nope(); return; }
+
+  if (game.sel === null) { game.sel = i; sfx.tap(); return; }
+  if (game.sel === i) { game.sel = null; sfx.tap(); return; }       // 같은 별 = 잡은 것 놓기
+
+  const a = game.sel, b = i;
+  const already = game.edges.some(([p, q]) => (p === a && q === b) || (p === b && q === a));
+  if (already) { game.sel = b; sfx.tap(); return; }
+
+  const cost = costOf(game.stars[a], game.stars[b]);
+  if (cost > game.crayon) {
+    game.flash = { text: tr('noCrayon'), until: performance.now() + 1400, bad: true };
+    sfx.nope();
+    return;
+  }
+
+  game.edges.push([a, b]);
+  game.crayon -= cost;
+  game.sel = b;                       // 이어서 계속 그릴 수 있게 끝점을 잡고 있는다
+  bgDirty = true;
+  sfx.good();
+}
+
+// 되돌리기 — 마지막 선 하나를 지우고 크레파스도 돌려준다.
+// (실수 구제용. 이게 없으면 잘못 이은 순간 그 밤을 망친 기분이 든다)
+function undo() {
+  if (!game.edges.length) { sfx.nope(); return; }
+  const [a, b] = game.edges.pop();
+  game.crayon = Math.min(CRAYON_MAX, game.crayon + costOf(game.stars[a], game.stars[b]));
+  game.sel = null;
+  bgDirty = true;
+  sfx.tap();
+}
+
+// 완성! — 지금 이은 모양을 판별해서 별자리로 굳힌다
+function finishShape() {
+  if (!game.edges.length) { sfx.nope(); return; }
+  const res = identify(game.stars, game.edges);
+  if (!res) { sfx.nope(); return; }
+  game.replace = null;      // 앞 별자리에 대한 물음은 여기서 끝난다
+
+  const isNew = !found.has(res.key);
+  if (isNew) { found.add(res.key); saveBook(); }
+  // ⚠️ "처음 발견일 때만 저장"으로 두면, **도감이 생기기 전에 발견해둔 별자리**는
+  //    영원히 이름만 남고 그림이 안 생긴다 (부메랑자리에서 실제로 났던 일).
+  //    이미 아는 별자리라도 그림이 비어 있으면 지금 만든 걸로 채운다.
+  if (!shots[res.key]) {
+    recordShape(res.key, game.edges);
+  } else {
+    // 그림이 이미 있으면 **묻는다.** 멋대로 덮어쓰면 아끼던 그림이 사라지고,
+    // 무조건 안 바꾸면 더 잘 만들어도 도감이 그대로다. 고르는 건 만든 사람 몫.
+    game.replace = { key: res.key, name: res.name, shot: makeShot(game.edges) };
+  }
+
+  // 쓴 별은 잠근다 — 같은 별을 계속 우려먹지 못하게
+  const cx = [], cy = [];
+  for (const [a, b] of game.edges) {
+    game.stars[a].used = true; game.stars[b].used = true;
+    cx.push(game.stars[a].x, game.stars[b].x);
+    cy.push(game.stars[a].y, game.stars[b].y);
+  }
+
+  game.done.push({
+    edges: game.edges,
+    name: res.name, why: res.why, rarity: res.rarity, isNew,
+    color: DONE_COLORS[game.done.length % DONE_COLORS.length],
+    lx: cx.reduce((s, v) => s + v, 0) / cx.length,
+    ly: Math.min(...cy) - 22,
+  });
+  game.flash = {
+    text: res.name, sub: res.why,
+    tag: isNew ? tr('isNew') : tr('again'),
+    until: performance.now() + 2600, isNew,
+  };
+  game.edges = [];
+  game.sel = null;
+  bgDirty = true;
+  isNew ? sfx.achv() : sfx.caught();
+
+  // 남은 크레파스로 더 그을 수 있는 별이 없으면 밤이 끝난다
+  if (game.crayon < 6) endNight();
+}
+
+function endNight() {
+  game.state = 'result';
+  game.sel = null;
+  game.replace = null;
+  sfx.caught();
+}
+
+// 도감 그림을 방금 만든 것으로 바꾼다 (물어본 뒤에만 부른다)
+function acceptReplace() {
+  if (!game.replace) return;
+  shots[game.replace.key] = game.replace.shot;
+  saveShots();
+  game.flash = { text: tr('replaced'), until: performance.now() + 1600, plain: true };
+  game.replace = null;
+  bgDirty = true;
+  sfx.buy();
+}
+
+// ---------- 배경 캐시 ----------
+// ⚠️ 크레파스 선은 비싸다. 별 26개 + 선 여러 개를 매 프레임 다시 그으면 폰에서 무너진다.
+//    잘 안 바뀌는 것(종이·별·이미 그은 선)은 오프스크린에 한 번만 그려두고 통째로 얹는다.
+const bg = document.createElement('canvas');
+const bgc = bg.getContext('2d');
+let bgDirty = true;
+
+function drawStarMark(st, color, scale) {
+  const r = (st.big ? 6.5 : 4.2) * scale;
+  const o = { color, width: r * 0.75, alpha: 0.95, wobble: 1.2, step: 5, passes: 1 };
+  crayonPath([[st.x - r * 2, st.y], [st.x + r * 2, st.y]], { ...o, seed: st.seed });
+  crayonPath([[st.x, st.y - r * 2], [st.x, st.y + r * 2]], { ...o, seed: st.seed + 1 });
+  // 큰 별만 대각선을 더해 8방향으로 — 눈에 띄는 기준점이 있어야 모양을 노리고 그린다
+  if (st.big) {
+    const d = r * 1.1;
+    const o2 = { ...o, width: r * 0.5, alpha: 0.75 };
+    crayonPath([[st.x - d, st.y - d], [st.x + d, st.y + d]], { ...o2, seed: st.seed + 2 });
+    crayonPath([[st.x - d, st.y + d], [st.x + d, st.y - d]], { ...o2, seed: st.seed + 3 });
+  }
+}
+
+function rebuildBG() {
+  const s = crayonScreen();
+  bg.width = cv.width;
+  bg.height = cv.height;
+  crayonApplyTransform(bgc);
+  crayonUse(bgc, s.w, s.h);        // 잠깐 오프스크린에 그린다
+
+  const p = drawSketchbook({ paperColor: NIGHT.paper, deskColor: NIGHT.desk });
+  game.paper = p;
+
+  // 밤하늘 — 위는 더 깊게
+  scribbleFill(rectRows(p.x + 6, p.y + 6, p.w - 12, p.h * 0.55, 17),
+    { color: NIGHT.deep, width: 15, seed: 5, alpha: 0.5, overshoot: 12 });
+  vignette(0.34, '0,0,20');
+
+  if (game.state === 'book') {
+    // 도감은 밤하늘 위에 종이 한 장을 덮은 것처럼 — 별이 은은하게 비친다
+    for (const st of game.stars) drawStarMark(st, NIGHT.dim, 0.7);
+    bgc.save();
+    bgc.fillStyle = 'rgba(9,14,36,0.88)';
+    bgc.fillRect(p.x, p.y, p.w, p.h);
+    bgc.restore();
+    drawBookBG(p, s);
+  } else {
+    // 완성한 별자리 (색깔 선 + 이름)
+    for (const d of game.done) {
+      for (const [a, b] of d.edges) {
+        crayonPath([[game.stars[a].x, game.stars[a].y], [game.stars[b].x, game.stars[b].y]],
+          { color: d.color, width: 3.4, seed: a * 31 + b, alpha: 0.85, wobble: 2, step: 8, passes: 1 });
+      }
+      fitText(d.name, d.lx, d.ly, s.w * 0.3, 17, d.color);
+    }
+
+    // 지금 그리는 중인 선 (흰 크레파스)
+    for (const [a, b] of game.edges) {
+      crayonPath([[game.stars[a].x, game.stars[a].y], [game.stars[b].x, game.stars[b].y]],
+        { color: NIGHT.line, width: 4, seed: a * 17 + b, alpha: 0.9, wobble: 2.4, step: 8, passes: 1 });
+    }
+
+    // 별
+    for (const st of game.stars) {
+      drawStarMark(st, st.used ? NIGHT.dim : NIGHT.star, st.used ? 0.75 : 1);
+    }
+  }
+
+  crayonUse(ctx, s.w, s.h);        // 다시 진짜 화면으로 되돌린다
+  bgDirty = false;
+}
+
+// 도감 목록 — 4×3 격자. 찾은 것은 내가 만든 모양이, 못 찾은 것은 ??? 가 뜬다
+function drawBookBG(p, s) {
+  if (game.book.sel !== null) { drawBookDetail(p, s, SHAPES[game.book.sel]); return; }
+  const L = bookLayout();
+  const start = game.book.page * L.per;
+  for (let i = 0; i < L.per; i++) {
+    const gi = BOOK_ORDER[start + i];
+    const sh = SHAPES[gi];
+    if (!sh) break;
+    const r = bookCell(i);
+    const got = found.has(sh.key);
+    crayonPath([[r.x, r.y], [r.x + r.w, r.y], [r.x + r.w, r.y + r.h], [r.x, r.y + r.h], [r.x, r.y]],
+      { color: got ? 'rgba(255,246,218,0.45)' : 'rgba(90,106,146,0.45)',
+        width: 2, seed: start + i + 3, alpha: 0.85, wobble: 1.6, step: 11, passes: 1 });
+
+    if (got && shots[sh.key]) {
+      drawMini(shots[sh.key], r.x + r.w / 2, r.y + r.h * 0.42, Math.min(r.w, r.h) * 0.66,
+               DONE_COLORS[gi % DONE_COLORS.length], gi * 13 + 5);
+      fitText(shapeName(sh), r.x + r.w / 2, r.y + r.h - 15, r.w - 12, 16, '#fff6da');
+    } else if (got) {
+      // 이름은 아는데 그림이 없는 경우 — 왜 비었는지 알려줘야 버그로 보이지 않는다
+      fitText(shapeName(sh), r.x + r.w / 2, r.y + r.h * 0.42, r.w - 12, 17, '#fff6da');
+      fitText(tr('needShape'), r.x + r.w / 2, r.y + r.h * 0.62, r.w - 14, 12, 'rgba(207,216,238,0.6)');
+    } else {
+      fitText(tr('locked'), r.x + r.w / 2, r.y + r.h * 0.45, r.w - 12, 26, 'rgba(120,136,180,0.9)');
+    }
+  }
+}
+
+// 도감 상세 — 큰 그림 + 전설 + "이렇게 만들면" 힌트
+function drawBookDetail(p, s, sh) {
+  const got = found.has(sh.key);
+  const info = LORE[sh.key] || {};
+  const cx = p.x + p.w / 2;
+  const size = Math.min(p.w * 0.34, p.h * 0.44);
+  const cy = p.y + p.h * 0.45;
+
+  fitText(got ? shapeName(sh) : tr('locked'), cx, p.y + p.h * 0.13, p.w * 0.8,
+          Math.min(44, p.w * 0.06), got ? NIGHT.gauge : 'rgba(120,136,180,0.9)');
+  fitText(tr('rar' + sh.rarity), cx, p.y + p.h * 0.2, p.w * 0.4, 18, '#8fd0ea');
+
+  if (got && shots[sh.key]) {
+    drawMini(shots[sh.key], cx, cy, size, DONE_COLORS[SHAPES.indexOf(sh) % DONE_COLORS.length], 71);
+    // 별도 같이 찍어야 "별자리"로 보인다
+    miniPoints(shots[sh.key], cx, cy, size).forEach((pt, i) =>
+      drawStarMark({ x: pt[0], y: pt[1], big: false, seed: i * 17 + 3 }, NIGHT.star, 0.85));
+    fitText(tr('myShape'), cx, cy + size * 0.62 + 10, p.w * 0.5, 15, 'rgba(207,216,238,0.65)');
+  } else {
+    fitText('?', cx, cy, p.w * 0.3, size * 0.8, 'rgba(90,106,146,0.65)');
+    if (got) fitText(tr('needShape'), cx, cy + size * 0.62 + 10, p.w * 0.6, 17, 'rgba(207,216,238,0.7)');
+  }
+
+  const ly = p.y + p.h * 0.8;
+  if (got) fitText(LX(info.lore), cx, ly, p.w * 0.86, 22, '#fff6da');
+  else fitText(tr('notYet'), cx, ly, p.w * 0.7, 22, 'rgba(207,216,238,0.75)');
+  fitText(tr('howTo', LX(info.hint)), cx, ly + 36, p.w * 0.86, 19, '#8fd0ea');
+}
+
+// ---------- 움직임 ----------
+function update(t, dt) {
+  if (game.flash && performance.now() > game.flash.until) game.flash = null;
+}
+
+// ---------- 그림 ----------
+function btn(rect, label, color, fill) {
+  scribbleFill(rectRows(rect.x, rect.y, rect.w, rect.h, 10),
+    { color: fill, width: 10, seed: rect.x + rect.w, alpha: 0.85 });
+  crayonPath([[rect.x, rect.y], [rect.x + rect.w, rect.y], [rect.x + rect.w, rect.y + rect.h],
+              [rect.x, rect.y + rect.h], [rect.x, rect.y]],
+    { color, width: 2.4, seed: rect.x + 7, alpha: 0.9, wobble: 1.6, step: 9, passes: 1 });
+  fitText(label, rect.x + rect.w / 2, rect.y + rect.h / 2, rect.w - 14, 19, color);
+}
+
+function draw(t) {
+  const s = crayonScreen();
+
+  if (s.portrait) {
+    game.paper = drawSketchbook({ paperColor: NIGHT.paper, deskColor: NIGHT.desk });
+    fitText(tr('rotate'), s.w / 2, s.h / 2, s.w * 0.88, 28, NIGHT.star);
+    return;
+  }
+
+  if (bgDirty) rebuildBG();
+  ctx.drawImage(bg, 0, 0, s.w, s.h);
+  const p = game.paper;
+
+  // 언어 버튼 (오른쪽 위)
+  const bw = 104, bh = 36;
+  game.btns.lang = { x: p.x + p.w - bw - 12, y: p.y + 10, w: bw, h: bh };
+  btn(game.btns.lang, tr('langBtn'), NIGHT.paper, '#cfd8ee');
+
+  // ---------- 도감 ----------
+  if (game.state === 'book') {
+    const L = bookLayout();
+    const bwid = Math.min(120, p.w * 0.14);
+    game.btns.bookClose = { x: p.x + 16, y: p.y + 10, w: bwid, h: 34 };
+    btn(game.btns.bookClose, game.book.sel !== null ? tr('back') : tr('close'),
+        '#e7ecff', 'rgba(90,106,146,0.55)');
+
+    if (game.book.sel === null) {
+      fitText(tr('bookTitle') + '  ' + found.size + '/' + SHAPES.length,
+              p.x + p.w / 2, p.y + 27, p.w * 0.5, 24, NIGHT.gauge);
+      const pw = Math.min(100, p.w * 0.12), py = p.y + p.h - 44;
+      game.btns.bookPrev = { x: p.x + 16, y: py, w: pw, h: 34 };
+      game.btns.bookNext = { x: p.x + p.w - pw - 16, y: py, w: pw, h: 34 };
+      btn(game.btns.bookPrev, tr('prevBtn'), '#e7ecff', 'rgba(90,106,146,0.55)');
+      btn(game.btns.bookNext, tr('nextBtn'), '#e7ecff', 'rgba(90,106,146,0.55)');
+      fitText(tr('pageN', game.book.page + 1, L.pages), p.x + p.w / 2, py + 17, p.w * 0.3, 18, '#cfd8ee');
+    } else {
+      game.btns.bookPrev = null;
+      game.btns.bookNext = null;
+    }
+    return;
+  }
+
+  if (game.state === 'menu') {
+    fitText(tr('title'), p.x + p.w / 2, p.y + p.h * 0.3, p.w * 0.9, Math.min(58, p.w * 0.085), NIGHT.star);
+    fitText(tr('howto'), p.x + p.w / 2, p.y + p.h * 0.45, p.w * 0.8, Math.min(26, p.w * 0.04), '#cfd8ee');
+    fitText(tr('tapPlay'), p.x + p.w / 2, p.y + p.h * 0.6, p.w * 0.6, 30, NIGHT.gauge);
+    const w3 = Math.min(230, p.w * 0.26);
+    game.btns.openBook = { x: p.x + p.w / 2 - w3 / 2, y: p.y + p.h * 0.74, w: w3, h: 42 };
+    btn(game.btns.openBook, tr('bookBtn') + '  ' + found.size + '/' + SHAPES.length,
+        '#e7ecff', 'rgba(90,106,146,0.55)');
+    return;
+  }
+
+  if (game.state === 'play') {
+    // 잡고 있는 별 강조 + 커서까지 미리보기 선
+    if (game.sel !== null) {
+      const st = game.stars[game.sel];
+      const pulse = 1 + Math.sin(t / 160) * 0.12;
+      ctx.save();
+      ctx.strokeStyle = NIGHT.gauge;
+      ctx.lineWidth = 2.5;
+      ctx.globalAlpha = 0.9;
+      ctx.beginPath();
+      ctx.arc(st.x, st.y, 17 * pulse, 0, Math.PI * 2);
+      ctx.stroke();
+      if (game.hover) {
+        ctx.setLineDash([7, 7]);
+        ctx.globalAlpha = 0.5;
+        ctx.strokeStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.moveTo(st.x, st.y);
+        ctx.lineTo(game.hover.x, game.hover.y);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    // 크레파스 게이지 (왼쪽 위)
+    const gx = p.x + 18, gy = p.y + 16, gw = Math.min(230, p.w * 0.28), gh = 20;
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.beginPath(); ctx.roundRect(gx, gy, gw, gh, 6); ctx.fill();
+    ctx.fillStyle = game.crayon < CRAYON_MAX * 0.2 ? '#ff8fb1' : NIGHT.star;
+    ctx.beginPath();
+    ctx.roundRect(gx + 2, gy + 2, Math.max(0, (gw - 4) * game.crayon / CRAYON_MAX), gh - 4, 5);
+    ctx.fill();
+    ctx.restore();
+    fitText(tr('crayon'), gx, gy + gh + 16, gw, 15, '#cfd8ee', 'left');
+    // 도감을 게임 중에도 열 수 있어야 한다 — 힌트를 보고 **노리고** 만드는 게 이 게임의 재미라서
+    const bkW = Math.min(170, p.w * 0.17);
+    game.btns.openBook = { x: gx + gw + 14, y: gy - 4, w: bkW, h: 28 };
+    btn(game.btns.openBook, tr('bookBtn') + ' ' + found.size + '/' + SHAPES.length,
+        '#cfe4ff', 'rgba(90,106,146,0.45)');
+
+    // 아래 버튼들
+    const by = p.y + p.h - 58, w2 = Math.min(190, p.w * 0.22), h2 = 42;
+    game.btns.finish = { x: p.x + p.w / 2 - w2 / 2, y: by, w: w2, h: h2 };
+    game.btns.undo   = { x: p.x + 18, y: by, w: Math.min(130, p.w * 0.16), h: h2 };
+    game.btns.end    = { x: p.x + p.w - Math.min(130, p.w * 0.16) - 18, y: by, w: Math.min(130, p.w * 0.16), h: h2 };
+    if (game.edges.length) btn(game.btns.finish, tr('finish'), '#2b2438', NIGHT.gauge);
+    btn(game.btns.undo, tr('undo'), '#e7ecff', 'rgba(90,106,146,0.5)');
+    btn(game.btns.end, tr('endNight'), '#e7ecff', 'rgba(90,106,146,0.5)');
+
+    // 도감 그림을 바꿀지 묻는 버튼 — 안 누르면 그냥 지나간다 (강제로 막지 않는다)
+    if (game.replace) {
+      const rw = Math.min(320, p.w * 0.34);
+      game.btns.replace = { x: p.x + p.w / 2 - rw / 2, y: p.y + p.h - 110, w: rw, h: 36 };
+      btn(game.btns.replace, tr('replaceBtn'), '#16203f', '#8fd0ea');
+    } else {
+      game.btns.replace = null;
+      // 안내 (아직 아무것도 안 그었을 때만)
+      if (!game.edges.length && !game.done.length && !game.flash) {
+        fitText(tr('hint'), p.x + p.w / 2, p.y + p.h - 100, p.w * 0.7, 22, '#cfd8ee');
+      } else if (game.edges.length >= 2 && !game.flash) {
+        fitText(tr('hint2'), p.x + p.w / 2, p.y + p.h - 100, p.w * 0.7, 18, 'rgba(207,216,238,0.7)');
+      }
+    }
+
+    // 방금 완성한 별자리 알림
+    if (game.flash) {
+      const fy = p.y + p.h * 0.24;
+      if (game.flash.bad) {
+        fitText(game.flash.text, p.x + p.w / 2, fy, p.w * 0.7, 26, '#ff8fb1');
+      } else if (game.flash.plain) {
+        fitText(game.flash.text, p.x + p.w / 2, fy, p.w * 0.7, 28, '#8fd0ea');
+      } else {
+        fitText(game.flash.text, p.x + p.w / 2, fy, p.w * 0.8, 42, NIGHT.gauge);
+        if (game.flash.sub) fitText(game.flash.sub, p.x + p.w / 2, fy + 38, p.w * 0.8, 21, '#fff6da');
+        if (game.flash.tag) fitText(game.flash.tag, p.x + p.w / 2, fy + 68, p.w * 0.5, 18,
+                game.flash.isNew ? '#8fd0ea' : 'rgba(207,216,238,0.65)');
+      }
+    }
+    return;
+  }
+
+  if (game.state === 'result') {
+    ctx.save();
+    ctx.fillStyle = 'rgba(9,14,36,0.72)';
+    ctx.fillRect(p.x, p.y, p.w, p.h);
+    ctx.restore();
+
+    const newCount = game.done.filter(d => d.isNew).length;
+    fitText(tr('result', game.done.length), p.x + p.w / 2, p.y + p.h * 0.26, p.w * 0.9,
+            Math.min(46, p.w * 0.07), NIGHT.gauge);
+    if (newCount) {
+      fitText(tr('newFound', newCount), p.x + p.w / 2, p.y + p.h * 0.4, p.w * 0.8, 26, '#8fd0ea');
+    }
+    // 오늘 만든 별자리 이름들
+    const names = game.done.map(d => d.name).join('  ·  ');
+    if (names) fitText(names, p.x + p.w / 2, p.y + p.h * 0.52, p.w * 0.88, 22, '#fff6da');
+    fitText(tr('bookNow', found.size, SHAPES.length), p.x + p.w / 2, p.y + p.h * 0.63, p.w * 0.6, 24, '#cfd8ee');
+    const w4 = Math.min(200, p.w * 0.22);
+    game.btns.openBook = { x: p.x + p.w / 2 - w4 / 2, y: p.y + p.h * 0.71, w: w4, h: 40 };
+    btn(game.btns.openBook, tr('bookBtn'), '#e7ecff', 'rgba(90,106,146,0.55)');
+    fitText(tr('playAgain'), p.x + p.w / 2, p.y + p.h * 0.87, p.w * 0.6, 30, NIGHT.star);
+  }
+}
+
+// ---------- 입력 ----------
+function onTap(x, y) {
+  if (game.btns.lang && inRect(x, y, game.btns.lang)) { nextLang(); bgDirty = true; sfx.tap(); return; }
+
+  if (game.state === 'book') {
+    if (game.btns.bookClose && inRect(x, y, game.btns.bookClose)) {
+      if (game.book.sel !== null) { game.book.sel = null; bgDirty = true; sfx.tap(); }
+      else closeBook();
+      return;
+    }
+    if (game.book.sel !== null) return;          // 상세에서는 뒤로 말고 할 게 없다
+    const L = bookLayout();
+    if (game.btns.bookPrev && inRect(x, y, game.btns.bookPrev)) {
+      game.book.page = (game.book.page - 1 + L.pages) % L.pages; bgDirty = true; sfx.tap(); return;
+    }
+    if (game.btns.bookNext && inRect(x, y, game.btns.bookNext)) {
+      game.book.page = (game.book.page + 1) % L.pages; bgDirty = true; sfx.tap(); return;
+    }
+    for (let i = 0; i < L.per; i++) {
+      const pos = game.book.page * L.per + i;
+      if (pos >= SHAPES.length) break;
+      if (inRect(x, y, bookCell(i))) { game.book.sel = BOOK_ORDER[pos]; bgDirty = true; sfx.tap(); return; }
+    }
+    return;
+  }
+
+  if (game.btns.openBook && inRect(x, y, game.btns.openBook)) { openBook(game.state); return; }
+
+  if (game.state === 'menu' || game.state === 'result') { startNight(); return; }
+
+  if (game.state === 'play') {
+    if (game.btns.replace && inRect(x, y, game.btns.replace)) { acceptReplace(); return; }
+    if (game.btns.finish && game.edges.length && inRect(x, y, game.btns.finish)) { finishShape(); return; }
+    if (game.btns.undo && inRect(x, y, game.btns.undo)) { undo(); return; }
+    if (game.btns.end && inRect(x, y, game.btns.end)) { endNight(); return; }
+
+    // 제일 가까운 별 — 터치를 넉넉하게 받아준다
+    const s = crayonScreen();
+    const reach = Math.min(s.w, s.h) * 0.048;
+    let best = -1, bestD = Infinity;
+    game.stars.forEach((st, i) => {
+      const d = Math.hypot(st.x - x, st.y - y);
+      if (d < bestD) { bestD = d; best = i; }
+    });
+    if (best >= 0 && bestD <= reach) tapStar(best);
+    else if (game.sel !== null) { game.sel = null; sfx.tap(); }   // 빈 곳 = 잡은 것 놓기
+  }
+}
+
+crayonPointer(cv, onTap);
+cv.addEventListener('pointermove', (e) => {
+  const r = cv.getBoundingClientRect();
+  const sc = crayonScreen().scale;
+  game.hover = { x: (e.clientX - r.left) / sc, y: (e.clientY - r.top) / sc };
+});
+const goBack = () => {
+  if (game.book.sel !== null) { game.book.sel = null; bgDirty = true; sfx.tap(); }
+  else closeBook();
+};
+crayonKeys({
+  Space:  () => { if (game.state === 'play') finishShape(); else if (game.state !== 'book') onTap(-1, -1); },
+  Enter:  () => { if (game.state === 'play') finishShape(); else if (game.state !== 'book') onTap(-1, -1); },
+  KeyZ:   () => { if (game.state === 'play') undo(); },
+  KeyR:   () => { if (game.state === 'play') acceptReplace(); },
+  KeyB:   () => { if (game.state === 'book') goBack(); else openBook(game.state); },
+  Escape: () => { if (game.state === 'book') goBack(); else if (game.state === 'play') endNight(); },
+});
+
+// ⚠️ 창 크기가 바뀌면 별 좌표도 같이 옮겨야 한다. 안 그러면 폰을 돌린 순간
+//    그리던 별자리가 종이 밖으로 나가 버린다.
+window.addEventListener('resize', () => {
+  const old = paperArea();
+  crayonFit(cv);
+  const now = paperArea();
+  if (old.w > 0 && old.h > 0) {
+    for (const st of game.stars) {
+      st.x = now.x + (st.x - old.x) / old.w * now.w;
+      st.y = now.y + (st.y - old.y) / old.h * now.h;
+    }
+    for (const d of game.done) { d.lx = now.x + (d.lx - old.x) / old.w * now.w;
+                                 d.ly = now.y + (d.ly - old.y) / old.h * now.h; }
+  }
+  bgDirty = true;
+});
+
+// 시작 화면에도 별을 뿌려둔다 — 밤하늘인데 별이 없으면 휑하다
+game.stars = scatterStars();
+crayonLoop((t, dt) => { update(t, dt); draw(t); });
+
+// ============================================================
+// 개발용 훅 (#shot) — 화면을 눈으로 확인하려고 만든 것.
+// 헤드리스 크롬은 클릭을 못 하니, 여기서 미리 몇 개 이어둔 상태를 만들어 준다.
+//   chrome --headless --screenshot=out.png "file://…/sketch-stars.html#shot"
+// ============================================================
+if (location.hash.startsWith('#shot')) {
+  if (location.hash.includes('ko')) setLang('ko');    // #shot-ko → 한국어 화면 확인용
+  if (location.hash.includes('en')) setLang('en');
+  startNight();
+  const nearest = (i, skip) => {
+    let best = -1, bd = Infinity;
+    game.stars.forEach((st, j) => {
+      if (j === i || skip.has(j) || st.used) return;
+      const d = Math.hypot(st.x - game.stars[i].x, st.y - game.stars[i].y);
+      if (d < bd) { bd = d; best = j; }
+    });
+    return best;
+  };
+  // ① 삼각형 하나 완성해서 "색깔로 굳은 별자리"를 보이게
+  const a = 0, b = nearest(a, new Set([a])), c = nearest(b, new Set([a, b]));
+  tapStar(a); tapStar(b); tapStar(c); tapStar(a);
+  finishShape();
+  // ② 그리는 중인 흰 크레파스 선도 같이 보이게
+  let cur = game.stars.findIndex(st => !st.used);
+  const skip = new Set([cur]);
+  tapStar(cur);
+  for (let k = 0; k < 3; k++) {
+    const nx = nearest(cur, skip);
+    if (nx < 0) break;
+    tapStar(nx);
+    skip.add(nx);
+    cur = nx;
+  }
+
+  // ③ #shot-replace — "도감 그림 바꿀까요?" 버튼 확인용 (같은 별자리를 한 번 더 만든다)
+  if (location.hash.includes('replace')) {
+    game.edges = [];
+    game.sel = null;
+    const a2 = game.stars.findIndex(st => !st.used);
+    const sk = new Set([a2]);
+    const b2 = nearest(a2, sk); sk.add(b2);
+    const c2 = nearest(b2, sk); sk.add(c2);
+    tapStar(a2); tapStar(b2); tapStar(c2); tapStar(a2);
+    finishShape();
+  }
+
+  // ④ #shot-book / #shot-book-detail — 도감 화면 확인용.
+  //    몇 개를 이미 발견한 셈 치고 채워 넣는다 (좌표는 저장 형식 그대로 0~1)
+  if (location.hash.includes('book')) {
+    const D = {
+      cone:      { p: [[0.5,0],[0,1],[1,1]], e: [[0,1],[1,2],[2,0]] },
+      dipper:    { p: [[0,0.62],[0.26,0.5],[0.32,0.86],[0.06,0.98],[0.56,0.34],[0.8,0.2],[1,0.04]],
+                   e: [[0,1],[1,2],[2,3],[3,0],[1,4],[4,5],[5,6]] },
+      slingshot: { p: [[0.5,0.45],[0.05,0],[0.95,0.05],[0.45,1]], e: [[0,1],[0,2],[0,3]] },
+      lightning: { p: [[0.2,0],[0.72,0.28],[0.3,0.55],[0.85,0.78],[0.38,1]], e: [[0,1],[1,2],[2,3],[3,4]] },
+      person:    { p: [[0.5,0],[0.5,0.3],[0.05,0.45],[0.95,0.42],[0.5,0.62],[0.15,1],[0.85,1]],
+                   e: [[0,1],[1,2],[1,3],[1,4],[4,5],[4,6]] },
+      moon:      { p: Array.from({ length: 8 }, (_, i) => { const a = i / 8 * 6.283 - 1.57;
+                        return [0.5 + Math.cos(a) * 0.5, 0.5 + Math.sin(a) * 0.5]; }),
+                   e: Array.from({ length: 8 }, (_, i) => [i, (i + 1) % 8]) },
+      tree:      { p: [[0.5,1],[0.5,0.62],[0.12,0.4],[0.5,0.34],[0.88,0.42],[0.5,0]],
+                   e: [[0,1],[1,2],[1,3],[3,4],[3,5]] },
+    };
+    for (const k in D) { shots[k] = D[k]; found.add(k); }
+    openBook('menu');
+    if (location.hash.includes('detail')) game.book.sel = SHAPES.findIndex(x => x.key === 'dipper');
+    bgDirty = true;
+  }
+}
+
+// ============================================================
+// 자동 검증 (#test)
+// ⚠️ 헤드리스 가상시간으로는 게임 진행을 못 본다 → 함수를 직접 부른다.
+// 결과는 document.title 에 적힌다.
+// ============================================================
+if (TEST_MODE) {
+  const fails = [];
+  const must = (ok, msg) => { if (!ok) fails.push(msg); };
+  const P = (x, y) => ({ x, y });
+  const chainE = n => Array.from({ length: n - 1 }, (_, i) => [i, i + 1]);
+  const ringE = n => Array.from({ length: n }, (_, i) => [i, (i + 1) % n]);
+
+  // ---- 판별기: 모양 30가지 ----
+  // node 로 먼저 시험해서 다듬은 것들. 여기 남겨두면 나중에 규칙을 고칠 때
+  // 다른 별자리를 망가뜨렸는지 바로 알 수 있다.
+  const CASES = [
+    ['stick', [P(100,100),P(160,100),P(220,100)], chainE(3)],
+    ['rail', [P(100,300),P(160,302),P(220,298),P(280,301),P(340,300)], chainE(5)],
+    ['boomerang', [P(100,300),P(200,240),P(300,320)], chainE(3)],
+    ['lightning', [P(100,100),P(180,180),P(110,250),P(200,330),P(120,400)], chainE(5)],
+    ['snake', [P(80,300),P(140,270),P(200,300),P(260,330),P(320,300),P(380,270)], chainE(6)],
+    ['rainbow', [P(80,320),P(150,250),P(240,220),P(330,250),P(400,320)], chainE(5)],
+    ['bow', [P(300,100),P(240,170),P(220,260),P(240,350),P(300,420)], chainE(5)],
+    ['slingshot', [P(250,300),P(180,200),P(320,200),P(250,400)], [[0,1],[0,2],[0,3]]],
+    ['pinwheel', [P(250,250),P(250,150),P(350,250),P(250,350),P(150,250)], [[0,1],[0,2],[0,3],[0,4]]],
+    ['cross', [P(250,250),P(250,140),P(400,250),P(255,290),P(210,265)], [[0,1],[0,2],[0,3],[0,4]]],
+    ['firework', [P(250,250),P(250,150),P(345,220),P(310,335),P(190,335),P(155,220)], [[0,1],[0,2],[0,3],[0,4],[0,5]]],
+    ['sun', [P(250,250),P(250,150),P(320,180),P(350,250),P(320,320),P(250,350),P(180,320),P(150,250),P(180,180)],
+      [[0,1],[0,2],[0,3],[0,4],[0,5],[0,6],[0,7],[0,8]]],
+    ['tree', [P(250,400),P(250,300),P(180,240),P(250,200),P(320,240),P(250,120)], [[0,1],[1,2],[1,3],[3,4],[3,5]]],
+    ['river', [P(80,250),P(200,250),P(300,190),P(300,310),P(420,250),P(430,330)], [[0,1],[1,2],[1,3],[3,4],[3,5]]],
+    ['person', [P(250,150),P(250,220),P(180,260),P(320,260),P(250,320),P(200,400),P(300,400)],
+      [[0,1],[1,2],[1,3],[1,4],[4,5],[4,6]]],
+    ['cone', [P(250,150),P(180,300),P(320,300)], ringE(3)],
+    ['kite', [P(250,150),P(340,250),P(250,350),P(160,250)], ringE(4)],
+    ['house', [P(250,140),P(340,210),P(310,330),P(190,330),P(160,210)], ringE(5)],
+    ['beehive', [P(250,140),P(350,200),P(350,320),P(250,380),P(150,320),P(150,200)], ringE(6)],
+    ['moon', Array.from({length:8},(_,i)=>{const a=i/8*Math.PI*2; return P(250+Math.cos(a)*120,250+Math.sin(a)*120);}), ringE(8)],
+    ['lake', [P(100,250),P(160,180),P(260,160),P(360,190),P(420,260),P(400,340),P(300,390),P(200,380),P(130,330)], ringE(9)],
+    ['balloon', [P(250,150),P(320,220),P(250,290),P(180,220),P(250,380)], [...ringE(4),[2,4]]],
+    ['dipper', [P(150,300),P(220,280),P(230,350),P(160,370),P(300,250),P(370,220),P(440,200)],
+      [...ringE(4),[1,4],[4,5],[5,6]]],
+    ['candy', [P(250,200),P(310,250),P(250,300),P(190,250),P(120,250),P(380,250)], [...ringE(4),[3,4],[1,5]]],
+    ['spider', [P(250,220),P(300,250),P(250,290),P(200,250),P(150,180),P(350,180),P(140,320),P(360,320),P(250,140),P(250,380)],
+      [...ringE(4),[3,4],[1,5],[3,6],[1,7],[0,8],[2,9]]],
+    ['crab', [P(250,250),P(310,280),P(250,320),P(190,280),P(140,210),P(360,210),P(150,380),P(350,380)],
+      [...ringE(4),[3,4],[1,5],[3,6],[1,7]]],
+    ['glasses', [P(150,200),P(220,250),P(150,300),P(80,250),P(350,200),P(420,250),P(350,300),P(280,250)],
+      [...ringE(4),[4,5],[5,6],[6,7],[7,4],[1,7]]],
+    ['snowman', [P(250,120),P(310,180),P(250,240),P(190,180),P(250,300),P(330,370),P(250,440),P(170,370)],
+      [...ringE(4),[4,5],[5,6],[6,7],[7,4],[2,4]]],
+    ['twins', [P(100,200),P(180,200),P(140,280),P(350,200),P(430,200),P(390,280)],
+      [[0,1],[1,2],[2,0],[3,4],[4,5],[5,3]]],
+    ['flock', [P(80,150),P(150,150),P(250,250),P(320,250),P(150,400),P(220,400)], [[0,1],[2,3],[4,5]]],
+  ];
+  for (const [want, stars, edges] of CASES) {
+    const r = identify(stars, edges);
+    must(r && r.key === want, '모양 ' + want + ' → ' + (r ? r.key : '없음'));
+  }
+  // 어떤 모양이든 반드시 하나는 나온다 (꽝 없음)
+  must(identify([P(0,0),P(50,0)], [[0,1]]) !== null, '선 하나짜리가 판별 안 됨');
+  must(identify([P(0,0)], []) === null, '선이 없는데 별자리가 나옴');
+
+  // ---- 게임 흐름 ----
+  draw(0);
+  must(game.paper && game.paper.w > 0, '종이 영역 없음');
+
+  startNight();
+  must(game.state === 'play', '시작 후 play 가 아님');
+  must(game.stars.length >= 18, '별이 ' + game.stars.length + '개뿐');
+  must(game.crayon === CRAYON_MAX, '크레파스가 가득이 아님');
+
+  // 별 잇기 → 크레파스가 줄어야
+  tapStar(0);
+  must(game.sel === 0, '별을 잡지 못함');
+  tapStar(1);
+  must(game.edges.length === 1, '선이 안 그어짐');
+  must(game.crayon < CRAYON_MAX, '선을 그었는데 크레파스가 그대로');
+  must(game.sel === 1, '이은 뒤 끝점을 잡고 있지 않음');
+
+  // 같은 선을 또 이어도 두 번 그어지면 안 된다
+  const before = game.edges.length;
+  tapStar(0); tapStar(1);
+  must(game.edges.length === before, '같은 선이 두 번 그어짐');
+
+  // 되돌리기 → 크레파스가 돌아와야
+  const c1 = game.crayon;
+  undo();
+  must(game.edges.length === before - 1, '되돌리기가 선을 안 지움');
+  must(game.crayon > c1, '되돌렸는데 크레파스가 안 돌아옴');
+
+  // 삼각형을 만들면 고깔자리
+  game.edges = []; game.crayon = CRAYON_MAX;
+  tapStar(0); tapStar(1); tapStar(2); tapStar(0);
+  must(game.edges.length === 3, '삼각형 선이 3개가 아님: ' + game.edges.length);
+  const bookBefore = found.size;
+  finishShape();
+  must(game.done.length === 1, '완성했는데 별자리가 안 쌓임');
+  must(game.done[0].name === (crayonLang() === 'en' ? 'Party Hat' : '생일고깔자리'),
+       '삼각형인데 ' + game.done[0].name);
+  must(game.edges.length === 0, '완성 후 선이 안 비워짐');
+  must(game.stars[0].used && game.stars[1].used, '쓴 별이 안 잠김');
+  must(found.size >= bookBefore, '도감이 줄어듦');
+
+  // 잠긴 별은 다시 못 쓴다
+  game.sel = null;
+  tapStar(0);
+  must(game.sel === null, '잠긴 별이 잡힘');
+
+  // 크레파스가 모자라면 선이 안 그어진다
+  game.crayon = 0.5;
+  game.sel = null;
+  tapStar(3); tapStar(4);
+  must(game.edges.length === 0, '크레파스가 없는데 선이 그어짐');
+
+  // 밤 끝내기
+  endNight();
+  must(game.state === 'result', '밤을 끝냈는데 result 가 아님');
+
+  // ---- 도감 ----
+  // 전설·힌트를 빠뜨린 별자리가 있으면 도감이 빈칸으로 나온다. 이름을 고칠 때마다 여기서 걸린다.
+  for (const sh of SHAPES) {
+    must(LORE[sh.key], '전설이 통째로 없음: ' + sh.key);
+    must(LORE[sh.key] && LX(LORE[sh.key].lore), '전설 글이 비었음: ' + sh.key);
+    must(LORE[sh.key] && LX(LORE[sh.key].hint), '힌트가 비었음: ' + sh.key);
+  }
+  // 이름이 겹치면 도감에서 어느 게 어느 건지 알 수 없다
+  must(new Set(SHAPES.map(x => x.ko)).size === SHAPES.length, '한국어 이름이 겹침');
+  must(new Set(SHAPES.map(x => x.en)).size === SHAPES.length, '영어 이름이 겹침');
+  must(new Set(SHAPES.map(x => x.key)).size === SHAPES.length, 'key 가 겹침');
+
+  // 발견한 모양이 도감에 저장되는지
+  must(shots.cone, '삼각형을 발견했는데 모양이 도감에 저장 안 됨');
+  if (shots.cone) {
+    const flat = shots.cone.p.flat();
+    must(flat.every(v => v >= -0.01 && v <= 1.01), '도감 좌표가 0~1 밖: ' + flat.join(','));
+    must(shots.cone.e.length === 3, '삼각형인데 저장된 선이 ' + shots.cone.e.length + '개');
+    // 긴 쪽으로 같이 나눴으니 가로세로 중 한쪽은 0~1을 꽉 채워야 한다 (안 찌그러졌나)
+    const xs = shots.cone.p.map(q => q[0]), ys = shots.cone.p.map(q => q[1]);
+    const spanX = Math.max(...xs) - Math.min(...xs), spanY = Math.max(...ys) - Math.min(...ys);
+    must(Math.max(spanX, spanY) > 0.95, '도감 그림이 찌그러짐: ' + spanX.toFixed(2) + '×' + spanY.toFixed(2));
+  }
+
+  openBook('menu');
+  must(game.state === 'book', '도감이 안 열림');
+  draw(0);
+  const L0 = bookLayout();
+  must(L0.pages >= 3, '도감 쪽수가 ' + L0.pages + '쪽뿐');
+  const pg = game.book.page;
+  onTap(game.btns.bookNext.x + 2, game.btns.bookNext.y + 2);
+  must(game.book.page !== pg, '도감이 다음 쪽으로 안 넘어감');
+  onTap(game.btns.bookPrev.x + 2, game.btns.bookPrev.y + 2);
+  must(game.book.page === pg, '도감이 이전 쪽으로 안 돌아옴');
+  draw(0);
+
+  // 첫 쪽은 흔한 것부터여야 한다 — 처음 연 사람이 ??? 만 보면 안 된다
+  must(SHAPES[BOOK_ORDER[0]].rarity === 1, '도감 첫 칸이 흔한 별자리가 아님');
+  must(BOOK_ORDER.length === SHAPES.length, '도감 순서에 빠진 별자리가 있음');
+  must(new Set(BOOK_ORDER).size === SHAPES.length, '도감 순서에 겹치는 별자리가 있음');
+
+  const c0 = bookCell(0);                       // 첫 칸을 눌러 상세로
+  onTap(c0.x + c0.w / 2, c0.y + c0.h / 2);
+  must(game.book.sel === BOOK_ORDER[0], '도감 상세가 안 열림');
+  draw(0);                                      // 상세 그리기가 터지지 않는지
+  onTap(game.btns.bookClose.x + 2, game.btns.bookClose.y + 2);
+  must(game.book.sel === null, '상세에서 목록으로 안 돌아옴');
+  onTap(game.btns.bookClose.x + 2, game.btns.bookClose.y + 2);
+  must(game.state === 'menu', '도감이 안 닫힘');
+
+  // ⭐ 재발 방지 — 이름만 알고 그림이 없는 별자리(도감이 생기기 전에 발견해둔 것)를
+  //    다시 만들면 그림이 채워져야 한다. 아드님이 부메랑자리에서 찾아낸 버그.
+  found.add('boomerang');
+  delete shots.boomerang;
+  startNight(); draw(0);
+  game.stars[0].x = 200; game.stars[0].y = 300;     // 가운데가 한 번 꺾인 세 별
+  game.stars[1].x = 300; game.stars[1].y = 240;
+  game.stars[2].x = 400; game.stars[2].y = 330;
+  tapStar(0); tapStar(1); tapStar(2);
+  finishShape();
+  must(game.done.length === 1 && /부메랑자리|Boomerang/.test(game.done[0] ? game.done[0].name : ''),
+       '꺾인 선 두 개인데 ' + (game.done[0] ? game.done[0].name : '아무것도 안 나옴'));
+  must(shots.boomerang, '이미 아는 별자리를 다시 만들었는데 도감에 그림이 안 남음');
+
+  // 그림이 이미 있으면 **묻고 나서** 바꾼다 — 멋대로 덮어쓰면 아끼던 그림이 사라진다
+  const keepShot = JSON.stringify(shots.boomerang);
+  const makeBoomerang = () => {
+    startNight(); draw(0);
+    game.stars[0].x = 150; game.stars[0].y = 400;
+    game.stars[1].x = 260; game.stars[1].y = 300;
+    game.stars[2].x = 380; game.stars[2].y = 420;
+    tapStar(0); tapStar(1); tapStar(2);
+    finishShape();
+  };
+  makeBoomerang();
+  must(game.replace && game.replace.key === 'boomerang', '그림이 있는데 바꿀지 안 물어봄');
+  must(JSON.stringify(shots.boomerang) === keepShot, '묻지도 않고 도감 그림을 덮어씀');
+  draw(0);
+  must(game.btns.replace, '바꾸기 버튼이 화면에 안 나옴');
+  onTap(game.btns.replace.x + 2, game.btns.replace.y + 2);
+  must(JSON.stringify(shots.boomerang) !== keepShot, '바꾸기를 눌렀는데 도감 그림이 그대로');
+  must(game.replace === null, '바꾼 뒤에도 물음이 남아있음');
+
+  // 안 누르고 다음 별자리를 완성하면 → 물음은 사라지고 도감 그림은 그대로
+  const keep2 = JSON.stringify(shots.boomerang);
+  makeBoomerang();
+  must(game.replace, '두 번째로 만들었는데 안 물어봄');
+  game.stars[3].x = 600; game.stars[3].y = 200; game.stars[3].used = false;
+  game.stars[4].x = 700; game.stars[4].y = 200; game.stars[4].used = false;
+  tapStar(3); tapStar(4);
+  finishShape();
+  must(!game.replace || game.replace.key !== 'boomerang', '다음 별자리를 완성했는데 이전 물음이 남음');
+  must(JSON.stringify(shots.boomerang) === keep2, '안 눌렀는데 도감 그림이 바뀜');
+
+  // 게임 중에 열었다 닫으면 하던 판으로 정확히 돌아와야 한다
+  startNight(); draw(0);
+  tapStar(0); tapStar(1);
+  const keep = game.edges.length, keepCrayon = game.crayon;
+  openBook('play'); draw(0);
+  closeBook();
+  must(game.state === 'play', '게임 중 도감을 닫았는데 play 가 아님');
+  must(game.edges.length === keep && game.crayon === keepCrayon, '도감 다녀오니 그리던 게 사라짐');
+
+  // 언어를 바꾼 뒤에도 안 터지는지 (도감까지)
+  const lb = crayonLang();
+  onTap(game.btns.lang.x + 2, game.btns.lang.y + 2);
+  must(crayonLang() !== lb, '언어가 안 바뀜');
+  draw(0);
+  openBook('play'); draw(0);
+  game.book.sel = 0; draw(0);
+  closeBook();
+  startNight(); draw(0);
+  tapStar(0); tapStar(1); finishShape(); draw(0);
+
+  document.title = fails.length ? ('실패: ' + fails.join(' | ')) : '전부통과';
+}
+</script>
+</body>
+</html>

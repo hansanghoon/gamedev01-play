@@ -1,0 +1,2348 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>탁 트인 세계 — 오픈월드 탐험 (가제)</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #9ec9e8; }
+  body { font-family: "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; }
+  canvas { display: block; width: 100%; height: 100%; }
+
+  /* ---- 화면 위에 겹쳐 놓는 UI들 ---- */
+  #ui { position: fixed; inset: 0; pointer-events: none; }
+
+  /* 위쪽 나침반: 어느 쪽이 북쪽인지, 랜드마크가 어느 방향에 있는지 */
+  #compass {
+    position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+    width: min(560px, 78vw); height: 34px;
+    background: rgba(20, 30, 40, 0.35); border: 2px solid rgba(255,255,255,0.5);
+    border-radius: 17px; overflow: hidden;
+  }
+  #compass canvas { position: absolute; inset: 0; }
+
+  /* 왼쪽 아래: 체력 · 배고픔 · 기운 게이지 */
+  #gauges {
+    position: absolute; left: 22px; bottom: 20px; width: 210px;
+    display: flex; flex-direction: column; gap: 7px;
+  }
+  .gauge { display: flex; align-items: center; gap: 8px; }
+  .gauge .icon { font-size: 15px; width: 20px; text-align: center;
+    filter: drop-shadow(0 1px 3px rgba(0,0,0,.7)); }
+  .gauge .bar {
+    flex: 1; height: 13px; background: rgba(0,0,0,0.4);
+    border: 2px solid rgba(255,255,255,0.55); border-radius: 8px; overflow: hidden;
+  }
+  .gauge .fill { height: 100%; width: 100%; transition: width .15s linear; }
+  #hpFill   { background: linear-gradient(90deg, #ff5a5a, #ff9a8a); }
+  #foodFill { background: linear-gradient(90deg, #e8a33c, #f5cf6a); }
+  #stamFill { background: linear-gradient(90deg, #7ce06a, #b6f06a); }
+  #stamFill.tired { background: linear-gradient(90deg, #e07a4a, #f0b06a); }
+
+  /* 왼쪽 아래(게이지 위): 가진 것 */
+  #inventory {
+    position: absolute; left: 22px; bottom: 104px;
+    display: flex; flex-wrap: wrap; gap: 6px; max-width: 340px;
+  }
+  .slot {
+    background: rgba(20,30,40,.42); border: 2px solid rgba(255,255,255,.4);
+    border-radius: 9px; padding: 4px 9px; color: #fff;
+    font-size: 13px; font-weight: 700; text-shadow: 0 1px 3px rgba(0,0,0,.7);
+  }
+  .slot.equipped { border-color: #ffd24a; background: rgba(120,90,20,.5); }
+
+  /* 화면 가운데 아래: 지금 누를 수 있는 행동 안내 */
+  #prompt {
+    position: absolute; left: 50%; bottom: 20%; transform: translateX(-50%);
+    color: #fff; font-size: 16px; font-weight: 700;
+    background: rgba(20,30,40,.55); border: 2px solid rgba(255,255,255,.5);
+    border-radius: 12px; padding: 8px 18px; white-space: nowrap;
+    text-shadow: 0 1px 4px rgba(0,0,0,.8); display: none;
+  }
+  #prompt b { color: #ffe680; }
+
+  /* 활을 들었을 때 조준점 */
+  #crosshair {
+    position: absolute; left: 50%; top: 50%; width: 22px; height: 22px;
+    transform: translate(-50%, -50%); display: none;
+  }
+  #crosshair::before, #crosshair::after {
+    content: ''; position: absolute; background: rgba(255,255,255,.85);
+    box-shadow: 0 0 3px rgba(0,0,0,.9);
+  }
+  #crosshair::before { left: 50%; top: 0; width: 2px; height: 100%; margin-left: -1px; }
+  #crosshair::after { top: 50%; left: 0; height: 2px; width: 100%; margin-top: -1px; }
+
+  /* 제작 메뉴 */
+  #craftView {
+    position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    background: rgba(8, 18, 28, 0.8); z-index: 6;
+  }
+  #craftView.open { display: flex; }
+  #craftBox {
+    background: rgba(28, 38, 48, .96); border: 3px solid rgba(255,255,255,.5);
+    border-radius: 16px; padding: 22px 26px; min-width: 380px; max-width: 92vw;
+    color: #fff; box-shadow: 0 12px 44px rgba(0,0,0,.55);
+  }
+  #craftBox h2 { font-size: 21px; margin-bottom: 4px; }
+  #craftBox .sub { font-size: 12px; opacity: .7; margin-bottom: 14px; }
+  .recipe {
+    display: flex; align-items: center; gap: 12px; padding: 9px 12px; margin-bottom: 7px;
+    border: 2px solid rgba(255,255,255,.22); border-radius: 11px; cursor: pointer;
+  }
+  .recipe:hover { background: rgba(255,255,255,.1); }
+  .recipe.locked { opacity: .42; cursor: not-allowed; }
+  .recipe .rname { flex: 1; font-weight: 700; font-size: 15px; }
+  .recipe .rcost { font-size: 12px; opacity: .85; }
+  .recipe .rkey {
+    background: rgba(255,255,255,.2); border-radius: 6px; padding: 2px 8px;
+    font-size: 12px; font-weight: 700;
+  }
+  #craftHint { font-size: 12px; opacity: .7; margin-top: 12px; text-align: center; }
+
+  /* 오른쪽 위: 발견한 랜드마크 수 */
+  #found {
+    position: absolute; right: 20px; top: 18px;
+    color: #fff; font-size: 14px; font-weight: 700;
+    text-shadow: 0 1px 4px rgba(0,0,0,.65);
+    background: rgba(20,30,40,.3); padding: 8px 14px; border-radius: 12px;
+    border: 2px solid rgba(255,255,255,.4);
+  }
+
+  /* 오른쪽 위: 지금 시각 (아침·낮·노을·밤) */
+  #clock {
+    position: absolute; right: 20px; top: 62px;
+    color: #fff; font-size: 14px; font-weight: 700;
+    text-shadow: 0 1px 4px rgba(0,0,0,.65);
+    background: rgba(20,30,40,.3); padding: 7px 14px; border-radius: 12px;
+    border: 2px solid rgba(255,255,255,.4);
+  }
+
+  /* 가운데 아래: 발견 알림 토스트 */
+  #toast {
+    position: absolute; left: 50%; top: 26%; transform: translate(-50%, 0) scale(0.9);
+    color: #fff; font-size: 26px; font-weight: 800; letter-spacing: 1px;
+    text-shadow: 0 2px 10px rgba(0,0,0,.8);
+    opacity: 0; transition: opacity .4s, transform .4s;
+    white-space: nowrap;
+  }
+  #toast.show { opacity: 1; transform: translate(-50%, -10px) scale(1); }
+
+  /* 조작법 안내 */
+  #help {
+    position: absolute; right: 20px; bottom: 22px;
+    color: #fff; font-size: 12px; line-height: 1.7;
+    text-shadow: 0 1px 4px rgba(0,0,0,.7);
+    text-align: right; opacity: .85;
+  }
+  #help b { color: #ffe680; }
+
+  /* 전체 지도 화면 (M키) */
+  #mapView {
+    position: fixed; inset: 0; display: none;
+    align-items: center; justify-content: center; flex-direction: column; gap: 14px;
+    background: rgba(8, 18, 28, 0.82); z-index: 5;
+  }
+  #mapView.open { display: flex; }
+  #mapCv {
+    width: min(76vh, 76vw); height: min(76vh, 76vw);
+    border: 3px solid rgba(255,255,255,.65); border-radius: 10px;
+    box-shadow: 0 10px 40px rgba(0,0,0,.5);
+    image-rendering: auto;
+  }
+  #mapTitle { color: #fff; font-size: 20px; font-weight: 800; letter-spacing: 2px; }
+  #mapHint { color: rgba(255,255,255,.75); font-size: 13px; }
+
+  /* 시작 화면 */
+  #start {
+    position: fixed; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 18px;
+    background: linear-gradient(180deg, #2f7fd4 0%, #7fc0e8 55%, #cfeaf7 100%);
+    color: #fff; text-align: center; cursor: pointer; z-index: 10;
+  }
+  #start h1 { font-size: 44px; letter-spacing: 3px; text-shadow: 0 4px 16px rgba(0,0,0,.35); }
+  #start p { font-size: 15px; line-height: 1.9; text-shadow: 0 2px 8px rgba(0,0,0,.35); }
+  #start .key { display: inline-block; background: rgba(255,255,255,.22); border: 1px solid rgba(255,255,255,.5);
+    border-radius: 6px; padding: 1px 8px; margin: 0 2px; font-weight: 700; }
+  #startBtn {
+    margin-top: 10px; font-size: 20px; font-weight: 800; padding: 14px 42px;
+    background: #ffd24a; color: #4a3510; border: none; border-radius: 30px;
+    box-shadow: 0 6px 20px rgba(0,0,0,.3); cursor: pointer;
+  }
+  #loading { font-size: 15px; opacity: .9; }
+</style>
+</head>
+<body>
+
+<canvas id="c"></canvas>
+
+<div id="ui">
+  <div id="compass"><canvas id="compassCv" width="1120" height="68"></canvas></div>
+  <div id="found">🏕️ <span id="dayNum">1</span>일째 살아남는 중</div>
+  <div id="clock">🌤️ 아침</div>
+  <div id="inventory"></div>
+  <div id="gauges">
+    <div class="gauge"><span class="icon">❤️</span><div class="bar"><div class="fill" id="hpFill"></div></div></div>
+    <div class="gauge"><span class="icon">🍖</span><div class="bar"><div class="fill" id="foodFill"></div></div></div>
+    <div class="gauge"><span class="icon">⚡</span><div class="bar"><div class="fill" id="stamFill"></div></div></div>
+  </div>
+  <div id="prompt"></div>
+  <div id="crosshair"></div>
+  <div id="toast"></div>
+  <div id="help">
+    <b>W A S D</b> 이동 · <b>Shift</b> 달리기 · <b>Space</b> 점프/활공 🪂<br>
+    <b>E</b> 줍기·사용 · <b>C</b> 제작 · <b>F</b> 먹기 · <b>좌클릭</b> 활 쏘기<br>
+    <b>M</b> 지도 · <b>T</b> 꾹 = 시간 빨리 · <b>휠</b> 카메라 · <b>ESC</b> 마우스 풀기
+  </div>
+</div>
+
+<div id="craftView">
+  <div id="craftBox">
+    <h2>🔨 만들기</h2>
+    <div class="sub" id="craftSub"></div>
+    <div id="recipeList"></div>
+    <div id="craftHint">숫자키로도 만들 수 있어요 · <b>C</b> 또는 <b>ESC</b> 닫기</div>
+  </div>
+</div>
+
+<div id="mapView">
+  <div id="mapTitle">🗺️ 탁 트인 세계</div>
+  <canvas id="mapCv" width="720" height="720"></canvas>
+  <div id="mapHint">M 또는 ESC — 닫기</div>
+</div>
+
+<div id="start">
+  <h1>탁 트인 세계</h1>
+  <p>
+    사방이 산으로 둘러싸인 넓은 들판에서 <b>살아남는</b> 거야.<br><br>
+    <span class="key">E</span> 로 🪵나무와 🪨돌을 모으고 →
+    <span class="key">C</span> 로 🔨제작대를 만들고 → 🏹활을 만들어<br>
+    🦌사슴을 사냥해서 🔥모닥불에 구워 먹자.
+    밤이 오기 전에 ⛺텐트도 만들면 좋아!<br><br>
+    배가 고프면 체력이 줄어드니까 <b>먹는 걸 잊지 마</b>.
+  </p>
+  <div id="loading">세계를 불러오는 중…</div>
+  <button id="startBtn" style="display:none">탐험 시작</button>
+</div>
+
+<!-- importmap: "three"라는 짧은 이름이 실제 인터넷 주소를 가리키게 하는 지도 (방탈출·낙서3D와 같은 방식) -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js"
+  }
+}
+</script>
+
+<script type="module">
+// ============================================================================
+//  탁 트인 세계 — 젤다·팰월드 느낌의 오픈월드 맵
+//
+//  큰 흐름:
+//   1) 땅의 높이를 계산하는 공식(terrainHeight)을 하나 만든다.
+//   2) 그 공식으로 ① 눈에 보이는 땅 메시 ② 캐릭터가 서는 높이 ③ 나무·바위 위치
+//      를 전부 계산한다. 하나의 공식을 셋이 같이 쓰기 때문에 절대 어긋나지 않는다.
+//   3) 하늘·안개·먼 산으로 "멀리까지 보인다"는 개방감을 만든다.
+// ============================================================================
+
+let THREE;
+try {
+  THREE = await import('three');
+} catch (e) {
+  document.getElementById('loading').innerHTML =
+    '⚠️ 3D 라이브러리를 못 불러왔어요.<br>인터넷 연결을 확인해 주세요.';
+  throw e;
+}
+
+// ============================================================================
+//  1. 세계의 크기와 기본 설정
+// ============================================================================
+const WORLD = 1100;         // 한 변의 길이(맵 전체는 1100 x 1100)
+const HALF = WORLD / 2;
+const WATER_Y = 0;          // 물 높이. 이 아래로 파인 곳은 호수가 된다
+const SEGS = 280;           // 땅을 몇 칸으로 잘라 만들지 (클수록 곱지만 무거움)
+
+// 랜드마크가 있는 자리. 한곳에 모아두면 "여기엔 나무를 심지 않는다"는 규칙과
+// 실제 건물 세우는 위치가 절대 어긋나지 않는다.
+const LANDMARK_SPOTS = [
+  { kind: 'tower',   name: '하늘을 보는 탑', x: -170, z: -310, clear: 32 },
+  { kind: 'shrine',  name: '불꽃의 사당',    x:  340, z:  250, clear: 24 },
+  { kind: 'shrine',  name: '바람의 사당',    x: -400, z:  -90, clear: 24 },
+  { kind: 'shrine',  name: '호수의 사당',    x:  200, z: -310, clear: 24 },
+  { kind: 'village', name: '바람 마을',      x:  420, z: -440, clear: 42 },
+  { kind: 'bigtree', name: '큰 나무',        x:  -70, z:  330, clear: 30 },
+];
+
+// 색깔표 — 한곳에 모아두면 나중에 분위기 바꾸기 쉽다
+const C = {
+  skyTop:   0x2a74cf,       // 하늘 꼭대기(진한 파랑)
+  skyBot:   0xd6ecf7,       // 지평선 근처(옅은 하늘색)
+  fog:      0xcfe6f5,       // 멀리 있는 것이 녹아드는 색 (하늘 아래쪽 색과 맞춰야 자연스럽다)
+  grass:    0x6fb04a,
+  grassDark:0x4e8c39,
+  sand:     0xd8c98a,
+  rock:     0x8b8578,
+  snow:     0xf4f7fb,
+  water:    0x2f8fc4,
+  trunk:    0x6b4a2c,
+  leaf:     0x3f8f43,
+  leafWarm: 0x6bab3e,
+};
+
+// ============================================================================
+//  2. 땅의 높이 공식
+//     - 규칙적인 난수(해시)를 써서 "매번 똑같은 세계"가 나오게 한다.
+//       Math.random()을 쓰면 켤 때마다 지형이 달라져서 지도를 외울 수 없다.
+// ============================================================================
+
+// 좌표를 넣으면 0~1 사이 값이 나오는 함수. 같은 좌표면 항상 같은 값.
+function hash2(x, y) {
+  const n = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+  return n - Math.floor(n);
+}
+
+// 위 hash2는 칸마다 값이 뚝뚝 끊긴다. 네 귀퉁이 값을 부드럽게 섞어서
+// 완만한 언덕 모양을 만든다. (value noise)
+function smoothNoise(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y);
+  const xf = x - xi, yf = y - yi;
+  const u = xf * xf * (3 - 2 * xf);   // 부드럽게 이어지도록 곡선 보간
+  const v = yf * yf * (3 - 2 * yf);
+  const a = hash2(xi, yi),     b = hash2(xi + 1, yi);
+  const c = hash2(xi, yi + 1), d = hash2(xi + 1, yi + 1);
+  return a * (1 - u) * (1 - v) + b * u * (1 - v) + c * (1 - u) * v + d * u * v;
+}
+
+// 큰 언덕 위에 작은 굴곡을 여러 번 겹쳐서 자연스러운 지형을 만든다. (fBm)
+function fbm(x, y, octaves) {
+  let sum = 0, amp = 1, freq = 1, norm = 0;
+  for (let i = 0; i < octaves; i++) {
+    sum += smoothNoise(x * freq, y * freq) * amp;
+    norm += amp;
+    amp *= 0.5;    // 겹칠수록 영향은 절반씩
+    freq *= 2.0;   // 겹칠수록 무늬는 두 배 촘촘히
+  }
+  return sum / norm;   // 0~1
+}
+
+// 0~1 사이에서 부드럽게 올라가는 곡선 (딱 끊기지 않게 섞을 때 씀)
+function smoothstep(a, b, t) {
+  const x = Math.max(0, Math.min(1, (t - a) / (b - a)));
+  return x * x * (3 - 2 * x);
+}
+
+// 호수를 팔 위치와 크기 (중심x, 중심z, 반지름, 깊이)
+const LAKES = [
+  { x: 200, z: -170, r: 120, d: 32 },   // 시작 언덕에서 내려다보이는 큰 호수
+  { x: -230, z: 200, r: 80,  d: 22 },
+];
+
+// ★ 이 게임의 심장. 좌표 (x, z)를 넣으면 그 지점 땅의 높이를 알려준다.
+function terrainHeight(x, z) {
+  // (1) 넓고 완만한 들판
+  let h = (fbm(x * 0.0035, z * 0.0035, 4) - 0.5) * 52;
+  h += (fbm(x * 0.013, z * 0.013, 3) - 0.5) * 14;
+  h += (fbm(x * 0.05,  z * 0.05,  2) - 0.5) * 2.2;
+  h += 9;   // 전체를 물 위로 살짝 띄운다
+
+  // (2) 지평선을 막아주는 바깥쪽 산맥.
+  //     가장자리로 갈수록 급격히 솟아올라 "그릇" 모양 세계가 된다.
+  //     너무 가파르면 회색 벽처럼 보인다. 넓고 완만하게 올라가야 능선이 겹겹이 보인다.
+  const d = Math.max(Math.abs(x), Math.abs(z)) / HALF;   // 중앙 0 → 가장자리 1
+  const edge = Math.max(0, (d - 0.50) / 0.50);
+  if (edge > 0) {
+    h += Math.pow(edge, 1.7) * 200;                       // 산의 기본 높이
+    h += (fbm(x * 0.008, z * 0.008, 4) - 0.5) * 95 * edge;  // 봉우리 굴곡
+  }
+
+  // (3) 호수를 파낸다
+  for (const L of LAKES) {
+    const t = 1 - Math.min(1, Math.hypot(x - L.x, z - L.z) / L.r);
+    h -= Math.pow(t, 1.5) * L.d;
+  }
+
+  // (4) 시작 지점은 사방이 내려다보이는 널찍한 언덕 위로 만든다.
+  //     평지에서 시작하면 눈앞 언덕에 막혀 답답하다. 높은 데서 시작해야
+  //     첫 화면부터 "우와, 넓다"가 된다. (젤다의 시작 고원과 같은 생각)
+  const flat = smoothstep(105, 22, Math.hypot(x, z));
+  h = h + (30 - h) * flat * 0.92;
+
+  return h;
+}
+
+// 땅의 기울기(0=평지, 1=절벽). 나무를 절벽에 심지 않으려고 쓴다.
+function slopeAt(x, z) {
+  const e = 3;
+  const hL = terrainHeight(x - e, z), hR = terrainHeight(x + e, z);
+  const hD = terrainHeight(x, z - e), hU = terrainHeight(x, z + e);
+  return Math.min(1, Math.hypot(hR - hL, hU - hD) / (e * 2) / 1.4);
+}
+
+// ============================================================================
+//  3. 무대 만들기 — 장면 / 카메라 / 렌더러
+// ============================================================================
+const scene = new THREE.Scene();
+// 안개는 "멀리 있는 것이 살짝 흐려 보이는" 정도만. 진하면 원경이 회색 벽이 되어
+// 탁 트인 느낌이 완전히 죽는다. 아주 옅게 깔아야 산이 겹겹이 보인다.
+scene.fog = new THREE.FogExp2(C.fog, 0.00075);
+
+const camera = new THREE.PerspectiveCamera(
+  62,                        // 시야각을 넓게 → 탁 트인 느낌
+  innerWidth / innerHeight,
+  0.3,
+  3000                       // 아주 멀리까지 그린다
+);
+
+const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('c'), antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));   // 너무 고해상도로 그리면 느려진다
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ---- 하늘: 위는 진한 파랑, 아래는 옅은 하늘색인 큰 공을 안쪽에서 본다 ----
+const sky = new THREE.Mesh(
+  new THREE.SphereGeometry(1600, 32, 16),
+  new THREE.ShaderMaterial({
+    // depthTest를 끄고 renderOrder를 맨 앞으로 → "항상 가장 뒤에 칠하는 배경"이 된다.
+    // (안 그러면 아주 먼 거리라 깊이 검사에서 탈락해 하늘이 새까맣게 나온다)
+    side: THREE.BackSide, depthWrite: false, depthTest: false, fog: false,
+    uniforms: {
+      topColor:    { value: new THREE.Color(C.skyTop) },
+      bottomColor: { value: new THREE.Color(C.skyBot) },
+    },
+    vertexShader: `
+      varying vec3 vPos;
+      void main() {
+        vPos = position;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }`,
+    fragmentShader: `
+      uniform vec3 topColor; uniform vec3 bottomColor; varying vec3 vPos;
+      void main() {
+        float h = normalize(vPos).y;
+        gl_FragColor = vec4(mix(bottomColor, topColor, pow(max(h, 0.0), 0.95)), 1.0);
+      }`,
+  })
+);
+sky.frustumCulled = false;
+sky.renderOrder = -999;      // 무엇보다 먼저 그린다
+scene.add(sky);
+
+// ---- 빛: 하늘빛(전체를 은은하게) + 햇빛(그림자를 만드는 방향광) ----
+// 하늘빛(위)과 땅에서 반사되는 빛(아래). 시간대에 따라 색과 세기가 바뀐다.
+const hemi = new THREE.HemisphereLight(0xbfe4ff, 0x5a7a45, 1.05);
+scene.add(hemi);
+
+const sun = new THREE.DirectionalLight(0xfff4dd, 1.25);
+sun.position.set(80, 140, 60);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+// 그림자는 카메라 근처만 선명하게 — 맵 전체를 덮으면 그림자가 뭉개진다
+// 범위가 좁으면 화면에 "여기부터 그림자 없음"이라는 직선 경계가 보인다.
+// 넓히면 경계가 멀어지는 대신 그림자가 조금 뭉툭해진다 — 그 사이에서 타협한 값.
+const sc = sun.shadow.camera;
+sc.left = -130; sc.right = 130; sc.top = 130; sc.bottom = -130;
+sc.near = 1; sc.far = 500;
+scene.add(sun);
+scene.add(sun.target);
+
+// ============================================================================
+//  4. 땅 만들기 — 높이 공식대로 판을 울퉁불퉁하게 만들고, 높이에 따라 색을 칠한다
+// ============================================================================
+const groundGeo = new THREE.PlaneGeometry(WORLD, WORLD, SEGS, SEGS);
+groundGeo.rotateX(-Math.PI / 2);     // 눕혀서 바닥으로
+
+const gpos = groundGeo.attributes.position;
+for (let i = 0; i < gpos.count; i++) {
+  gpos.setY(i, terrainHeight(gpos.getX(i), gpos.getZ(i)));
+}
+groundGeo.computeVertexNormals();    // 빛을 받는 방향을 다시 계산
+
+// 높이와 기울기에 따라 모래 → 풀 → 바위 → 눈 으로 색을 칠한다.
+// 이 한 가지 덕분에 멀리 있는 산이 눈 덮인 것처럼 보이면서 개방감이 확 산다.
+const gcol = new Float32Array(gpos.count * 3);
+const nrm = groundGeo.attributes.normal;
+const tmpColor = new THREE.Color();
+const cSand = new THREE.Color(C.sand);
+const cGrass = new THREE.Color(C.grass);
+const cGrassD = new THREE.Color(C.grassDark);
+const cRock = new THREE.Color(C.rock);
+const cSnow = new THREE.Color(C.snow);
+
+for (let i = 0; i < gpos.count; i++) {
+  const x = gpos.getX(i), y = gpos.getY(i), z = gpos.getZ(i);
+  const steep = 1 - nrm.getY(i);            // 0=평지, 클수록 가파름
+
+  if (y < WATER_Y + 2.5) {
+    tmpColor.copy(cSand);                                    // 물가 모래
+  } else {
+    // 풀색을 자리마다 조금씩 다르게 섞어 밋밋함을 없앤다
+    tmpColor.copy(cGrass).lerp(cGrassD, fbm(x * 0.02, z * 0.02, 2));
+    tmpColor.lerp(cSand, smoothstep(4.5, 2.5, y));           // 물가로 갈수록 모래
+    tmpColor.lerp(cRock, smoothstep(0.22, 0.5, steep));      // 가파르면 바위
+    tmpColor.lerp(cRock, smoothstep(55, 90, y));             // 높으면 바위
+    tmpColor.lerp(cSnow, smoothstep(95, 135, y));            // 더 높으면 눈(설선)
+  }
+  gcol[i * 3] = tmpColor.r; gcol[i * 3 + 1] = tmpColor.g; gcol[i * 3 + 2] = tmpColor.b;
+}
+groundGeo.setAttribute('color', new THREE.BufferAttribute(gcol, 3));
+
+const ground = new THREE.Mesh(
+  groundGeo,
+  new THREE.MeshLambertMaterial({ vertexColors: true })
+);
+ground.receiveShadow = true;
+scene.add(ground);
+
+// ---- 물: 넓은 반투명 판 하나 ----
+const water = new THREE.Mesh(
+  new THREE.PlaneGeometry(WORLD, WORLD, 1, 1),
+  new THREE.MeshPhongMaterial({
+    color: C.water, transparent: true, opacity: 0.78,
+    shininess: 90, specular: 0x99ddff,
+  })
+);
+water.rotation.x = -Math.PI / 2;
+water.position.y = WATER_Y;
+scene.add(water);
+
+// ============================================================================
+//  5. 나무·바위·풀 뿌리기
+//     InstancedMesh = 같은 모양 수천 개를 한 번에 그리는 방법. 이게 없으면 아주 느려진다.
+// ============================================================================
+
+// 씨앗을 정해둔 난수 — 켤 때마다 나무가 같은 자리에 서 있게 한다
+let seed = 20260802;
+function rnd() {
+  seed = (seed * 1664525 + 1013904223) % 4294967296;
+  return seed / 4294967296;
+}
+
+const dummy = new THREE.Object3D();   // 위치·크기·회전을 계산할 때 쓰는 임시 물체
+
+// 나무·바위를 심지 않고 비워둘 자리.
+// 시작 지점 앞이 나무로 막히면 "탁 트인 느낌"이 완전히 죽는다.
+// 랜드마크 자리도 비워야 건물이 나무에 파묻히지 않는다.
+const CLEAR_ZONES = [
+  { x: 0, z: 0, r: 62 },   // 출발 언덕 — 전망이 막히지 않게 넓게 비운다
+  ...LANDMARK_SPOTS.map(s => ({ x: s.x, z: s.z, r: s.clear })),
+];
+
+function inClearZone(x, z) {
+  for (const c of CLEAR_ZONES) {
+    if (Math.hypot(x - c.x, z - c.z) < c.r) return true;
+  }
+  return false;
+}
+
+// 조건에 맞는 자리를 찾아 개수만큼 무언가를 놓는다.
+// place(x, z, 땅높이) 가 false를 돌려주면 그 자리는 건너뛴다.
+function scatter(count, place, opt = {}) {
+  const { minY = WATER_Y + 2, maxY = 200, maxSlope = 1, avoidClear = true } = opt;
+  let placed = 0, tries = 0;
+  while (placed < count && tries < count * 30) {
+    tries++;
+    const x = (rnd() - 0.5) * WORLD * 0.96;
+    const z = (rnd() - 0.5) * WORLD * 0.96;
+    const y = terrainHeight(x, z);
+    if (y < minY || y > maxY) continue;
+    if (slopeAt(x, z) > maxSlope) continue;
+    if (avoidClear && inClearZone(x, z)) continue;
+    if (place(x, z, y) !== false) placed++;
+  }
+  return placed;
+}
+
+// ---- 나무 (기둥 + 잎 두 덩어리) ----
+const TREES = 2200;
+const trunkMesh = new THREE.InstancedMesh(
+  new THREE.CylinderGeometry(0.32, 0.5, 1, 6),
+  new THREE.MeshLambertMaterial({ color: C.trunk }),
+  TREES
+);
+const leafMesh = new THREE.InstancedMesh(
+  new THREE.ConeGeometry(1, 1, 7),
+  new THREE.MeshLambertMaterial({ color: C.leaf, flatShading: true }),
+  TREES
+);
+trunkMesh.castShadow = leafMesh.castShadow = true;
+leafMesh.receiveShadow = true;
+// 잎 색을 나무마다 조금씩 다르게 (한 가지 초록이면 인공적으로 보인다)
+const leafColors = new Float32Array(TREES * 3);
+const cLeaf = new THREE.Color(C.leaf), cLeafW = new THREE.Color(C.leafWarm);
+
+// 나무를 온 들판에 고르게 뿌리면 사방이 나무 벽에 막혀 답답해진다.
+// "숲이 뭉쳐 있고 그 사이는 넓은 초원"이어야 멀리까지 시원하게 보인다.
+// 그래서 지도 위에 큼직한 얼룩무늬(노이즈)를 그려두고, 진한 곳에만 나무를 심는다.
+function forestDensity(x, z) {
+  const n = fbm(x * 0.0042 + 40, z * 0.0042 - 25, 3);   // 0~1 얼룩무늬
+  return Math.max(0, (n - 0.52) / 0.48);                // 0.52 미만이면 아예 초원
+}
+
+// 나무·바위가 어디 있는지 기억해 둔다. 나중에 E키로 자원을 주울 때 쓴다.
+// (InstancedMesh는 수천 개를 한 번에 그리는 대신 개별 접근이 안 되므로 좌표를 따로 보관)
+const treeSpots = [];
+const rockSpots = [];
+
+let treeI = 0;
+scatter(TREES, (x, z, y) => {
+  if (treeI >= TREES) return false;
+  if (rnd() > forestDensity(x, z)) return false;   // 숲이 옅은 곳은 건너뛴다
+  treeSpots.push({ x, z, y, cool: 0 });
+  const s = 2.6 + rnd() * 3.4;          // 나무 크기
+  const trunkH = s * 1.5;
+
+  dummy.position.set(x, y + trunkH / 2, z);
+  dummy.scale.set(s * 0.32, trunkH, s * 0.32);
+  dummy.rotation.set(0, rnd() * 6.28, 0);
+  dummy.updateMatrix();
+  trunkMesh.setMatrixAt(treeI, dummy.matrix);
+
+  const leafH = s * 3.2;
+  dummy.position.set(x, y + trunkH + leafH * 0.42, z);
+  dummy.scale.set(s * 1.15, leafH, s * 1.15);
+  dummy.updateMatrix();
+  leafMesh.setMatrixAt(treeI, dummy.matrix);
+
+  tmpColor.copy(cLeaf).lerp(cLeafW, rnd());
+  leafColors[treeI * 3] = tmpColor.r;
+  leafColors[treeI * 3 + 1] = tmpColor.g;
+  leafColors[treeI * 3 + 2] = tmpColor.b;
+
+  treeI++;
+}, { minY: WATER_Y + 3, maxY: 95, maxSlope: 0.42 });
+
+trunkMesh.count = leafMesh.count = treeI;
+leafMesh.instanceColor = new THREE.InstancedBufferAttribute(leafColors, 3);
+scene.add(trunkMesh, leafMesh);
+
+// ---- 바위 ----
+const ROCKS = 260;
+const rockMesh = new THREE.InstancedMesh(
+  new THREE.IcosahedronGeometry(1, 0),
+  new THREE.MeshLambertMaterial({ color: 0x9a9488, flatShading: true }),
+  ROCKS
+);
+rockMesh.castShadow = rockMesh.receiveShadow = true;
+let rockI = 0;
+scatter(ROCKS, (x, z, y) => {
+  if (rockI >= ROCKS) return false;
+  // 바위도 나무처럼 뭉쳐야 자연스럽다. 초원에 고르게 흩뿌리면 지저분해 보인다.
+  // 돌밭 얼룩무늬 + 비탈진 곳(돌이 굴러 나온 자리)에 주로 놓는다.
+  const rocky = Math.max(0, (fbm(x * 0.006 - 70, z * 0.006 + 90, 3) - 0.5) * 2.4);
+  if (rnd() > rocky + slopeAt(x, z) * 0.55) return false;
+  const s = 1.5 + rnd() * 4.0;   // 너무 작으면 멀리서 회색 점처럼 보여 지저분하다
+  // 살짝 파묻는다. 땅 위에 딱 얹으면 언덕 위에서 떠 보인다
+  dummy.position.set(x, y + s * 0.18, z);
+  dummy.scale.set(s, s * (0.6 + rnd() * 0.5), s);
+  dummy.rotation.set(rnd() * 6.28, rnd() * 6.28, rnd() * 6.28);
+  dummy.updateMatrix();
+  rockMesh.setMatrixAt(rockI++, dummy.matrix);
+  rockSpots.push({ x, z, y, cool: 0 });
+  // 눈 덮인 고지대(90 이상)에는 놓지 않는다 — 흰 설산이 회색 점으로 지저분해진다
+}, { minY: WATER_Y + 1, maxY: 90 });
+rockMesh.count = rockI;
+scene.add(rockMesh);
+
+// ---- 풀 포기 (발밑이 허전하지 않게) ----
+const GRASS = 5500;
+const grassMesh = new THREE.InstancedMesh(
+  new THREE.ConeGeometry(0.5, 1, 4),
+  new THREE.MeshLambertMaterial({ color: 0x7ec24f, flatShading: true }),
+  GRASS
+);
+let grassI = 0;
+scatter(GRASS, (x, z, y) => {
+  if (grassI >= GRASS) return false;
+  const s = 0.34 + rnd() * 0.5;      // 발밑 풀. 크면 작은 나무처럼 보여서 작게 유지
+  dummy.position.set(x, y + s * 0.5, z);
+  dummy.scale.set(s, s * 1.9, s);
+  dummy.rotation.set(0, rnd() * 6.28, 0);
+  dummy.updateMatrix();
+  grassMesh.setMatrixAt(grassI++, dummy.matrix);
+  // 풀은 키가 낮아 시야를 가리지 않으므로 빈 자리에도 자란다 (avoidClear: false)
+}, { minY: WATER_Y + 2, maxY: 80, maxSlope: 0.35, avoidClear: false });
+grassMesh.count = grassI;
+scene.add(grassMesh);
+
+// ---- 꽃 (색 점을 뿌려 들판을 화사하게) ----
+const FLOWERS = 1300;
+const flowerMesh = new THREE.InstancedMesh(
+  new THREE.SphereGeometry(0.12, 5, 4),
+  // 색은 아래에서 꽃마다 따로 넣어준다(instanceColor). vertexColors를 켜면
+  // 도형에 색 정보가 없어서 새까맣게 나오므로 켜지 않는다.
+  new THREE.MeshLambertMaterial({ color: 0xffffff }),
+  FLOWERS
+);
+const flowerColors = new Float32Array(FLOWERS * 3);
+const FLOWER_PALETTE = [0xff6f8e, 0xffd94a, 0xf2f2ff, 0xb887ff];
+let flowerI = 0;
+scatter(FLOWERS, (x, z, y) => {
+  if (flowerI >= FLOWERS) return false;
+  dummy.position.set(x, y + 0.28, z);
+  dummy.scale.setScalar(0.8 + rnd() * 0.7);
+  dummy.rotation.set(0, 0, 0);
+  dummy.updateMatrix();
+  flowerMesh.setMatrixAt(flowerI, dummy.matrix);
+  tmpColor.set(FLOWER_PALETTE[Math.floor(rnd() * FLOWER_PALETTE.length)]);
+  flowerColors[flowerI * 3] = tmpColor.r;
+  flowerColors[flowerI * 3 + 1] = tmpColor.g;
+  flowerColors[flowerI * 3 + 2] = tmpColor.b;
+  flowerI++;
+}, { minY: WATER_Y + 3, maxY: 70, maxSlope: 0.25, avoidClear: false });
+flowerMesh.count = flowerI;
+flowerMesh.instanceColor = new THREE.InstancedBufferAttribute(flowerColors, 3);
+scene.add(flowerMesh);
+
+// ---- 구름 (하늘이 비어 보이지 않게, 크고 납작한 흰 덩어리들) ----
+const cloudGroup = new THREE.Group();
+const cloudMat = new THREE.MeshBasicMaterial({
+  color: 0xffffff, transparent: true, opacity: 0.85, fog: false, depthWrite: false,
+});
+for (let i = 0; i < 26; i++) {
+  const cloud = new THREE.Group();
+  const puffs = 3 + Math.floor(rnd() * 4);
+  for (let p = 0; p < puffs; p++) {
+    const puff = new THREE.Mesh(new THREE.SphereGeometry(1, 7, 5), cloudMat);
+    puff.position.set((rnd() - 0.5) * 60, (rnd() - 0.5) * 8, (rnd() - 0.5) * 30);
+    puff.scale.set(18 + rnd() * 20, 7 + rnd() * 6, 14 + rnd() * 12);
+    cloud.add(puff);
+  }
+  const ang = rnd() * 6.28, dist = 150 + rnd() * 700;
+  // 산(최고 200 남짓)보다 확실히 위에 떠야 구름이 산에 박히지 않는다
+  cloud.position.set(Math.cos(ang) * dist, 300 + rnd() * 160, Math.sin(ang) * dist);
+  cloudGroup.add(cloud);
+}
+scene.add(cloudGroup);
+
+// ============================================================================
+//  6. 랜드마크 — "저기 뭐지? 가보고 싶다"를 만드는 목표물
+// ============================================================================
+const landmarks = [];   // {name, pos, found}
+
+function addLandmark(name, x, z, obj, markY = 0) {
+  const y = terrainHeight(x, z);
+  obj.position.set(x, y + markY, z);
+  scene.add(obj);
+  landmarks.push({ name, pos: new THREE.Vector3(x, y, z), found: false });
+}
+
+// (1) 아주 높은 탑 — 맵 어디서나 보이는 기준점
+function makeTower() {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(
+    new THREE.CylinderGeometry(3.2, 5.2, 46, 8),
+    new THREE.MeshLambertMaterial({ color: 0x8d7f6d, flatShading: true })
+  );
+  body.position.y = 23; body.castShadow = true;
+  g.add(body);
+  for (let i = 0; i < 3; i++) {   // 층마다 튀어나온 테두리
+    const ring = new THREE.Mesh(
+      new THREE.CylinderGeometry(4.6 - i * 0.5, 4.6 - i * 0.5, 1.6, 8),
+      new THREE.MeshLambertMaterial({ color: 0x6f6353, flatShading: true })
+    );
+    ring.position.y = 12 + i * 13;
+    g.add(ring);
+  }
+  const top = new THREE.Mesh(
+    new THREE.ConeGeometry(6, 10, 8),
+    new THREE.MeshLambertMaterial({ color: 0x3f7fb5, flatShading: true })
+  );
+  top.position.y = 51; top.castShadow = true;
+  g.add(top);
+  const orb = new THREE.Mesh(     // 꼭대기의 빛나는 구슬
+    new THREE.SphereGeometry(2.2, 12, 10),
+    new THREE.MeshBasicMaterial({ color: 0x8ff0ff })
+  );
+  orb.position.y = 58;
+  g.add(orb);
+  g.userData.orb = orb;
+  return g;
+}
+let tower = null;   // 꼭대기 구슬을 반짝이게 하려고 따로 들고 있는다
+
+// (2) 사당 — 젤다의 시조처럼 주황빛이 도는 작은 돌 건물
+function makeShrine() {
+  const g = new THREE.Group();
+  const base = new THREE.Mesh(
+    new THREE.BoxGeometry(11, 3, 11),
+    new THREE.MeshLambertMaterial({ color: 0x5a5c66, flatShading: true })
+  );
+  base.position.y = 1.5; base.castShadow = base.receiveShadow = true;
+  g.add(base);
+  const room = new THREE.Mesh(
+    new THREE.BoxGeometry(8, 7, 8),
+    new THREE.MeshLambertMaterial({ color: 0x474954, flatShading: true })
+  );
+  room.position.y = 6.5; room.castShadow = true;
+  g.add(room);
+  const glow = new THREE.Mesh(    // 문에서 새어나오는 주황빛
+    new THREE.PlaneGeometry(3.4, 5),
+    new THREE.MeshBasicMaterial({ color: 0xffa542, side: THREE.DoubleSide })
+  );
+  glow.position.set(0, 5.6, 4.06);
+  g.add(glow);
+  const beacon = new THREE.Mesh(  // 멀리서도 보이라고 위로 뻗는 빛기둥
+    new THREE.CylinderGeometry(0.9, 0.9, 40, 6, 1, true),
+    new THREE.MeshBasicMaterial({
+      color: 0xffb050, transparent: true, opacity: 0.3,
+      side: THREE.DoubleSide, depthWrite: false,
+    })
+  );
+  beacon.position.y = 28;
+  g.add(beacon);
+  return g;
+}
+
+// (3) 마을 — 작은 집 몇 채
+const HOUSE_SPOTS = [[0, 0], [14, 6], [-12, 9], [7, -14], [-9, -12]];
+function makeVillage() {
+  const g = new THREE.Group();
+  const wallMat = new THREE.MeshLambertMaterial({ color: 0xdfc9a2, flatShading: true });
+  const roofMat = new THREE.MeshLambertMaterial({ color: 0xc0553f, flatShading: true });
+  for (const [ox, oz] of HOUSE_SPOTS) {
+    const house = new THREE.Group();
+    const wall = new THREE.Mesh(new THREE.BoxGeometry(8, 6, 8), wallMat);
+    wall.position.y = 3; wall.castShadow = wall.receiveShadow = true;
+    const roof = new THREE.Mesh(new THREE.ConeGeometry(7.2, 5, 4), roofMat);
+    roof.position.y = 8.5; roof.rotation.y = Math.PI / 4; roof.castShadow = true;
+    house.add(wall, roof);
+    house.position.set(ox, 0, oz);
+    house.rotation.y = rnd() * 6.28;
+    g.add(house);
+  }
+  return g;
+}
+
+// (4) 커다란 랜드마크 나무 — 들판 한가운데의 거목
+function makeBigTree() {
+  const g = new THREE.Group();
+  const trunk = new THREE.Mesh(
+    new THREE.CylinderGeometry(2.2, 4.2, 22, 8),
+    new THREE.MeshLambertMaterial({ color: 0x5d4126, flatShading: true })
+  );
+  trunk.position.y = 11; trunk.castShadow = true;
+  g.add(trunk);
+  for (let i = 0; i < 4; i++) {   // 잎 덩어리를 여러 개 겹쳐 풍성하게
+    const blob = new THREE.Mesh(
+      new THREE.SphereGeometry(9 - i * 0.8, 8, 6),
+      new THREE.MeshLambertMaterial({ color: i % 2 ? 0x54a349 : 0x448c3f, flatShading: true })
+    );
+    blob.position.set((rnd() - 0.5) * 9, 24 + i * 4.5, (rnd() - 0.5) * 9);
+    blob.castShadow = true;
+    g.add(blob);
+  }
+  return g;
+}
+// 위에서 정해둔 자리마다 종류에 맞는 랜드마크를 세운다
+const MAKERS = {
+  tower: makeTower, shrine: makeShrine, village: makeVillage, bigtree: makeBigTree,
+};
+// 건물은 통과하면 안 되니까 "들어갈 수 없는 동그라미"를 기록해 둔다
+const BLOCKERS = [];
+const BLOCK_R = { tower: 6, shrine: 6.5, bigtree: 4.5 };
+
+for (const spot of LANDMARK_SPOTS) {
+  const obj = MAKERS[spot.kind]();
+  if (spot.kind === 'tower') tower = obj;
+  addLandmark(spot.name, spot.x, spot.z, obj);
+
+  if (spot.kind === 'village') {
+    // 마을은 집 사이로 걸어다닐 수 있어야 하므로 집마다 따로 막는다
+    for (const [ox, oz] of HOUSE_SPOTS) {
+      BLOCKERS.push({ x: spot.x + ox, z: spot.z + oz, r: 6 });
+    }
+  } else if (BLOCK_R[spot.kind]) {
+    BLOCKERS.push({ x: spot.x, z: spot.z, r: BLOCK_R[spot.kind] });
+  }
+}
+
+
+// ============================================================================
+//  6-2. 동물 — 세계가 살아 있게 만드는 것
+//   · 풀을 뜯다가, 어슬렁 걷다가, 사람이 가까이 오면 반응한다
+//   · 종류마다 성격이 다르다: 겁이 많으면 도망가고, 순하면 따라온다
+// ============================================================================
+const ANIMAL_KINDS = [
+  { id: 'deer',   name: '사슴',   body: 0xc08a52, belly: 0xe8d5b0, size: 1.0,
+    speed: 8.5, shy: 26, follow: 0,  count: 22, horn: true,  maxY: 70 },
+  { id: 'boar',   name: '멧돼지', body: 0x6b5340, belly: 0x8a6f55, size: 0.85,
+    speed: 6.5, shy: 14, follow: 0,  count: 14, horn: false, maxY: 60 },
+  { id: 'sheep',  name: '양',     body: 0xf0efe8, belly: 0xd8d5c8, size: 0.58,
+    speed: 4.5, shy: 0,  follow: 16, count: 18, horn: false, maxY: 45 },
+  { id: 'fox',    name: '여우',   body: 0xe07a3a, belly: 0xf5e4cf, size: 0.6,
+    speed: 10,  shy: 20, follow: 0,  count: 10, horn: false, maxY: 55 },
+];
+
+// 동물 한 마리의 몸을 만든다 (몸통 + 머리 + 다리 4개, 종류에 따라 뿔)
+function makeAnimal(kind) {
+  const g = new THREE.Group();
+  const bodyMat = new THREE.MeshLambertMaterial({ color: kind.body, flatShading: true });
+  const bellyMat = new THREE.MeshLambertMaterial({ color: kind.belly, flatShading: true });
+  const s = kind.size;
+
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.9 * s, 0.8 * s, 1.7 * s), bodyMat);
+  torso.position.y = 1.05 * s;
+
+  const neck = new THREE.Mesh(new THREE.BoxGeometry(0.45 * s, 0.7 * s, 0.45 * s), bodyMat);
+  neck.position.set(0, 1.45 * s, 0.75 * s);
+
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.5 * s, 0.45 * s, 0.7 * s), bellyMat);
+  head.position.set(0, 1.75 * s, 0.95 * s);
+
+  const tail = new THREE.Mesh(new THREE.BoxGeometry(0.2 * s, 0.2 * s, 0.5 * s), bellyMat);
+  tail.position.set(0, 1.2 * s, -0.95 * s);
+
+  g.add(torso, neck, head, tail);
+
+  if (kind.horn) {   // 사슴 뿔
+    const hornMat = new THREE.MeshLambertMaterial({ color: 0x8a6a44, flatShading: true });
+    for (const hx of [-0.2 * s, 0.2 * s]) {
+      const horn = new THREE.Mesh(new THREE.ConeGeometry(0.09 * s, 0.6 * s, 4), hornMat);
+      horn.position.set(hx, 2.15 * s, 0.9 * s);
+      g.add(horn);
+    }
+  }
+
+  // 다리 4개 — 어깨를 축으로 흔들려고 회전 중심을 위로 올려둔다
+  const legs = [];
+  const legGeo = new THREE.BoxGeometry(0.2 * s, 0.75 * s, 0.2 * s);
+  legGeo.translate(0, -0.375 * s, 0);
+  for (const [lx, lz] of [[-0.3, 0.55], [0.3, 0.55], [-0.3, -0.55], [0.3, -0.55]]) {
+    const leg = new THREE.Mesh(legGeo, bodyMat);
+    leg.position.set(lx * s, 0.78 * s, lz * s);
+    g.add(leg);
+    legs.push(leg);
+  }
+
+  g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+  g.userData.legs = legs;
+  return g;
+}
+
+// 동물들을 들판에 풀어놓는다
+const animals = [];
+
+function spawnAnimal(kind, x, z) {
+  const y = terrainHeight(x, z);
+  const mesh = makeAnimal(kind);
+  mesh.position.set(x, y, z);
+  mesh.rotation.y = rnd() * 6.28;
+  scene.add(mesh);
+  animals.push({
+    kind, mesh,
+    x, z, y,
+    homeX: x, homeZ: z,          // 너무 멀리 가지 않게 돌아올 자리
+    dir: rnd() * 6.28,           // 지금 향하는 방향
+    timer: rnd() * 4,            // 다음에 마음이 바뀔 때까지 남은 시간
+    state: 'graze',              // graze(풀 뜯기) / walk(걷기) / flee(도망) / follow(따라오기)
+    phase: rnd() * 6.28,         // 다리 흔드는 진행도
+  });
+}
+
+// 시작하자마자 살아 있는 세계로 보이도록, 순한 양 네 마리는 출발 언덕에 미리 놓는다
+const SHEEP = ANIMAL_KINDS.find(k => k.id === 'sheep');
+for (const [ax, az] of [[26, 20], [34, 30], [18, 34], [-24, 28]]) {
+  spawnAnimal(SHEEP, ax, az);
+}
+
+for (const kind of ANIMAL_KINDS) {
+  let made = 0;
+  scatter(kind.count, (x, z) => {
+    if (made >= kind.count) return false;
+    spawnAnimal(kind, x, z);
+    made++;
+  }, { minY: WATER_Y + 3, maxY: kind.maxY, maxSlope: 0.3, avoidClear: false });
+}
+
+// 매 프레임 동물들을 움직인다
+function updateAnimals(dt) {
+  for (const a of animals) {
+    const k = a.kind;
+    const dxP = P.pos.x - a.x, dzP = P.pos.z - a.z;
+    const distP = Math.hypot(dxP, dzP);
+
+    // ---- 마음 정하기 ----
+    if (k.shy > 0 && distP < k.shy) {
+      a.state = 'flee';                      // 겁 많은 동물: 사람이 오면 도망
+      a.dir = Math.atan2(-dxP, -dzP);
+    } else if (k.follow > 0 && distP < k.follow && distP > 3) {
+      a.state = 'follow';                    // 순한 동물: 사람을 졸졸 따라온다
+      a.dir = Math.atan2(dxP, dzP);
+    } else {
+      a.timer -= dt;
+      if (a.timer <= 0) {
+        // 심심하면 풀을 뜯거나, 다른 방향으로 어슬렁 걷는다
+        a.state = rnd() < 0.45 ? 'graze' : 'walk';
+        a.timer = 2 + rnd() * 4;
+        // 집에서 멀어졌으면 집 쪽으로 방향을 잡는다
+        const dHome = Math.hypot(a.homeX - a.x, a.homeZ - a.z);
+        a.dir = dHome > 60
+          ? Math.atan2(a.homeX - a.x, a.homeZ - a.z)
+          : a.dir + (rnd() - 0.5) * 3;
+      }
+    }
+
+    // ---- 실제로 움직이기 ----
+    const speed = a.state === 'flee' ? k.speed
+                : a.state === 'follow' ? k.speed * 0.6
+                : a.state === 'walk' ? k.speed * 0.28 : 0;
+
+    if (speed > 0) {
+      const nx = a.x + Math.sin(a.dir) * speed * dt;
+      const nz = a.z + Math.cos(a.dir) * speed * dt;
+      const ny = terrainHeight(nx, nz);
+      // 물이나 절벽으로는 가지 않는다 — 막히면 방향을 튼다
+      if (ny > WATER_Y + 1.5 && Math.abs(nx) < HALF - 10 && Math.abs(nz) < HALF - 10
+          && slopeAt(nx, nz) < 0.55) {
+        a.x = nx; a.z = nz; a.y = ny;
+      } else {
+        a.dir += 1.6;
+      }
+      a.phase += dt * speed * 1.6;
+    }
+
+    a.mesh.position.set(a.x, a.y, a.z);
+    // 부드럽게 방향 돌리기
+    let diff = a.dir - a.mesh.rotation.y;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    a.mesh.rotation.y += diff * Math.min(1, dt * 7);
+
+    // 다리 흔들기 / 풀 뜯을 때 고개 숙이기
+    const legs = a.mesh.userData.legs;
+    const sw = speed > 0 ? Math.sin(a.phase) * 0.55 : 0;
+    legs[0].rotation.x = legs[3].rotation.x = sw;
+    legs[1].rotation.x = legs[2].rotation.x = -sw;
+    a.mesh.rotation.x = a.state === 'graze' ? 0.22 : 0;
+  }
+}
+
+// ============================================================================
+//  6-3. 하루의 흐름 — 아침 → 낮 → 노을 → 밤
+//   시각(0~1)에 따라 하늘색·햇빛·안개색을 통째로 갈아끼운다.
+//   0 = 자정, 0.25 = 해 뜰 무렵, 0.5 = 한낮, 0.75 = 해 질 무렵
+// ============================================================================
+const DAY_LENGTH = 300;      // 하루가 몇 초인지 (5분)
+let timeOfDay = 0.33;        // 시작은 상쾌한 아침
+let day = 1;                 // 며칠째 살아남았는지
+
+// 시각별 색과 밝기. 사이 값은 부드럽게 섞어서 쓴다.
+const SKY_KEYS = [
+  { t: 0.00, top: 0x070d22, bot: 0x121d3a, fog: 0x18233f,
+    sun: 0x5a6da8, sunI: 0.16, hemiI: 0.46, hSky: 0x415a96, hGnd: 0x1e2a3c, label: '🌙 한밤' },
+  { t: 0.22, top: 0x2a3f7a, bot: 0xf0a070, fog: 0xd8a888,
+    sun: 0xffb070, sunI: 0.55, hemiI: 0.60, hSky: 0x88a0d0, hGnd: 0x4a5540, label: '🌅 새벽' },
+  { t: 0.32, top: 0x2a74cf, bot: 0xd6ecf7, fog: 0xcfe6f5,
+    sun: 0xfff4dd, sunI: 1.20, hemiI: 1.05, hSky: 0xbfe4ff, hGnd: 0x5a7a45, label: '🌤️ 아침' },
+  { t: 0.60, top: 0x2a74cf, bot: 0xd6ecf7, fog: 0xcfe6f5,
+    sun: 0xfff4dd, sunI: 1.25, hemiI: 1.05, hSky: 0xbfe4ff, hGnd: 0x5a7a45, label: '🌞 한낮' },
+  { t: 0.78, top: 0x27407e, bot: 0xff9351, fog: 0xe8a878,
+    sun: 0xff9a4a, sunI: 0.70, hemiI: 0.70, hSky: 0xd0a0a0, hGnd: 0x504530, label: '🌇 노을' },
+  { t: 0.88, top: 0x101a3c, bot: 0x3a3560, fog: 0x2e3552,
+    sun: 0x5a6a9a, sunI: 0.26, hemiI: 0.50, hSky: 0x46598c, hGnd: 0x26303f, label: '🌆 땅거미' },
+  { t: 1.00, top: 0x070d22, bot: 0x121d3a, fog: 0x18233f,
+    sun: 0x5a6da8, sunI: 0.16, hemiI: 0.46, hSky: 0x415a96, hGnd: 0x1e2a3c, label: '🌙 한밤' },
+];
+
+// ---- 밤하늘의 별 ----
+const starPos = new Float32Array(700 * 3);
+for (let i = 0; i < 700; i++) {
+  // 구면 위에 고르게 뿌린다. 지평선 아래(별이 땅속)에는 두지 않는다.
+  const u = rnd() * 2 - 1, a = rnd() * Math.PI * 2;
+  const r = Math.sqrt(1 - u * u);
+  starPos[i * 3]     = Math.cos(a) * r * 1400;
+  starPos[i * 3 + 1] = Math.abs(u) * 1400;
+  starPos[i * 3 + 2] = Math.sin(a) * r * 1400;
+}
+const starGeo = new THREE.BufferGeometry();
+starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+const starMat = new THREE.PointsMaterial({
+  color: 0xffffff, size: 3.4, sizeAttenuation: false,
+  transparent: true, opacity: 0, depthWrite: false, fog: false,
+});
+const stars = new THREE.Points(starGeo, starMat);
+stars.renderOrder = -998;      // 하늘 바로 다음에 그린다
+stars.frustumCulled = false;
+scene.add(stars);
+
+// ---- 하늘에 뜨는 해와 달 ----
+const sunDisc = new THREE.Mesh(
+  new THREE.SphereGeometry(34, 16, 12),
+  new THREE.MeshBasicMaterial({ color: 0xfff2c0, fog: false, depthWrite: false })
+);
+sunDisc.renderOrder = -997;
+const moonDisc = new THREE.Mesh(
+  new THREE.SphereGeometry(24, 16, 12),
+  new THREE.MeshBasicMaterial({ color: 0xf2f4ff, fog: false, depthWrite: false })
+);
+moonDisc.renderOrder = -997;
+scene.add(sunDisc, moonDisc);
+
+// 두 색 사이를 비율만큼 섞어 새 색을 만든다
+const tmpA = new THREE.Color(), tmpB = new THREE.Color();
+function mixHex(a, b, k) {
+  return tmpA.setHex(a).lerp(tmpB.setHex(b), k);
+}
+
+let timeLabel = '';
+
+function updateSky(dt) {
+  // T를 누르고 있으면 시간이 빨리 흐른다 (해 지는 걸 바로 보고 싶을 때)
+  const speed = keys.KeyT ? 40 : 1;
+  const before = timeOfDay;
+  timeOfDay = (timeOfDay + (dt * speed) / DAY_LENGTH) % 1;
+  if (timeOfDay < before) { day++; dayNumEl.textContent = day; }   // 자정을 넘겼다
+
+  // 지금 시각이 어느 두 키프레임 사이인지 찾아 섞는다
+  let i = 0;
+  while (i < SKY_KEYS.length - 2 && SKY_KEYS[i + 1].t < timeOfDay) i++;
+  const A = SKY_KEYS[i], B = SKY_KEYS[i + 1];
+  const k = (timeOfDay - A.t) / (B.t - A.t);
+  timeLabel = (k < 0.5 ? A : B).label;
+
+  sky.material.uniforms.topColor.value.copy(mixHex(A.top, B.top, k));
+  sky.material.uniforms.bottomColor.value.copy(mixHex(A.bot, B.bot, k));
+  scene.fog.color.copy(mixHex(A.fog, B.fog, k));
+  sun.color.copy(mixHex(A.sun, B.sun, k));
+  sun.intensity = A.sunI + (B.sunI - A.sunI) * k;
+  hemi.intensity = A.hemiI + (B.hemiI - A.hemiI) * k;
+  hemi.color.copy(mixHex(A.hSky, B.hSky, k));
+  hemi.groundColor.copy(mixHex(A.hGnd, B.hGnd, k));
+
+  // 구름은 빛 계산을 안 하는 재질이라, 밤에도 하얗게 빛나지 않도록 직접 어둡게 만든다
+  cloudMat.color.copy(mixHex(0x2a3350, 0xffffff, Math.min(1, sun.intensity / 0.9 + 0.15)));
+
+  // 별은 밤에만 보인다
+  starMat.opacity = smoothstep(0.80, 0.95, timeOfDay) * (timeOfDay < 0.5 ? 0 : 1)
+                  + smoothstep(0.30, 0.14, timeOfDay);
+
+  // 해와 달은 서로 반대편 하늘에 뜬다
+  const ang = (timeOfDay - 0.25) * Math.PI * 2;
+  const R = 1000;
+  sunDisc.position.set(
+    camera.position.x + Math.cos(ang) * R * 0.6,
+    Math.sin(ang) * R,
+    camera.position.z + Math.cos(ang) * R * 0.5
+  );
+  moonDisc.position.set(
+    camera.position.x - Math.cos(ang) * R * 0.6,
+    -Math.sin(ang) * R,
+    camera.position.z - Math.cos(ang) * R * 0.5
+  );
+  sunDisc.visible = sunDisc.position.y > -60;
+  moonDisc.visible = moonDisc.position.y > -60;
+}
+
+// ============================================================================
+//  7. 캐릭터 만들기 — 단순한 도형을 이어붙인 사람 모양
+// ============================================================================
+function makePlayer() {
+  const g = new THREE.Group();
+
+  const M = {
+    skin:   new THREE.MeshLambertMaterial({ color: 0xf3cfa6 }),
+    tunic:  new THREE.MeshLambertMaterial({ color: 0x3f9e5a, flatShading: true }), // 초록 옷
+    tunicD: new THREE.MeshLambertMaterial({ color: 0x2f8047, flatShading: true }), // 그늘진 부분
+    pants:  new THREE.MeshLambertMaterial({ color: 0xd9caa6 }),
+    boot:   new THREE.MeshLambertMaterial({ color: 0x6b4a2c, flatShading: true }),
+    belt:   new THREE.MeshLambertMaterial({ color: 0x5a3d22 }),
+    hair:   new THREE.MeshLambertMaterial({ color: 0xe8c85a, flatShading: true }),
+    eye:    new THREE.MeshLambertMaterial({ color: 0x2b2b38 }),
+    metal:  new THREE.MeshLambertMaterial({ color: 0xb6bfcc, flatShading: true }),
+    wood:   new THREE.MeshLambertMaterial({ color: 0x7a5230, flatShading: true }),
+  };
+
+  // 상자 하나를 원하는 자리에 놓는 짧은 도우미 (아래에서 계속 쓴다)
+  const box = (w, h, d, mat, x, y, z) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    m.position.set(x, y, z);
+    return m;
+  };
+
+  // ---- 몸통: 가슴 + 벨트 + 아래로 퍼지는 튜닉 자락 ----
+  const chest = box(0.78, 0.66, 0.48, M.tunic, 0, 1.62, 0);
+  const belt  = box(0.83, 0.13, 0.53, M.belt, 0, 1.25, 0);
+  const skirt = new THREE.Mesh(new THREE.CylinderGeometry(0.43, 0.57, 0.46, 4), M.tunicD);
+  skirt.rotation.y = Math.PI / 4;    // 모서리가 앞을 보게 돌려 옷자락처럼 보이게
+  skirt.position.y = 0.98;
+  const neck  = box(0.26, 0.16, 0.26, M.skin, 0, 2.0, 0);
+
+  // ---- 머리: 얼굴 + 눈 + 엘프 귀 + 머리카락 + 고깔모자 ----
+  const head = box(0.6, 0.58, 0.58, M.skin, 0, 2.34, 0);
+  const eyeL = box(0.09, 0.13, 0.04, M.eye, -0.15, 2.36, 0.30);
+  const eyeR = box(0.09, 0.13, 0.04, M.eye,  0.15, 2.36, 0.30);
+
+  const ears = [-1, 1].map(side => {
+    const ear = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.3, 4), M.skin);
+    ear.position.set(0.32 * side, 2.4, -0.03);
+    ear.rotation.z = -0.95 * side;
+    ear.rotation.x = -0.35;
+    return ear;
+  });
+
+  const bang     = box(0.63, 0.17, 0.62, M.hair, 0, 2.60, 0.01);   // 앞머리
+  const backHair = box(0.6, 0.36, 0.24, M.hair, 0, 2.32, -0.32);   // 뒷머리
+  const sideHair = [-1, 1].map(side =>
+    box(0.1, 0.3, 0.32, M.hair, 0.3 * side, 2.4, 0.16));
+
+  const cap = new THREE.Mesh(new THREE.ConeGeometry(0.4, 0.92, 6), M.tunic);
+  cap.position.set(0, 2.92, -0.2);
+  cap.rotation.x = 0.45;             // 뒤로 살짝 눕혀야 고깔모자처럼 보인다
+  const capBrim = new THREE.Mesh(new THREE.CylinderGeometry(0.37, 0.37, 0.1, 6), M.tunicD);
+  capBrim.position.y = 2.68;
+
+  // ---- 등에 멘 방패와 검 (실루엣만으로도 모험가처럼 보인다) ----
+  const shield = box(0.52, 0.6, 0.08, M.metal, 0, 1.6, -0.33);
+  shield.rotation.z = 0.14;
+  const shieldMark = box(0.2, 0.26, 0.03, M.tunicD, 0.02, 1.63, -0.39);
+  shieldMark.rotation.z = 0.14;
+  const sheath = box(0.13, 0.76, 0.13, M.wood, 0.2, 1.72, -0.42);
+  const guard  = box(0.3, 0.07, 0.13, M.metal, 0.3, 2.08, -0.42);
+  const hilt   = box(0.1, 0.24, 0.1, M.belt, 0.33, 2.2, -0.42);
+  for (const m of [sheath, guard, hilt]) m.rotation.z = -0.3;   // 자루가 어깨 너머로 나오게 비스듬히
+
+  g.add(chest, belt, skirt, neck, head, eyeL, eyeR, ...ears,
+        bang, backHair, ...sideHair, cap, capBrim,
+        shield, shieldMark, sheath, guard, hilt);
+
+  // ---- 팔다리 ----
+  // 어깨·엉덩이 자리에 빈 그룹을 두고 그 안에 부품을 매단다.
+  // 이러면 그룹만 돌려도 자연스럽게 흔들리고, 도형 자체를 옮길 필요가 없다.
+  function makeLimb(x, y, parts) {
+    const limb = new THREE.Group();
+    limb.position.set(x, y, 0);
+    for (const p of parts) limb.add(p);
+    return limb;
+  }
+  // 팔 = 초록 소매 + 팔뚝 + 손
+  const armParts = () => [
+    box(0.25, 0.3, 0.27, M.tunic, 0, -0.15, 0),
+    box(0.21, 0.42, 0.23, M.skin, 0, -0.5, 0),
+    box(0.24, 0.18, 0.26, M.skin, 0, -0.78, 0),
+  ];
+  // 다리 = 바지 + 장화(발이 앞으로 조금 나온다)
+  const legParts = () => [
+    box(0.27, 0.5, 0.28, M.pants, 0, -0.28, 0),
+    box(0.3, 0.26, 0.42, M.boot, 0, -0.64, 0.06),
+  ];
+  const armL = makeLimb(-0.46, 1.78, armParts());
+  const armR = makeLimb( 0.46, 1.78, armParts());
+  const legL = makeLimb(-0.19, 0.79, legParts());
+  const legR = makeLimb( 0.19, 0.79, legParts());
+
+  g.add(armL, armR, legL, legR);
+  g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+
+  // 활공용 패러글라이더 (평소엔 숨겨둔다)
+  const glider = new THREE.Group();
+  // 천 세 조각을 각도를 달리 붙여 위로 볼록한 날개 모양을 만든다 (판자처럼 보이지 않게)
+  // 천은 조명을 받게 두면 기울기 때문에 한쪽만 새까맣게 나온다.
+  // 그래서 빛 계산 없는 재질(Basic)을 쓰고, 조각마다 색을 조금씩 달리해 입체감을 준다.
+  const wingParts = [
+    { w: 2.6, x: 0,    y: 4.6, rz: 0,     color: 0xf0ad46 },
+    { w: 1.9, x: -2.1, y: 4.4, rz: 0.28,  color: 0xd8933a },
+    { w: 1.9, x: 2.1,  y: 4.4, rz: -0.28, color: 0xc8842f },
+  ];
+  for (const p of wingParts) {
+    // 도형 자체를 먼저 눕혀 둔다. 그래야 mesh.rotation.z가 그대로 "좌우 기울기"가 된다.
+    // (눕히기와 기울이기를 둘 다 mesh.rotation으로 하면 순서가 꼬여 한쪽 날개가 뒤집힌다)
+    const geo = new THREE.PlaneGeometry(p.w, 2.6);
+    geo.rotateX(-Math.PI / 2);
+    const part = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+      color: p.color, side: THREE.DoubleSide,
+    }));
+    part.position.set(p.x, p.y, 0);
+    part.rotation.z = p.rz;
+    glider.add(part);
+  }
+  const ropeMat = new THREE.LineBasicMaterial({ color: 0x503a22 });
+  for (const sx of [-2.4, 2.4]) {
+    const geo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(sx, 4.2, 0), new THREE.Vector3(0, 1.9, 0),
+    ]);
+    glider.add(new THREE.Line(geo, ropeMat));
+  }
+  glider.visible = false;
+  g.add(glider);
+
+  g.userData = { armL, armR, legL, legR, glider };
+  return g;
+}
+
+const player = makePlayer();
+// 회전을 "방향(y) → 앞뒤 기울기(x) → 좌우 기울기(z)" 순서로 적용한다.
+// 기본 XYZ 순서로 두면 헤엄칠 때 몸을 눕히는 순간 방향이 엉뚱하게 꼬인다.
+player.rotation.order = 'YXZ';
+scene.add(player);
+
+// 캐릭터 상태
+const P = {
+  pos: new THREE.Vector3(0, terrainHeight(0, 0), 0),
+  vel: new THREE.Vector3(),
+  facing: 0,          // 몸이 바라보는 방향
+  onGround: true,
+  gliding: false,
+  swimming: false,
+  stamina: 1,         // 0~1
+  walkPhase: 0,       // 팔다리 흔드는 진행도
+  swimPhase: 0,       // 헤엄치며 팔 젓는 진행도
+};
+
+const GRAVITY = 26;
+const WALK_SPEED = 9;
+const RUN_SPEED = 17;
+const SWIM_SPEED = 5;
+const JUMP_POWER = 11;
+const GLIDE_FALL = 3.2;    // 활공할 때 내려가는 속도(이보다 빨리 안 떨어진다)
+
+// ============================================================================
+//  8. 조작 — 키보드 + 마우스
+// ============================================================================
+const keys = {};
+addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (e.code === 'Space') e.preventDefault();   // 스페이스로 화면이 스크롤되지 않게
+  if (e.code === 'KeyM') toggleMap();
+  if (e.code === 'KeyC') toggleCraft();
+  if (e.code === 'KeyE' && !craftOpen && !mapOpen) doAction();
+  if (e.code === 'KeyF' && !craftOpen && !mapOpen) eat();
+  if (e.code === 'Escape') { if (mapOpen) toggleMap(false); if (craftOpen) toggleCraft(false); }
+  // 제작 메뉴가 열려 있으면 숫자키로 바로 만들 수 있다
+  if (craftOpen && e.code.startsWith('Digit')) {
+    const r = RECIPES[Number(e.code.slice(5)) - 1];
+    if (r) craft(r);
+  }
+});
+addEventListener('keyup', e => { keys[e.code] = false; });
+addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
+
+let camYaw = 0, camPitch = 0.13, camDist = 11;   // 처음엔 지평선이 잘 보이게 살짝만 내려다본다
+const canvas = document.getElementById('c');
+
+canvas.addEventListener('click', () => {
+  // 마우스가 아직 안 잡혔으면 먼저 잡고, 잡힌 뒤의 클릭은 활 쏘기
+  if (document.pointerLockElement !== canvas) { canvas.requestPointerLock(); return; }
+  if (!mapOpen && !craftOpen) shootArrow();
+});
+addEventListener('mousemove', e => {
+  if (document.pointerLockElement !== canvas) return;
+  camYaw -= e.movementX * 0.0026;
+  camPitch += e.movementY * 0.0022;
+  camPitch = Math.max(-0.45, Math.min(1.15, camPitch));   // 너무 위/아래로 못 보게
+});
+addEventListener('wheel', e => {
+  camDist = Math.max(5, Math.min(26, camDist + e.deltaY * 0.014));
+}, { passive: true });
+
+// ============================================================================
+//  9. UI 갱신 — 나침반 / 스태미나 / 발견 알림
+// ============================================================================
+const compassCtx = document.getElementById('compassCv').getContext('2d');
+const stamFill = document.getElementById('stamFill');
+const dayNumEl = document.getElementById('dayNum');
+const clockEl = document.getElementById('clock');
+const toastEl = document.getElementById('toast');
+let toastTimer = 0;
+
+function showToast(text) {
+  toastEl.textContent = text;
+  toastEl.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2200);
+}
+
+const DIRS = [[0, '북'], [Math.PI / 2, '서'], [Math.PI, '남'], [-Math.PI / 2, '동']];
+
+// ---- 전체 지도 (M키) ----
+// 땅 높이를 위에서 내려다본 그림으로 미리 한 번 그려두고(느리니까),
+// 열 때마다 그 그림 위에 내 위치와 랜드마크만 얹는다.
+const MAP_RES = 300;                       // 지도 원본 그림의 촘촘함
+const mapBase = document.createElement('canvas');
+mapBase.width = mapBase.height = MAP_RES;
+
+function buildMapImage() {
+  const ctx = mapBase.getContext('2d');
+  const img = ctx.createImageData(MAP_RES, MAP_RES);
+  const col = new THREE.Color();
+  for (let j = 0; j < MAP_RES; j++) {
+    for (let i = 0; i < MAP_RES; i++) {
+      const x = (i / (MAP_RES - 1) - 0.5) * WORLD;
+      const z = (j / (MAP_RES - 1) - 0.5) * WORLD;
+      const h = terrainHeight(x, z);
+
+      if (h < WATER_Y) {
+        col.set(0x2b7fb0).lerp(new THREE.Color(0x134c73), Math.min(1, -h / 25));
+      } else if (h < WATER_Y + 2.5) {
+        col.set(C.sand);
+      } else {
+        col.set(C.grass).lerp(new THREE.Color(C.grassDark), fbm(x * 0.02, z * 0.02, 2));
+        col.lerp(new THREE.Color(C.rock), smoothstep(55, 90, h));
+        col.lerp(new THREE.Color(C.snow), smoothstep(95, 135, h));
+      }
+      // 서쪽에서 빛이 온다고 치고 경사면에 음영을 넣으면 지형이 입체로 보인다
+      const shade = 1 + (terrainHeight(x - 6, z) - h) * 0.02;
+      const p = (j * MAP_RES + i) * 4;
+      img.data[p]     = Math.max(0, Math.min(255, col.r * 255 * shade));
+      img.data[p + 1] = Math.max(0, Math.min(255, col.g * 255 * shade));
+      img.data[p + 2] = Math.max(0, Math.min(255, col.b * 255 * shade));
+      img.data[p + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+buildMapImage();
+
+const mapView = document.getElementById('mapView');
+const mapCtx = document.getElementById('mapCv').getContext('2d');
+let mapOpen = false;
+
+// 랜드마크 종류별 지도 아이콘
+const MAP_ICON = { tower: '🗼', shrine: '🔶', village: '🏠', bigtree: '🌳' };
+
+function drawMap() {
+  const S = mapCtx.canvas.width;
+  mapCtx.imageSmoothingEnabled = true;
+  mapCtx.drawImage(mapBase, 0, 0, S, S);
+
+  // 월드 좌표 → 지도 좌표 (북쪽이 위)
+  const toMap = (x, z) => [(x + HALF) / WORLD * S, (z + HALF) / WORLD * S];
+
+  mapCtx.textAlign = 'center';
+  for (let i = 0; i < landmarks.length; i++) {
+    const L = landmarks[i];
+    const [mx, my] = toMap(L.pos.x, L.pos.z);
+    if (L.found) {
+      mapCtx.font = '22px sans-serif';
+      mapCtx.fillText(MAP_ICON[LANDMARK_SPOTS[i].kind] || '📍', mx, my + 8);
+      mapCtx.font = 'bold 13px sans-serif';
+      mapCtx.lineWidth = 3;
+      mapCtx.strokeStyle = 'rgba(0,0,0,.7)';
+      mapCtx.strokeText(L.name, mx, my + 28);
+      mapCtx.fillStyle = '#fff';
+      mapCtx.fillText(L.name, mx, my + 28);
+    } else {
+      // 아직 못 간 곳은 "뭔가 있다"는 흐린 표시만
+      mapCtx.fillStyle = 'rgba(255,255,255,.45)';
+      mapCtx.beginPath();
+      mapCtx.arc(mx, my, 5, 0, 6.29);
+      mapCtx.fill();
+      mapCtx.font = 'bold 13px sans-serif';
+      mapCtx.fillText('?', mx, my + 20);
+    }
+  }
+
+  // 내 위치 — 바라보는 방향으로 뾰족한 삼각형
+  const [px, py] = toMap(P.pos.x, P.pos.z);
+  const dx = Math.sin(P.facing), dz = Math.cos(P.facing);
+  mapCtx.beginPath();
+  mapCtx.moveTo(px + dx * 13, py + dz * 13);
+  mapCtx.lineTo(px - dx * 8 + dz * 7, py - dz * 8 - dx * 7);
+  mapCtx.lineTo(px - dx * 8 - dz * 7, py - dz * 8 + dx * 7);
+  mapCtx.closePath();
+  mapCtx.fillStyle = '#ff4d4d';
+  mapCtx.fill();
+  mapCtx.lineWidth = 2.5;
+  mapCtx.strokeStyle = '#fff';
+  mapCtx.stroke();
+
+  // 방위 표시
+  mapCtx.font = 'bold 17px sans-serif';
+  mapCtx.fillStyle = 'rgba(255,255,255,.9)';
+  mapCtx.strokeStyle = 'rgba(0,0,0,.6)';
+  mapCtx.lineWidth = 3;
+  for (const [label, x, y] of [['북', S / 2, 26], ['남', S / 2, S - 12],
+                               ['서', 20, S / 2], ['동', S - 20, S / 2]]) {
+    mapCtx.strokeText(label, x, y);
+    mapCtx.fillText(label, x, y);
+  }
+}
+
+function toggleMap(force) {
+  mapOpen = force !== undefined ? force : !mapOpen;
+  mapView.classList.toggle('open', mapOpen);
+  if (mapOpen) {
+    drawMap();
+    if (document.pointerLockElement) document.exitPointerLock();
+  }
+}
+
+function drawCompass() {
+  const w = compassCtx.canvas.width, h = compassCtx.canvas.height;
+  compassCtx.clearRect(0, 0, w, h);
+  const SPAN = Math.PI * 1.35;   // 나침반에 보이는 시야 폭
+
+  // 각도를 나침반 막대 위의 x좌표로 바꾼다.
+  // 내가 북쪽을 볼 때 동쪽은 화면 오른쪽에 있어야 하므로 부호를 뒤집는다.
+  const toX = (ang) => {
+    let d = ang - camYaw;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    return Math.abs(d) > SPAN / 2 ? null : w / 2 - (d / SPAN) * w;
+  };
+
+  compassCtx.font = 'bold 26px sans-serif';
+  compassCtx.textAlign = 'center';
+
+  for (const [ang, label] of DIRS) {
+    const x = toX(ang);
+    if (x === null) continue;
+    compassCtx.fillStyle = label === '북' ? '#ff9a9a' : 'rgba(255,255,255,0.9)';
+    compassCtx.fillText(label, x, 44);
+  }
+
+  // 랜드마크 방향 표시. 이름까지 쓰면 서로 겹쳐 지저분해서 거리만 보여준다
+  // (이름은 지도(M)에서 확인)
+  compassCtx.font = 'bold 17px sans-serif';
+  for (const L of landmarks) {
+    const ang = Math.atan2(-(L.pos.x - P.pos.x), -(L.pos.z - P.pos.z));
+    const x = toX(ang);
+    if (x === null) continue;
+    compassCtx.fillStyle = L.found ? '#ffd24a' : 'rgba(255,255,255,0.5)';
+    compassCtx.beginPath();
+    compassCtx.arc(x, 18, 6, 0, 6.29);
+    compassCtx.fill();
+    if (L.found) {
+      const dist = Math.round(Math.hypot(L.pos.x - P.pos.x, L.pos.z - P.pos.z));
+      compassCtx.fillText(`${dist}m`, x, 58);
+    }
+  }
+}
+
+// ============================================================================
+//  9-2. 살아남기 — 배고픔·체력·모으기·만들기·사냥
+//   놀이의 흐름:
+//     나무·돌 줍기(E) → 제작대 → 활 → 사슴 사냥(좌클릭) → 고기 → 모닥불에 굽기 → 먹기(F)
+// ============================================================================
+const MAX_HP = 100, MAX_FOOD = 100;
+
+const S = {
+  hp: MAX_HP,
+  food: MAX_FOOD,
+  hasBow: false,
+  // 가진 물건
+  wood: 0, stone: 0, hide: 0, meat: 0, cooked: 0, arrow: 0,
+};
+
+const ITEM = {
+  wood:   { icon: '🪵', name: '나무' },
+  stone:  { icon: '🪨', name: '돌' },
+  hide:   { icon: '🟫', name: '가죽' },
+  meat:   { icon: '🍖', name: '날고기' },
+  cooked: { icon: '🍗', name: '구운 고기' },
+  arrow:  { icon: '🏹', name: '화살' },
+};
+
+// ---- 만들 수 있는 것들 ----
+const RECIPES = [
+  { id: 'bench',    name: '🔨 제작대', cost: { wood: 5, stone: 3 }, place: true,  bench: false,
+    desc: '이 옆에서 활과 텐트를 만들 수 있어요' },
+  { id: 'campfire', name: '🔥 모닥불', cost: { wood: 3, stone: 2 }, place: true,  bench: false,
+    desc: '날고기를 구울 수 있어요' },
+  { id: 'arrow',    name: '🏹 화살 5개', cost: { wood: 1, stone: 1 }, place: false, bench: false,
+    desc: '' },
+  { id: 'bow',      name: '🏹 활', cost: { wood: 3, hide: 1 }, place: false, bench: true,
+    desc: '사슴을 사냥할 수 있어요 (제작대 필요)' },
+  { id: 'tent',     name: '⛺ 텐트', cost: { wood: 8, hide: 3 }, place: true,  bench: true,
+    desc: '자고 나면 아침이 되고 체력이 회복돼요 (제작대 필요)' },
+];
+
+// ---- 설치물 만들기 ----
+const builds = [];     // {type, x, y, z, mesh, light}
+
+function makeBench() {
+  const g = new THREE.Group();
+  const wood = new THREE.MeshLambertMaterial({ color: 0x8a6134, flatShading: true });
+  const dark = new THREE.MeshLambertMaterial({ color: 0x654524, flatShading: true });
+  const top = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.16, 1.1), wood);
+  top.position.y = 0.95;
+  g.add(top);
+  for (const [lx, lz] of [[-0.7, -0.42], [0.7, -0.42], [-0.7, 0.42], [0.7, 0.42]]) {
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.9, 0.16), dark);
+    leg.position.set(lx, 0.45, lz);
+    g.add(leg);
+  }
+  // 위에 놓인 연장
+  const saw = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.05, 0.18),
+    new THREE.MeshLambertMaterial({ color: 0xb6bfcc, flatShading: true }));
+  saw.position.set(-0.25, 1.06, 0.1);
+  saw.rotation.y = 0.4;
+  g.add(saw);
+  return g;
+}
+
+function makeCampfire() {
+  const g = new THREE.Group();
+  const stoneMat = new THREE.MeshLambertMaterial({ color: 0x8a8578, flatShading: true });
+  for (let i = 0; i < 7; i++) {          // 둘레를 돌로 두른다
+    const a = (i / 7) * Math.PI * 2;
+    const st = new THREE.Mesh(new THREE.IcosahedronGeometry(0.3, 0), stoneMat);
+    st.position.set(Math.cos(a) * 0.85, 0.16, Math.sin(a) * 0.85);
+    st.rotation.set(a, a * 2, 0);
+    g.add(st);
+  }
+  const logMat = new THREE.MeshLambertMaterial({ color: 0x6b4a2c, flatShading: true });
+  for (const rot of [0.5, -0.5]) {       // 장작 두 개를 X자로
+    const log = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.22, 0.22), logMat);
+    log.position.y = 0.2;
+    log.rotation.y = rot;
+    g.add(log);
+  }
+  const flame = new THREE.Mesh(
+    new THREE.ConeGeometry(0.45, 1.15, 6),
+    new THREE.MeshBasicMaterial({ color: 0xffa02a })
+  );
+  flame.position.y = 0.75;
+  g.add(flame);
+  g.userData.flame = flame;
+  return g;
+}
+
+function makeTent() {
+  const g = new THREE.Group();
+  const clothMat = new THREE.MeshLambertMaterial({
+    color: 0xc9723c, flatShading: true, side: THREE.DoubleSide,
+  });
+  // 삼각기둥 모양 천막 — 4각뿔을 눌러 만든다
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 1.5, 1.7, 3), clothMat);
+  body.position.y = 0.85;
+  body.rotation.y = Math.PI / 2;
+  body.scale.z = 1.5;
+  g.add(body);
+  const doorMat = new THREE.MeshLambertMaterial({ color: 0x5a3320, side: THREE.DoubleSide });
+  const door = new THREE.Mesh(new THREE.CircleGeometry(0.55, 3), doorMat);
+  door.position.set(0, 0.45, 1.28);
+  g.add(door);
+  return g;
+}
+
+const BUILDERS = { bench: makeBench, campfire: makeCampfire, tent: makeTent };
+
+function placeBuild(type) {
+  // 캐릭터가 보는 쪽 앞에 놓는다
+  const bx = P.pos.x + Math.sin(P.facing) * 3.2;
+  const bz = P.pos.z + Math.cos(P.facing) * 3.2;
+  const by = terrainHeight(bx, bz);
+  const mesh = BUILDERS[type]();
+  mesh.position.set(bx, by, bz);
+  mesh.rotation.y = P.facing + Math.PI;    // 캐릭터를 바라보게
+  mesh.traverse(o => { if (o.isMesh) o.castShadow = true; });
+  scene.add(mesh);
+
+  const b = { type, x: bx, y: by, z: bz, mesh };
+  if (type === 'campfire') {               // 모닥불은 밤에 주변을 밝힌다
+    b.light = new THREE.PointLight(0xffa040, 2.2, 22);
+    b.light.position.set(bx, by + 1.2, bz);
+    scene.add(b.light);
+  }
+  builds.push(b);
+  return b;
+}
+
+// ---- 가진 것이 레시피 값을 치를 수 있는가 ----
+function canAfford(r) {
+  for (const k in r.cost) if (S[k] < r.cost[k]) return false;
+  return true;
+}
+function nearBench() {
+  return builds.some(b => b.type === 'bench' &&
+    Math.hypot(b.x - P.pos.x, b.z - P.pos.z) < 6);
+}
+
+function craft(r) {
+  if (!canAfford(r)) { showToast('재료가 모자라요'); return; }
+  if (r.bench && !nearBench()) { showToast('🔨 제작대 옆에서만 만들 수 있어요'); return; }
+  for (const k in r.cost) S[k] -= r.cost[k];
+
+  if (r.id === 'arrow') { S.arrow += 5; showToast('🏹 화살 5개를 만들었다'); }
+  else if (r.id === 'bow') { S.hasBow = true; showToast('🏹 활을 만들었다! 좌클릭으로 쏘기'); }
+  else { placeBuild(r.id); showToast(`${r.name}을(를) 놓았다`); }
+
+  refreshCraftMenu();
+  updateInventoryUI();
+}
+
+// ---- 제작 메뉴 ----
+const craftView = document.getElementById('craftView');
+const recipeList = document.getElementById('recipeList');
+const craftSub = document.getElementById('craftSub');
+let craftOpen = false;
+
+function refreshCraftMenu() {
+  if (!craftOpen) return;
+  craftSub.textContent = nearBench()
+    ? '🔨 제작대 옆 — 무엇이든 만들 수 있어요'
+    : '제작대가 없어도 제작대·모닥불·화살은 만들 수 있어요';
+  recipeList.innerHTML = '';
+  RECIPES.forEach((r, i) => {
+    const ok = canAfford(r) && (!r.bench || nearBench());
+    const row = document.createElement('div');
+    row.className = 'recipe' + (ok ? '' : ' locked');
+    const cost = Object.entries(r.cost)
+      .map(([k, v]) => `${ITEM[k].icon}${v}`).join('  ');
+    row.innerHTML = `<span class="rkey">${i + 1}</span>
+      <span class="rname">${r.name}<div class="rcost" style="opacity:.7;font-weight:400">${r.desc}</div></span>
+      <span class="rcost">${cost}</span>`;
+    row.onclick = () => { if (ok) craft(r); };
+    recipeList.appendChild(row);
+  });
+}
+
+function toggleCraft(force) {
+  craftOpen = force !== undefined ? force : !craftOpen;
+  craftView.classList.toggle('open', craftOpen);
+  if (craftOpen) {
+    refreshCraftMenu();
+    if (document.pointerLockElement) document.exitPointerLock();
+  }
+}
+
+// ---- 가장 가까운 "지금 할 수 있는 일" 찾기 ----
+const REACH = 4.2;
+function findAction() {
+  let best = null, bestD = REACH;
+
+  for (const b of builds) {
+    const d = Math.hypot(b.x - P.pos.x, b.z - P.pos.z);
+    if (d > bestD + 1.5) continue;
+    if (b.type === 'campfire' && S.meat > 0) {
+      if (d < bestD) { best = { kind: 'cook', label: '🔥 고기 굽기', target: b }; bestD = d; }
+    } else if (b.type === 'tent') {
+      if (d < bestD) { best = { kind: 'sleep', label: '⛺ 자기 (아침까지)', target: b }; bestD = d; }
+    } else if (b.type === 'bench') {
+      if (d < bestD) { best = { kind: 'bench', label: '🔨 제작대에서 만들기', target: b }; bestD = d; }
+    }
+  }
+  for (const s of treeSpots) {
+    if (s.cool > 0) continue;
+    const d = Math.hypot(s.x - P.pos.x, s.z - P.pos.z);
+    if (d < bestD) { best = { kind: 'wood', label: '🪵 나무 줍기', target: s }; bestD = d; }
+  }
+  for (const s of rockSpots) {
+    if (s.cool > 0) continue;
+    const d = Math.hypot(s.x - P.pos.x, s.z - P.pos.z);
+    if (d < bestD) { best = { kind: 'stone', label: '🪨 돌 줍기', target: s }; bestD = d; }
+  }
+  return best;
+}
+
+let currentAction = null;
+
+function doAction() {
+  if (!currentAction) return;
+  const a = currentAction;
+  if (a.kind === 'wood') {
+    const n = 1 + Math.floor(rnd() * 2);
+    S.wood += n; a.target.cool = 25;         // 같은 나무는 잠시 쉬었다 다시
+    showToast(`🪵 나무 +${n}`);
+  } else if (a.kind === 'stone') {
+    S.stone += 1; a.target.cool = 25;
+    showToast('🪨 돌 +1');
+  } else if (a.kind === 'cook') {
+    S.meat -= 1; S.cooked += 1;
+    showToast('🍗 고기를 구웠다');
+  } else if (a.kind === 'bench') {
+    toggleCraft(true);
+  } else if (a.kind === 'sleep') {
+    if (timeOfDay > 0.3) { day++; dayNumEl.textContent = day; }   // 밤에 잤으면 다음 날
+    timeOfDay = 0.3;                          // 아침으로
+    S.hp = Math.min(MAX_HP, S.hp + 45);
+    S.food = Math.max(0, S.food - 12);        // 자는 동안에도 배는 고파진다
+    showToast('⛺ 푹 잤다 — 아침이 밝았어요');
+  }
+  updateInventoryUI();
+}
+
+// ---- 활과 화살 ----
+const arrows = [];
+const arrowGeo = new THREE.CylinderGeometry(0.035, 0.035, 1.1, 5);
+arrowGeo.rotateX(Math.PI / 2);              // 화살촉이 +z를 향하게 눕힌다
+const arrowMat = new THREE.MeshLambertMaterial({ color: 0x8a6134, flatShading: true });
+const shootDir = new THREE.Vector3();
+
+function shootArrow() {
+  if (!S.hasBow) { showToast('🏹 먼저 활을 만들어야 해요 (C)'); return; }
+  if (S.arrow <= 0) { showToast('화살이 없어요 — C로 만들기'); return; }
+  S.arrow -= 1;
+  updateInventoryUI();
+
+  camera.getWorldDirection(shootDir);
+  const mesh = new THREE.Mesh(arrowGeo, arrowMat);
+  // 눈높이에서, 몸보다 조금 앞에서 출발한다. 발밑에서 쏘면 곧바로 땅에 박힌다.
+  mesh.position.set(
+    P.pos.x + shootDir.x * 0.9,
+    P.pos.y + 2.3 + shootDir.y * 0.9,
+    P.pos.z + shootDir.z * 0.9
+  );
+  scene.add(mesh);
+  arrows.push({
+    mesh,
+    vel: shootDir.clone().multiplyScalar(78),
+    life: 4,
+  });
+}
+
+// 동물이 죽으면 잠시 뒤 다른 자리에서 다시 태어난다 (세계가 비지 않게)
+const respawnQueue = [];
+
+function updateArrows(dt) {
+  for (let i = arrows.length - 1; i >= 0; i--) {
+    const a = arrows[i];
+    a.vel.y -= 3.5 * dt;                      // 화살도 조금은 아래로 처진다(너무 세면 못 맞힌다)
+    a.mesh.position.addScaledVector(a.vel, dt);
+    a.mesh.lookAt(a.mesh.position.clone().add(a.vel));   // 날아가는 쪽을 향하게
+    a.life -= dt;
+
+    let hit = false;
+    for (let j = animals.length - 1; j >= 0; j--) {
+      const an = animals[j];
+      const dx = an.x - a.mesh.position.x;
+      const dy = an.y + 1.0 * an.kind.size - a.mesh.position.y;
+      const dz = an.z - a.mesh.position.z;
+      if (dx * dx + dy * dy + dz * dz < 4.0) {   // 반경 2m — 아이가 쏘기 좋게 넉넉히
+        // 명중 — 고기와 가죽을 얻는다
+        S.meat += 2; S.hide += 1;
+        showToast(`🏹 ${an.kind.name} 사냥! 🍖+2 🟫+1`);
+        scene.remove(an.mesh);
+        animals.splice(j, 1);
+        respawnQueue.push({ kind: an.kind, t: 45 });
+        updateInventoryUI();
+        hit = true;
+        break;
+      }
+    }
+    // 땅이나 물에 박히면 사라진다
+    if (hit || a.life <= 0 ||
+        a.mesh.position.y < terrainHeight(a.mesh.position.x, a.mesh.position.z) - 0.25) {
+      scene.remove(a.mesh);
+      arrows.splice(i, 1);
+    }
+  }
+
+  for (let i = respawnQueue.length - 1; i >= 0; i--) {
+    respawnQueue[i].t -= dt;
+    if (respawnQueue[i].t <= 0) {
+      const k = respawnQueue[i].kind;
+      // 플레이어에게서 멀리 떨어진 적당한 자리를 찾아 다시 태어난다
+      for (let tryN = 0; tryN < 30; tryN++) {
+        const x = (rnd() - 0.5) * WORLD * 0.9, z = (rnd() - 0.5) * WORLD * 0.9;
+        const y = terrainHeight(x, z);
+        if (y < WATER_Y + 3 || y > k.maxY) continue;
+        if (Math.hypot(x - P.pos.x, z - P.pos.z) < 90) continue;
+        spawnAnimal(k, x, z);
+        break;
+      }
+      respawnQueue.splice(i, 1);
+    }
+  }
+}
+
+// ---- 먹기 ----
+function eat() {
+  if (S.cooked > 0) {
+    S.cooked -= 1;
+    S.food = Math.min(MAX_FOOD, S.food + 42);
+    S.hp = Math.min(MAX_HP, S.hp + 8);
+    showToast('🍗 냠냠! 배가 든든해요');
+  } else if (S.meat > 0) {
+    S.meat -= 1;
+    S.food = Math.min(MAX_FOOD, S.food + 12);
+    showToast('🍖 날고기는 별로다… 구워 먹자');
+  } else {
+    showToast('먹을 게 없어요 — 사슴을 사냥해 보세요');
+  }
+  updateInventoryUI();
+}
+
+// ---- 배고픔과 체력 ----
+let hurtCooldown = 0;
+
+function updateSurvival(dt) {
+  // 움직일수록 배가 빨리 고프다
+  const effort = P.onGround ? Math.hypot(P.vel.x, P.vel.z) / RUN_SPEED : 0.3;
+  S.food = Math.max(0, S.food - dt * (0.55 + effort * 0.6));
+
+  if (S.food <= 0) {
+    S.hp -= dt * 2.2;                       // 굶으면 체력이 깎인다
+    if (S.hp <= 0) respawn();
+  } else if (S.food > 55) {
+    S.hp = Math.min(MAX_HP, S.hp + dt * 1.2);   // 배부르면 조금씩 회복
+  }
+
+  // 자원 채집 쿨다운
+  for (const s of treeSpots) if (s.cool > 0) s.cool -= dt;
+  for (const s of rockSpots) if (s.cool > 0) s.cool -= dt;
+
+  updateArrows(dt);
+
+  // 모닥불 불꽃이 일렁인다
+  for (const b of builds) {
+    if (b.type !== 'campfire') continue;
+    const f = b.mesh.userData.flame;
+    if (f) {
+      f.scale.set(1 + Math.sin(t * 9) * 0.14, 1 + Math.sin(t * 13 + 1) * 0.2, 1);
+      f.rotation.y = t * 2;
+    }
+    if (b.light) b.light.intensity = 2.0 + Math.sin(t * 11) * 0.5;
+  }
+
+  // 지금 할 수 있는 일 안내
+  currentAction = mapOpen || craftOpen ? null : findAction();
+  promptEl.style.display = currentAction ? 'block' : 'none';
+  if (currentAction) promptEl.innerHTML = `<b>E</b> — ${currentAction.label}`;
+  crosshairEl.style.display = (S.hasBow && !mapOpen && !craftOpen) ? 'block' : 'none';
+}
+
+function respawn() {
+  S.hp = 55; S.food = 45;
+  P.pos.set(0, terrainHeight(0, 0), 0);
+  P.vel.set(0, 0, 0);
+  camSnap = true;
+  showToast('😵 정신을 잃었다… 시작 언덕에서 깨어났어요');
+}
+
+// ---- 아래쪽 UI 갱신 ----
+const inventoryEl = document.getElementById('inventory');
+const promptEl = document.getElementById('prompt');
+const crosshairEl = document.getElementById('crosshair');
+const hpFill = document.getElementById('hpFill');
+const foodFill = document.getElementById('foodFill');
+
+function updateInventoryUI() {
+  const parts = [];
+  if (S.hasBow) parts.push(`<span class="slot equipped">🏹 활</span>`);
+  for (const k of ['wood', 'stone', 'hide', 'meat', 'cooked', 'arrow']) {
+    if (S[k] > 0) parts.push(`<span class="slot">${ITEM[k].icon} ${S[k]}</span>`);
+  }
+  inventoryEl.innerHTML = parts.join('');
+}
+updateInventoryUI();
+
+// ============================================================================
+//  10. 매 프레임 실행되는 부분 — 여기가 실제로 "게임이 움직이는" 곳
+// ============================================================================
+const clock = new THREE.Clock();
+const camPos = new THREE.Vector3();
+const lookAt = new THREE.Vector3();
+let started = false;
+let camSnap = true;      // 첫 프레임엔 카메라를 부드럽게 따라오지 말고 바로 제자리에 놓는다
+
+function update(dt) {
+  // ---- 어디로 갈지 정한다 (카메라가 보는 방향 기준) ----
+  // 지도를 펼쳐 놓은 동안에는 움직이지 않는다 (지도 보는 사이 절벽에서 떨어지면 곤란하니까)
+  // 지도를 펼쳐 놓은 동안에는 조작을 받지 않는다
+  // (지도 보는 사이에 절벽에서 떨어지거나 물에 빠지면 곤란하니까)
+  let ix = 0, iz = 0;
+  if (!mapOpen && !craftOpen) {
+    if (keys.KeyW || keys.ArrowUp) iz += 1;
+    if (keys.KeyS || keys.ArrowDown) iz -= 1;
+    if (keys.KeyA || keys.ArrowLeft) ix -= 1;
+    if (keys.KeyD || keys.ArrowRight) ix += 1;
+  }
+  const moving = ix !== 0 || iz !== 0;
+
+  const groundY = terrainHeight(P.pos.x, P.pos.z);
+  P.swimming = P.pos.y < WATER_Y + 0.4 && groundY < WATER_Y - 0.5;
+
+  // 달리기: Shift를 누르고 실제로 움직이는 중이고 기운이 남아 있을 때
+  const running = keys.ShiftLeft && moving && P.stamina > 0 && !P.swimming;
+  const speed = P.swimming ? SWIM_SPEED : (running ? RUN_SPEED : WALK_SPEED);
+
+  if (moving) {
+    // 카메라 방향을 기준으로 앞·옆을 계산한다
+    const fx = -Math.sin(camYaw), fz = -Math.cos(camYaw);   // 앞
+    const rx = -fz,               rz = fx;                  // 오른쪽
+    let dx = fx * iz + rx * ix;
+    let dz = fz * iz + rz * ix;
+    const len = Math.hypot(dx, dz);
+    dx /= len; dz /= len;
+
+    // 활공 중엔 조종이 둔하다 (공중이니까)
+    const control = P.gliding ? 0.55 : 1;
+    P.vel.x += (dx * speed - P.vel.x) * Math.min(1, dt * 12 * control);
+    P.vel.z += (dz * speed - P.vel.z) * Math.min(1, dt * 12 * control);
+
+    // 몸이 가는 방향으로 부드럽게 돌아본다
+    const want = Math.atan2(dx, dz);
+    let diff = want - P.facing;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    P.facing += diff * Math.min(1, dt * 12);
+  } else if (!P.gliding) {
+    // 키를 놓으면 미끄러지듯 멈춘다
+    P.vel.x -= P.vel.x * Math.min(1, dt * (P.onGround ? 14 : 3));
+    P.vel.z -= P.vel.z * Math.min(1, dt * (P.onGround ? 14 : 3));
+  }
+
+  // ---- 점프 / 활공 ----
+  const spaceHeld = keys.Space && !mapOpen && !craftOpen;
+  if (spaceHeld && P.onGround && !P.swimming) {
+    P.vel.y = JUMP_POWER;
+    P.onGround = false;
+  }
+  // 공중에서 떨어지는 중에 스페이스를 꾹 누르면 활공 시작
+  P.gliding = !P.onGround && !P.swimming && spaceHeld && P.vel.y < 0.5 && P.stamina > 0;
+
+  // ---- 중력 ----
+  if (P.swimming) {
+    P.vel.y += (0 - P.vel.y) * Math.min(1, dt * 6);         // 물에서는 둥둥 뜬다
+    P.pos.y += (WATER_Y - P.pos.y) * Math.min(1, dt * 5);
+  } else {
+    P.vel.y -= GRAVITY * dt;
+    if (P.gliding) P.vel.y = Math.max(P.vel.y, -GLIDE_FALL); // 천천히 내려간다
+  }
+
+  // ---- 기운(스태미나) ----
+  if (running) P.stamina -= dt * 0.14;
+  else if (P.gliding) P.stamina -= dt * 0.1;
+  else if (P.onGround || P.swimming) P.stamina += dt * 0.35;
+  P.stamina = Math.max(0, Math.min(1, P.stamina));
+
+  // ---- 실제로 움직이고, 땅 위로 올려놓는다 ----
+  P.pos.x += P.vel.x * dt;
+  P.pos.z += P.vel.z * dt;
+  P.pos.y += P.vel.y * dt;
+
+  // 맵 밖으로 나가지 않게
+  P.pos.x = Math.max(-HALF + 6, Math.min(HALF - 6, P.pos.x));
+  P.pos.z = Math.max(-HALF + 6, Math.min(HALF - 6, P.pos.z));
+
+  // 건물 안으로 파고들면 밖으로 밀어낸다 (지붕 위를 날아 넘어갈 때는 통과시킨다)
+  for (const b of BLOCKERS) {
+    const dx = P.pos.x - b.x, dz = P.pos.z - b.z;
+    const d = Math.hypot(dx, dz);
+    if (d < b.r && d > 0.0001 && P.pos.y < terrainHeight(b.x, b.z) + 12) {
+      P.pos.x = b.x + (dx / d) * b.r;
+      P.pos.z = b.z + (dz / d) * b.r;
+    }
+  }
+
+  const gy = terrainHeight(P.pos.x, P.pos.z);
+  if (P.pos.y <= gy) {
+    P.pos.y = gy;
+    if (P.vel.y < 0) P.vel.y = 0;
+    P.onGround = true;
+    P.gliding = false;
+  } else if (P.pos.y > gy + 0.15) {
+    P.onGround = false;
+  }
+
+  // ---- 캐릭터 모습 갱신 ----
+  player.position.copy(P.pos);
+  player.rotation.y = P.facing;
+
+  // 걸을 때 몸이 살짝 들썩이고, 서 있을 때는 숨 쉬듯 아주 조금 움직인다.
+  // 이 작은 움직임 하나로 "서 있는 인형"이 "살아 있는 사람"처럼 보인다.
+  const flatSpeed = Math.hypot(P.vel.x, P.vel.z);
+  if (P.onGround && flatSpeed > 0.4) {
+    player.position.y += Math.abs(Math.sin(P.walkPhase)) * 0.085;
+  } else if (P.onGround) {
+    player.position.y += Math.sin(t * 1.9) * 0.022;
+  }
+
+  const ud = player.userData;
+  ud.glider.visible = P.gliding;
+
+  if (P.swimming) {
+    // ---- 헤엄치기 ----
+    // 몸을 앞으로 엎드리고 물에 반쯤 잠긴 채, 두 팔을 번갈아 크게 돌린다(자유형).
+    // rotation.order가 'YXZ'라서 y(방향)를 먼저 돌린 뒤 x(엎드리기)가 먹는다.
+    // 거의 수평(80°)으로 눕는다. 어중간하게 눕히면 서서 잠긴 것처럼 보인다.
+    player.rotation.x = 1.4;
+    player.rotation.z = 0;
+    // 회전 중심이 발밑이라, 눕히면 몸이 저절로 내려간다. 조금만 더 낮추면 수면에 딱 뜬다.
+    player.position.y -= 0.12;
+
+    // 앞으로 나아갈 때만 팔을 젓는다.
+    // 제자리에 떠 있는데도 계속 팔을 돌리면 이상하다 — 그땐 팔을 모으고 가만히 뜬다.
+    const effort = Math.min(1, flatSpeed / 3.5);      // 0 = 제자리, 1 = 힘차게 전진
+    P.swimPhase += dt * (0.9 + flatSpeed * 0.55);     // 멈추면 위상도 천천히
+    const armSwing = 2.3 * effort;
+    const armRest = -0.5 - (1 - effort) * 0.5;        // 제자리에선 팔을 앞으로 모은다
+    ud.armL.rotation.x = Math.sin(P.swimPhase) * armSwing + armRest;
+    ud.armR.rotation.x = Math.sin(P.swimPhase + Math.PI) * armSwing + armRest;
+    // 다리는 팔보다 두 배 빠르게 작게 찬다 (제자리에선 거의 멈춘다)
+    const legKick = 0.4 * effort + 0.04;
+    ud.legL.rotation.x = Math.sin(P.swimPhase * 2) * legKick - 0.15;
+    ud.legR.rotation.x = Math.sin(P.swimPhase * 2 + Math.PI) * legKick - 0.15;
+    // 물결에 따라 몸이 아주 조금 오르내린다
+    player.position.y += Math.sin(t * 1.5) * 0.05;
+  } else if (P.gliding) {
+    // 활공 중엔 매달린 자세 (팔을 위로)
+    player.rotation.x = 0;
+    ud.armL.rotation.x = ud.armR.rotation.x = -2.0;   // 손잡이를 잡고 매달린 자세
+    ud.legL.rotation.x = ud.legR.rotation.x = 0.25;
+    player.rotation.z = -P.vel.x * 0.008;    // 도는 쪽으로 살짝 기운다
+  } else {
+    player.rotation.z = 0;
+    // 물에서 막 나왔으면 엎드린 자세를 부드럽게 편다
+    player.rotation.x -= player.rotation.x * Math.min(1, dt * 8);
+    const spd = flatSpeed;
+    if (P.onGround && spd > 0.4) {
+      P.walkPhase += dt * spd * 0.9;
+      const sw = Math.sin(P.walkPhase) * Math.min(1, spd / 10);
+      ud.armL.rotation.x =  sw * 1.0;
+      ud.armR.rotation.x = -sw * 1.0;
+      ud.legL.rotation.x = -sw * 1.1;
+      ud.legR.rotation.x =  sw * 1.1;
+    } else if (!P.onGround) {
+      ud.armL.rotation.x = ud.armR.rotation.x = -0.9;   // 떨어질 때 팔 벌리기
+      ud.legL.rotation.x = 0.3; ud.legR.rotation.x = -0.3;
+    } else {
+      // 서 있을 때는 천천히 0으로 돌아온다
+      for (const m of [ud.armL, ud.armR, ud.legL, ud.legR]) {
+        m.rotation.x -= m.rotation.x * Math.min(1, dt * 8);
+      }
+    }
+  }
+
+  // ---- 카메라: 캐릭터 뒤쪽 위에서 따라온다 ----
+  const cd = camDist * (1 + camPitch * 0.35);
+  camPos.set(
+    P.pos.x + Math.sin(camYaw) * Math.cos(camPitch) * cd,
+    P.pos.y + 2.2 + Math.sin(camPitch) * cd + 0.4,
+    P.pos.z + Math.cos(camYaw) * Math.cos(camPitch) * cd
+  );
+  // 카메라가 땅속으로 파고들지 않게 올려준다
+  const camGround = terrainHeight(camPos.x, camPos.z) + 1.8;
+  if (camPos.y < camGround) camPos.y = camGround;
+  // 물속으로도 들어가지 않게 — 잠기면 화면이 온통 파래져서 앞이 안 보인다
+  if (camPos.y < WATER_Y + 2.2) camPos.y = WATER_Y + 2.2;
+
+  // 첫 프레임에는 즉시 그 자리로(스냅). 안 그러면 시작할 때 카메라가 멀리서 확 날아온다
+  if (camSnap) { camera.position.copy(camPos); camSnap = false; }
+  else camera.position.lerp(camPos, Math.min(1, dt * 9));
+  // 캐릭터보다 조금 위를 바라본다 → 화면에 하늘과 먼 경치가 더 많이 들어온다
+  lookAt.set(P.pos.x, P.pos.y + 3.2, P.pos.z);
+  camera.lookAt(lookAt);
+
+  // 하늘과 구름은 항상 카메라를 따라다닌다 (끝이 안 보이게)
+  sky.position.set(camera.position.x, 0, camera.position.z);
+
+  // 햇빛은 캐릭터를 따라다니면서(그림자를 선명하게), 시각에 따라 방향이 바뀐다.
+  // 밤에는 해가 땅 밑이라 그림자가 뒤집히므로 최소 높이를 정해 둔다.
+  const sunAng = (timeOfDay - 0.25) * Math.PI * 2;
+  sun.position.set(
+    P.pos.x + Math.cos(sunAng) * 120,
+    P.pos.y + Math.max(45, Math.sin(sunAng) * 190),
+    P.pos.z + Math.cos(sunAng) * 90 + 40
+  );
+  sun.target.position.copy(P.pos);
+
+  // ---- 랜드마크 발견 판정 ----
+  for (const L of landmarks) {
+    if (L.found) continue;
+    if (Math.hypot(L.pos.x - P.pos.x, L.pos.z - P.pos.z) < 32) {
+      L.found = true;
+      showToast(`✨ ${L.name} 발견! (지도 M에 표시됐어요)`);
+    }
+  }
+
+  updateAnimals(dt);
+  updateSky(dt);
+  updateSurvival(dt);
+
+  // ---- UI ----
+  hpFill.style.width = Math.max(0, S.hp / MAX_HP * 100) + '%';
+  foodFill.style.width = Math.max(0, S.food / MAX_FOOD * 100) + '%';
+  stamFill.style.width = (P.stamina * 100) + '%';
+  stamFill.classList.toggle('tired', P.stamina < 0.25);
+  clockEl.textContent = timeLabel;
+  drawCompass();
+}
+
+let t = 0;
+function loop() {
+  requestAnimationFrame(loop);
+  const dt = Math.min(0.05, clock.getDelta());   // 프레임이 튀어도 게임이 망가지지 않게
+  t += dt;
+
+  if (started) update(dt);
+
+  // 탑 꼭대기 구슬이 두근두근 빛난다
+  const orb = tower?.userData.orb;
+  if (orb) orb.scale.setScalar(1 + Math.sin(t * 2.4) * 0.13);
+
+  // 구름이 아주 천천히 흐른다
+  cloudGroup.rotation.y = t * 0.004;
+
+  renderer.render(scene, camera);
+}
+
+// ============================================================================
+//  11. 시작
+// ============================================================================
+const startEl = document.getElementById('start');
+const startBtn = document.getElementById('startBtn');
+document.getElementById('loading').style.display = 'none';
+startBtn.style.display = 'block';
+
+function begin() {
+  startEl.style.display = 'none';
+  started = true;
+  clock.getDelta();               // 로딩에 걸린 시간이 한 프레임에 몰리지 않게 초기화
+  canvas.requestPointerLock();
+}
+startBtn.addEventListener('click', begin);
+startEl.addEventListener('click', begin);
+
+// ---- 개발용 테스트 훅 (헤드리스 크롬으로 화면을 확인할 때 쓴다) ----
+//   #pose:x:z(:방향)      그 자리에 서 있는 화면. 스크린샷은 이걸 쓸 것
+//   #fly:x:y:z            그 높이의 공중에서 활공 중인 화면
+//   #demo:프레임수(:x:z)   앞으로 걸어가는 것을 미리 계산해서 결과 화면을 보여줌
+//   헤드리스에서는 rAF 시간이 제대로 안 흘러서, 여기서 고정 시간(1/60초)으로 직접 돌린다.
+const hash = location.hash.slice(1);
+if (hash) {
+  const [mode, ...rawArgs] = hash.split(':');
+  const a = rawArgs.map(Number);
+  startEl.style.display = 'none';
+  started = true;
+
+  if (mode === 'pose' || mode === 'fly') {
+    P.pos.x = a[0] || 0;
+    P.pos.z = (mode === 'fly' ? a[2] : a[1]) || 0;
+    P.pos.y = mode === 'fly'
+      ? terrainHeight(P.pos.x, P.pos.z) + (a[1] || 40)
+      : terrainHeight(P.pos.x, P.pos.z);
+    if (mode === 'fly') { keys.Space = true; P.onGround = false; P.vel.y = -1; }
+    const dir = mode === 'pose' ? a[2] : a[3];
+    if (!Number.isNaN(dir) && dir !== undefined) camYaw = dir;
+    P.facing = Math.atan2(-Math.sin(camYaw), -Math.cos(camYaw));   // 카메라가 보는 쪽을 향하게
+    const tod = mode === 'pose' ? a[3] : a[4];        // 네 번째 값은 시각(0~1)
+    if (!Number.isNaN(tod) && tod !== undefined) timeOfDay = tod;
+    update(1 / 60);              // 카메라를 제자리에 스냅시키기 위해 한 번 돌린다
+  } else if (mode === 'map') {
+    // #map:x:z:바라보는각도:발견한곳수  → 전체 지도를 펼친 화면
+    P.pos.x = a[0] || 0;
+    P.pos.z = a[1] || 0;
+    P.pos.y = terrainHeight(P.pos.x, P.pos.z);
+    P.facing = a[2] || 0;
+    for (let i = 0; i < (a[3] || 0) && i < landmarks.length; i++) landmarks[i].found = true;
+    update(1 / 60);
+    toggleMap(true);
+  } else if (mode === 'survival') {
+    // #survival:x:z  → 자원을 채우고 제작대·모닥불·텐트를 놓아 본 화면
+    P.pos.x = a[0] || 0;
+    P.pos.z = a[1] || 0;
+    P.pos.y = terrainHeight(P.pos.x, P.pos.z);
+    S.wood = 40; S.stone = 20; S.hide = 6; S.meat = 3; S.arrow = 12; S.hasBow = true;
+    P.facing = 0.55;  placeBuild('bench');
+    P.facing = 1.75;  placeBuild('campfire');
+    P.facing = -0.7;  placeBuild('tent');
+    P.facing = Math.PI;
+    camYaw = 0;
+    camDist = 17;                       // 놓은 것들이 다 보이게 카메라를 뒤로
+    updateInventoryUI();
+    update(1 / 60);
+  } else if (mode === 'craft') {
+    S.wood = 40; S.stone = 20; S.hide = 6;
+    P.pos.y = terrainHeight(0, 0);
+    placeBuild('bench');                // 제작대 옆이라 모든 항목이 열린 상태
+    update(1 / 60);
+    toggleCraft(true);
+  } else if (mode === 'hunt') {
+    // 가장 가까운 동물을 향해 화살을 쏘아 명중 판정이 되는지 확인한다
+    S.hasBow = true; S.arrow = 5;
+    update(1 / 60);
+    const near = animals.slice().sort((p, q) =>
+      Math.hypot(p.x - P.pos.x, p.z - P.pos.z) - Math.hypot(q.x - P.pos.x, q.z - P.pos.z))[0];
+    if (near) {
+      // 사냥하듯 12m 앞까지 다가간 다음 쏜다
+      const ang = Math.atan2(P.pos.x - near.x, P.pos.z - near.z);
+      P.pos.x = near.x + Math.sin(ang) * 12;
+      P.pos.z = near.z + Math.cos(ang) * 12;
+      P.pos.y = terrainHeight(P.pos.x, P.pos.z);
+      const from = new THREE.Vector3(P.pos.x, P.pos.y + 2.3, P.pos.z);
+      const to = new THREE.Vector3(near.x, near.y + near.kind.size, near.z);
+      const dir = to.clone().sub(from).normalize();
+      const mesh = new THREE.Mesh(arrowGeo, arrowMat);
+      mesh.position.copy(from);
+      scene.add(mesh);
+      arrows.push({ mesh, vel: dir.multiplyScalar(78), life: 4 });
+      S.arrow -= 1;
+      window.huntDbg = {
+        target: near.kind.name,
+        dist: +from.distanceTo(to).toFixed(1),
+        from: from.toArray().map(v => +v.toFixed(1)),
+        to: to.toArray().map(v => +v.toFixed(1)),
+      };
+      for (let i = 0; i < 90; i++) {
+        update(1 / 60);
+        if (arrows.length === 0 && !window.huntDbg.goneAt) {
+          window.huntDbg.goneAt = i;
+          window.huntDbg.lastPos = mesh.position.toArray().map(v => +v.toFixed(1));
+          window.huntDbg.groundThere =
+            +terrainHeight(mesh.position.x, mesh.position.z).toFixed(1);
+        }
+      }
+    }
+  } else if (mode === 'gather') {
+    // 가장 가까운 나무로 다가가 E를 눌러 보고, 이어서 돌도 주워 본다
+    const t1 = treeSpots.slice().sort((p, q) =>
+      Math.hypot(p.x, p.z) - Math.hypot(q.x, q.z))[0];
+    P.pos.set(t1.x + 2, terrainHeight(t1.x + 2, t1.z), t1.z);
+    update(1 / 60);
+    doAction();                        // 🪵 나무 줍기
+    const r1 = rockSpots.slice().sort((p, q) =>
+      Math.hypot(p.x, p.z) - Math.hypot(q.x, q.z))[0];
+    P.pos.set(r1.x + 2, terrainHeight(r1.x + 2, r1.z), r1.z);
+    update(1 / 60);
+    doAction();                        // 🪨 돌 줍기
+    // 굽기와 먹기도 확인
+    S.meat = 2;
+    placeBuild('campfire');
+    update(1 / 60);
+    doAction();                        // 🔥 고기 굽기
+    eat();                             // 🍗 먹기
+    update(1 / 60);
+  } else if (mode === 'demo') {
+    const frames = a[0] || 180;
+    P.pos.x = a[1] || 0;
+    P.pos.z = a[2] || 0;
+    P.pos.y = terrainHeight(P.pos.x, P.pos.z);
+    keys.KeyW = true; keys.ShiftLeft = true;    // 앞으로 달리기
+    for (let i = 0; i < frames; i++) update(1 / 60);
+    keys.KeyW = false; keys.ShiftLeft = false;
+  }
+  // 스크린샷 도구가 읽어갈 수 있게 상태를 화면 밖 요소에 적어둔다
+  const dbg = document.createElement('div');
+  dbg.id = 'debugState';
+  dbg.style.cssText = 'position:fixed;left:-9999px';
+  dbg.textContent = JSON.stringify({
+    pos: [+P.pos.x.toFixed(1), +P.pos.y.toFixed(1), +P.pos.z.toFixed(1)],
+    ground: +terrainHeight(P.pos.x, P.pos.z).toFixed(1),
+    onGround: P.onGround, gliding: P.gliding, swimming: P.swimming,
+    stamina: +P.stamina.toFixed(2),
+    trees: trunkMesh.count, rocks: rockMesh.count, grass: grassMesh.count,
+    animals: animals.length,
+    timeOfDay: +timeOfDay.toFixed(2), timeLabel, day,
+    hp: Math.round(S.hp), food: Math.round(S.food),
+    inv: { wood: S.wood, stone: S.stone, hide: S.hide, meat: S.meat,
+           cooked: S.cooked, arrow: S.arrow, bow: S.hasBow },
+    builds: builds.map(b => b.type), arrowsFlying: arrows.length,
+    action: currentAction && currentAction.kind,
+    hunt: window.huntDbg || null,
+    rotX: +player.rotation.x.toFixed(2), rotOrder: player.rotation.order,
+    playerY: +player.position.y.toFixed(2), swimPhase: +P.swimPhase.toFixed(2),
+    // 가까운 동물 3마리 — 어디서 스크린샷을 찍어야 동물이 보이는지 알려준다
+    nearAnimals: animals
+      .map(a => ({ n: a.kind.name, x: Math.round(a.x), z: Math.round(a.z),
+                   d: Math.round(Math.hypot(a.x - P.pos.x, a.z - P.pos.z)), s: a.state }))
+      .sort((p, q) => p.d - q.d).slice(0, 3),
+    found: landmarks.filter(l => l.found).map(l => l.name),
+    camY: +camera.position.y.toFixed(1),
+  });
+  document.body.appendChild(dbg);
+}
+
+loop();
+</script>
+</body>
+</html>

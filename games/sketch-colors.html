@@ -1,0 +1,1252 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>스케치북 물감가게</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #7a6a55; }
+  canvas { display: block; touch-action: none; }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<script src="crayon.js"></script>
+<script>
+// ============================================================
+// 스케치북 물감가게 · Sketching Colors        (스케치북 시리즈 3탄)
+//
+// 【리듬 프로토타입】 — 손맛만 확인하려고 만든 판. 도감·상점·손님은 아직 없다.
+//
+// 낚시는 "타이밍 클릭"(한 번), 곤충은 "따라 치기"(주고받기)였다.
+// 여기는 **한 판이 노래 하나**다. 1절에서 색을 받고, 2절에서 젓는다.
+//
+//   ♪ 1절 (8박) 색방울 받기  →  무슨 색이 되는가   (perfect=진한 방울, good=묽은 방울)
+//   ♪ 2절 (8박) 붓으로 젓기  →  얼마나 맑은가     (정확도가 그대로 맑기)
+//
+// ⚠️ 실패해도 색은 나온다. 대신 탁하게 나온다.
+//    낚시처럼 놓치면 사라지는 게 아니라, 못한 만큼 결과물에 남는 구조다.
+// ============================================================
+
+const TEST_MODE = location.hash.startsWith('#test');
+// 화면 찍기용 — #test:stir 처럼 쓰면 검증이 끝난 뒤 그 화면을 그려둔다 (헤드리스 스크린샷용)
+const SHOT = TEST_MODE ? (location.hash.split(':')[1] || '') : '';
+
+// ---------- 1. 글 ----------
+const T = {
+  title:    { ko: '스케치북 물감가게', en: 'Sketching Colors' },
+  subtitle: { ko: '박자에 맞춰 색을 만드는 가게', en: 'Make colors on the beat' },
+  tapPlay:  { ko: '눌러서 시작', en: 'Tap to Play' },
+  start:    { ko: '시작', en: 'Start' },
+  howto:    { ko: '색방울을 박자에 맞춰 받고, 박자에 맞춰 저어요',
+              en: 'Catch drops on the beat, then stir on the beat' },
+  settings: { ko: '설정', en: 'Settings' },
+  sfxRow:   { ko: '효과음 %1', en: 'Sound %1' },
+  volRow:   { ko: '음량 %1%', en: 'Volume %1%' },
+  on:       { ko: '켬', en: 'On' },
+  off:      { ko: '끔', en: 'Off' },
+  order:    { ko: '손님이 원하는 색', en: 'Order' },
+  // 손님 대사 — 주문할 때
+  ask1:     { ko: '이런 색으로 주세요!', en: 'This color, please!' },
+  ask2:     { ko: '이 색이 필요해요', en: 'I need this one' },
+  ask3:     { ko: '부탁드려요~', en: 'Could you make this?' },
+  // 손님 반응 — 결과에서
+  reactWow: { ko: '우와, 딱 이거예요!', en: 'Wow, exactly!' },
+  reactOk:  { ko: '음, 괜찮네요', en: 'Hmm, not bad' },
+  reactBad: { ko: '음… 좀 다른데요', en: 'Hmm... not quite' },
+  beginMix: { ko: '만들기 시작', en: 'Start Mixing' },
+  waiting:  { ko: '손님이 오는 중…', en: 'A customer is coming...' },
+  phase1:   { ko: '① 받기', en: '1. Catch' },
+  phase2:   { ko: '② 젓기', en: '2. Stir' },
+  ready:    { ko: '준비…', en: 'Ready...' },
+  stirHint: { ko: '붓이 ▲ 를 지날 때 누르세요', en: 'Tap when the brush passes ▲' },
+  catchHint:{ ko: '방울이 선에 닿을 때 누르세요', en: 'Tap when a drop hits the line' },
+  done:     { ko: '색이 나왔어요!', en: 'Color made!' },
+  clarity:  { ko: '맑기 %1%', en: 'Clarity %1%' },
+  match:    { ko: '주문과 %1% 비슷', en: '%1% match' },
+  mine:     { ko: '내가 만든 색', en: 'Mine' },
+  again:    { ko: '한 번 더', en: 'Play Again' },
+  rotate:   { ko: '화면을 옆으로 돌려주세요', en: 'Please rotate your device' },
+  langBtn:  { ko: 'English', en: '한국어' },
+  best:     { ko: '최고 %1%', en: 'Best %1%' },
+};
+
+const SAVE_KEY = 'sketch-colors-v1';
+
+// ---------- 2. 준비 ----------
+const cv = document.getElementById('cv');
+crayonFit(cv);
+crayonLangInit({ key: SAVE_KEY + '-lang', langs: ['ko', 'en'], table: T });
+crayonAudioInit({ key: SAVE_KEY, silent: TEST_MODE });
+
+// 점수는 소수점 한 자리까지 — 84% 와 84.7% 를 구분해야 "조금 더 잘했다"가 보인다.
+// ⚠️ 저장값도 소수로 바뀌므로 parseInt 가 아니라 parseFloat 여야 한다 (parseInt 면 84.7 이 84 로 잘린다).
+const save = { best: parseFloat(LS.get(SAVE_KEY + '-best') || '0') || 0 };
+function saveBest(v) {
+  if (v <= save.best) return false;
+  save.best = v;
+  if (!TEST_MODE) LS.set(SAVE_KEY + '-best', v.toFixed(1));
+  return true;
+}
+
+// 소수점 한 자리로 다듬기. 100 은 '100.0' 이 아니라 '100' 으로 (딱 맞췄을 때 지저분하지 않게)
+function pct1(v) {
+  const r = Math.round(v * 10) / 10;
+  return Number.isInteger(r) ? String(r) : r.toFixed(1);
+}
+
+// ---------- 3. 박자 ----------
+// ⚠️ 이 숫자들은 **직접 쳐보고** 정해야 한다. 코드만 보고는 못 정한다.
+const BPM         = 90;
+const BEAT        = 60000 / BPM;   // 667ms
+const CATCH_BEATS = 8;             // 1절 — 받을 방울 수
+const STIR_BEATS  = 8;             // 2절 — 저을 횟수
+const LEAD_BEATS  = 2;             // 방울이 떨어지는 데 걸리는 시간 (= 예고)
+const WARM_SPINS  = 2;             // 붓이 헛도는 바퀴 수 (= 예고)
+
+// ⚠️ 결과 화면에서 입력을 막는 시간. 실제 플레이에서 찾은 문제(2026-08-04):
+//    박자에 맞춰 두드리던 손이 결과 화면까지 이어져서, 일치도를 보기도 전에 다음 판이 시작됐다.
+//    이 잠금만으로는 부족하다 — 잠금이 풀린 뒤에도 계속 두드리면 똑같다.
+//    그래서 잠금 + 「한 번 더」 **버튼을 겨냥해야만** 시작되게 두 겹으로 막는다.
+const LOCK_BEATS  = 2;
+
+// 2절(젓기)은 1절(받기)보다 판정을 후하게 준다.
+// ⚠️ GOOD 은 조금밖에 못 늘린다 — 한 박이 667ms 라 ±333ms 를 넘으면 앞뒤 판정 구간이 겹쳐서
+//    아무 데나 눌러도 맞는 게임이 된다. 그래서 **PERFECT 를 더 많이** 늘렸다.
+//    맑기를 정하는 건 GOOD(0.6점)이 아니라 PERFECT(1.0점)이므로, 후해지는 느낌은 여기서 온다.
+//      받기  perfect ±115  good ±285   (곤충채집에서 다듬은 값 그대로)
+//      젓기  perfect ±150  good ±320
+const STIR_JUDGE = { perfect: 150, good: 320 };
+
+// 판정 구간이 서로 겹치는지 검사 — 겹치면 아무 데나 눌러도 맞는 게임이 된다
+const safe = judgeSafe(BEAT);
+const safeStir = judgeSafe(BEAT, STIR_JUDGE);
+
+// 가짜 시계 — 헤드리스에서는 진짜 시간이 안 흐르므로 갈아끼운다
+let _fake = null;
+function now() { return _fake != null ? _fake : performance.now(); }
+
+// ---------- 4. 물감 ----------
+const PAINT = [
+  { key: 'red',    hex: '#e8384f', ko: '빨강', en: 'Red',    tone: 'C4' },
+  { key: 'yellow', hex: '#ffd23f', ko: '노랑', en: 'Yellow', tone: 'E4' },
+  { key: 'blue',   hex: '#2f7ec4', ko: '파랑', en: 'Blue',   tone: 'G4' },
+];
+function P(key) { return PAINT.find(p => p.key === key); }
+
+// ⚠️ 한 판에는 원색을 **두 개만** 쓴다.
+// 세 개를 다 섞으면 비율이 어떻든 결과가 한가운데(흙색)로 수렴해서
+// 판마다 똑같은 색이 나오고, 맑기를 깎아도 티가 안 난다. (첫 프로토타입에서 실측)
+const PAIRS = [['red', 'yellow'], ['yellow', 'blue'], ['red', 'blue']];
+
+// 레시피 표 — 두 원색 **사이에 낀 색**. 이게 이 게임의 심장이다.
+// 색 이름도 여기 있다 (나중에 도감이 그대로 쓴다).
+const RECIPE = [
+  { a: 'red',    b: 'yellow', mid: '#ff8a1f', ko: '주황', en: 'Orange' },
+  { a: 'yellow', b: 'blue',   mid: '#3faa4f', ko: '초록', en: 'Green'  },
+  { a: 'red',    b: 'blue',   mid: '#8b4bb8', ko: '보라', en: 'Purple' },
+];
+
+// 못 저었을 때 섞여드는 탁한 색.
+// ⚠️ 이 값들은 눈대중으로 정하면 안 된다. 색끼리의 거리를 재서 골랐다 (2026-08-04):
+//    · 밝은 회갈색(#8b8378)은 초록·보라와 너무 가까워서 탁해져도 티가 안 났다
+//    · 세기 1.0 이면 망친 색이 **전부 똑같은 갈색**이 된다 → 0.85 로 원래 색조를 조금 남긴다
+// 가게에 오는 손님들 (「좋은 피자, 위대한 피자」처럼 한 명씩 찾아온다).
+// 옷·머리 색만 다르면 다 같은 사람으로 보인다 → 머리 모양과 키까지 다르게 준다.
+const CUSTOMERS = [
+  { shirt: '#7ec8e3', hair: '#5a4632', style: 'short', scale: 1.00, seed: 1100 },
+  { shirt: '#f3a3c0', hair: '#3a3530', style: 'long',  scale: 0.93, seed: 1200 },
+  { shirt: '#9fd07a', hair: '#8a5a2b', style: 'cap',   scale: 1.06, seed: 1300 },
+  { shirt: '#ffcf6b', hair: '#4a3a55', style: 'short', scale: 0.97, seed: 1400 },
+  { shirt: '#c3a6e8', hair: '#6b4a2a', style: 'long',  scale: 1.03, seed: 1500 },
+  { shirt: '#f08a6d', hair: '#2f4858', style: 'cap',   scale: 0.90, seed: 1600 },
+];
+
+const MUD = '#6b6055';
+const MUD_MAX = 0.85;
+const EMPTY = '#cfc7b8';      // 아무것도 못 받은 빈 팔레트
+
+// 비슷함 0% 가 되는 거리. RGB 전체 대각선(441)으로 나누면 눈에 확 다른 색도 83% 가 나온다.
+// 원색끼리 실제 거리가 157~261 이므로 그 언저리로 잡는다.
+const SIM_MAX = 190;
+
+function hexRGB(hex) {
+  let h = String(hex).replace('#', '');
+  if (h.length === 3) h = h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
+  const n = parseInt(h, 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+function rgbHex(r, g, b) {
+  const f = v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0');
+  return '#' + f(r) + f(g) + f(b);
+}
+
+// ============================================================
+// paintMix — 물감 섞기. 이 게임의 심장.
+//
+// ⚠️ crayon.js 의 mixColor 는 **빛**을 섞는다(화면·조명). 물감은 빛을 **빼는** 방식이라
+//    규칙이 정반대다. 실제로 재보면 mixColor 로는 파랑+노랑이 초록이 아니라
+//    회색(rgb 128,128,128)이 나온다. 그래서 물감 전용 함수가 따로 필요하다.
+//    (mixColor 는 그대로 둔다 — 낚시·곤충채집이 배경 그라데이션에 쓰고 있다.)
+//
+// 방법은 rampColor 주석에서 그대로 빌려왔다:
+//   "곧장 섞으면 중간이 칙칙해진다 → 중간에 색을 하나 끼워 넣어라"
+//   파랑 ──[초록]── 노랑  처럼 사이에 낀 색을 지나가게 하면 물감처럼 섞인다.
+//
+//   t = 0 이면 a, t = 0.5 면 사이에 낀 색, t = 1 이면 b
+// ============================================================
+const _mid = {};
+for (const r of RECIPE) {
+  const A = P(r.a).hex, B = P(r.b).hex;
+  _mid[A + '|' + B] = r.mid;
+  _mid[B + '|' + A] = r.mid;
+}
+
+function paintMix(aHex, bHex, t) {
+  t = Math.max(0, Math.min(1, t));
+  if (aHex === bHex) return aHex;
+  const m = _mid[aHex + '|' + bHex];
+  // 표에 없는 조합(2차색끼리 등)은 일단 곧장 섞는다 — 필요해지면 표에 추가할 것
+  return asHex(m ? rampColor([aHex, m, bHex], t) : mixColor(aHex, bHex, t));
+}
+
+// 이번 판의 원색 두 개로 방울들을 섞는다. 비율은 받은 무게로 정해진다.
+//   빨강 6 : 파랑 2 → t = 0.25 → 붉은 보라
+function mixDrops(pair, drops) {
+  let wa = 0, wb = 0;
+  for (const d of drops) {
+    if (!d.weight) continue;
+    if (d.paint.key === pair[0].key) wa += d.weight; else wb += d.weight;
+  }
+  if (!wa && !wb) return EMPTY;
+  return paintMix(pair[0].hex, pair[1].hex, wb / (wa + wb));
+}
+
+// 맑기를 입힌다 — 못 저을수록 탁한 색이 섞여든다
+function applyClarity(hex, clarity) {
+  return asHex(mixColor(hex, MUD, (1 - clarity) * MUD_MAX));
+}
+
+// 두 색이 얼마나 비슷한가 (0~1)
+function similarity(a, b) {
+  const A = hexRGB(asHex(a)), B = hexRGB(asHex(b));
+  const d = Math.hypot(A[0]-B[0], A[1]-B[1], A[2]-B[2]);
+  return Math.max(0, 1 - d / SIM_MAX);
+}
+// mixColor 는 'rgb(r,g,b)' 를 돌려주므로 hex 로 되돌린다
+function rgbStrToHex(s) {
+  const m = /rgb\((\d+),\s*(\d+),\s*(\d+)\)/.exec(String(s));
+  return m ? rgbHex(+m[1], +m[2], +m[3]) : '#000000';
+}
+function asHex(c) { return String(c).startsWith('#') ? c : rgbStrToHex(c); }
+
+// ---------- 5. 게임 상태 ----------
+const game = {
+  state: 'menu',      // 'menu' | 'catch' | 'stir' | 'result'
+  t0: 0,
+  drops: [],          // { paint, targetT, rank, weight, lane }
+  stirs: [],          // { targetT, rank }
+  catchEnd: 0,
+  spinT0: 0,
+  stirEnd: 0,
+  orderColor: '#000',
+  cust: CUSTOMERS[0],
+  askKey: 'ask1',
+  myColor: EMPTY,
+  clarity: 0,
+  matchPct: 0,
+  paper: null,
+  pal: null,
+  langRect: null,
+  againRect: null,
+  beginRect: null,
+  orderT: 0,
+  resultT: 0,
+  againShown: false,
+  settingsOpen: false,
+  flash: 0,           // 판정 표시용
+  flashRank: '',
+};
+
+function rand(n) { return Math.floor(Math.random() * n); }
+
+// 손님을 부른다. 아직 물감은 안 만든다 — 주문을 읽고 「만들기 시작」을 눌러야 시작.
+// (그전엔 손님이 걸어오는 중에 이미 방울이 떨어져서 주문을 볼 틈이 없었다)
+function startGame() {
+  const t = now();
+  game.state = 'order';
+  game.orderT = t;
+  game.flash = 0;
+
+  // 이번 판의 손님 — 왼쪽 밖에서 걸어 들어와 주문한다
+  game.cust = CUSTOMERS[rand(CUSTOMERS.length)];
+  game.askKey = ['ask1', 'ask2', 'ask3'][rand(3)];
+
+  // 이번 판의 원색 두 개
+  const pk = PAIRS[rand(PAIRS.length)];
+  const pair = game.pair = [P(pk[0]), P(pk[1])];
+
+  // 두 색의 개수를 치우치게 뽑는다 — 4:4 만 나오면 판마다 같은 색이 된다.
+  // 최소 2개씩은 나오게 해서 "한 색만 나오는 판"도 막는다.
+  const nB = 2 + rand(CATCH_BEATS - 3);            // 2 ~ 6
+  const order = [];
+  for (let i = 0; i < CATCH_BEATS; i++) order.push(i < nB ? pair[1] : pair[0]);
+  for (let i = order.length - 1; i > 0; i--) {     // 섞기
+    const j = rand(i + 1);
+    [order[i], order[j]] = [order[j], order[i]];
+  }
+
+  // 이 방울들을 **완벽하게** 연주했을 때 나오는 색이 곧 주문이다.
+  // 그래서 주문은 언제나 도달 가능하고, 비슷함(%)이 곧 리듬 성적이 된다.
+  game.drops = order.map((paint, i) => ({
+    paint,
+    targetT: 0,                                    // 「만들기 시작」을 누를 때 정해진다
+    rank: null,
+    weight: 0,
+    lane: paint.key === pair[0].key ? -1 : 1,      // 왼쪽 줄 / 오른쪽 줄
+    seed: rand(9999),
+  }));
+  game.orderColor = mixDrops(pair, game.drops.map(d => ({ paint: d.paint, weight: 1 })));
+
+  game.myColor = EMPTY;
+  game.clarity = 0;
+  game.matchPct = 0;
+  sfx.appear();
+}
+
+// 「만들기 시작」을 누른 순간부터 박자가 흐른다.
+// 박자표를 여기서 찍는 이유 — 주문을 들여다보는 시간이 사람마다 다르므로,
+// startGame 때 미리 찍어두면 늦게 누른 만큼 첫 방울이 이미 지나가 버린다.
+function beginMixing() {
+  const t = now();
+  game.state = 'catch';
+  game.t0 = t;
+
+  game.drops.forEach((d, i) => { d.targetT = t + LEAD_BEATS * BEAT + i * BEAT; });
+  game.catchEnd = t + LEAD_BEATS * BEAT + CATCH_BEATS * BEAT;
+
+  // 2절 — 붓이 WARM_SPINS 바퀴 헛돈 뒤부터 판정 시작
+  game.spinT0 = game.catchEnd;
+  game.stirs = [];
+  for (let i = 0; i < STIR_BEATS; i++) {
+    game.stirs.push({ targetT: game.spinT0 + (WARM_SPINS + i) * BEAT, rank: null });
+  }
+  game.stirEnd = game.spinT0 + (WARM_SPINS + STIR_BEATS) * BEAT;
+  sfx.tap();
+}
+
+function enterStir() {
+  game.state = 'stir';
+  // 1절 결과를 팔레트에 고정 — 2절 내내 이 색이 점점 맑아진다
+  game.baseColor = mixDrops(game.pair, game.drops);
+}
+
+function stirClarity() {
+  let s = 0;
+  for (const b of game.stirs) s += b.rank === 'perfect' ? 1 : (b.rank === 'good' ? 0.6 : 0);
+  return s / STIR_BEATS;
+}
+
+// 결과가 뜬 직후엔 입력을 받지 않는다 — 두드리던 손이 흘러들어오는 걸 막는다
+function resultLocked() { return now() - game.resultT < LOCK_BEATS * BEAT; }
+
+function finish() {
+  game.state = 'result';
+  game.resultT = now();
+  game.againShown = false;
+  game.clarity = stirClarity();
+  game.myColor = applyClarity(game.baseColor, game.clarity);
+  game.matchPct = Math.round(similarity(game.orderColor, game.myColor) * 1000) / 10;
+  if (saveBest(game.matchPct)) sfx.achv(); else sfx.caught();
+}
+
+// ---------- 6. 움직임 ----------
+function update(t, dt) {
+  const T = now();
+  const gw = judgeWindows().good;
+
+  if (game.flash > 0) game.flash -= dt;
+
+  if (game.state === 'catch') {
+    for (const d of game.drops) {
+      if (!d.rank && T > d.targetT + gw) { d.rank = 'miss'; d.weight = 0; }
+    }
+    if (T >= game.catchEnd) enterStir();
+    return;
+  }
+
+  if (game.state === 'stir') {
+    // ⚠️ 놓친 것으로 처리하는 기준도 젓기 전용 폭이어야 한다.
+    //    받기 폭(285)을 쓰면 판정은 후한데 285~320ms 사이가 먼저 miss 로 지워져 버린다.
+    for (const b of game.stirs) {
+      if (!b.rank && T > b.targetT + STIR_JUDGE.good) b.rank = 'miss';
+    }
+    if (T >= game.stirEnd) finish();
+    return;
+  }
+}
+
+// ---------- 7. 입력 ----------
+function markFlash(rank) { game.flash = 0.35; game.flashRank = rank; }
+
+// 아직 판정 안 된 목표 중 지금 시각에 가장 가까운 것
+function nearest(list) {
+  const T = now();
+  let best = null;
+  for (const it of list) {
+    if (it.rank) continue;
+    if (!best || Math.abs(T - it.targetT) < Math.abs(T - best.targetT)) best = it;
+  }
+  return best;
+}
+
+function tapCatch() {
+  const d = nearest(game.drops);
+  if (!d) return;
+  const r = judge(now(), d.targetT);
+  if (r.rank === 'miss') { sfx.nope(); markFlash('miss'); return; }   // 헛손질 — 방울은 그대로 둔다
+  d.rank = r.rank;
+  d.weight = r.rank === 'perfect' ? 1 : 0.5;   // 진한 한 방울 / 묽은 반 방울
+  judgeSound(r.rank);
+  beep(note(d.paint.tone), 0.12, 'sine', 0.12);
+  markFlash(r.rank);
+}
+
+function tapStir() {
+  const b = nearest(game.stirs);
+  if (!b) return;
+  const r = judge(now(), b.targetT, STIR_JUDGE);
+  if (r.rank === 'miss') { sfx.nope(); markFlash('miss'); return; }
+  b.rank = r.rank;
+  judgeSound(r.rank);
+  markFlash(r.rank);
+}
+
+// 메뉴 버튼 처리. 눌렀으면 true.
+function pressButton(b) {
+  switch (b.id) {
+    case 'start':    game.settingsOpen = false; startGame(); return true;
+    case 'settings': game.settingsOpen = !game.settingsOpen; sfx.tap(); return true;
+    case 'set-sfx':  setSfx(!sfxOn()); sfx.tap(); return true;
+    case 'set-vol':  setVolume(volume() <= 0.01 ? 1 : Math.round((volume() - 0.25) * 100) / 100);
+                     sfx.tap(); return true;
+  }
+  if (b.id.startsWith('set-lang-')) { setLang(b.data); sfx.tap(); return true; }
+  return false;
+}
+
+function onTap(x, y) {
+  if (game.state === 'menu') {
+    const b = hitButton(x, y);
+    if (b) pressButton(b);
+    else if (game.settingsOpen) { game.settingsOpen = false; sfx.tap(); }   // 바깥을 누르면 설정 닫기
+    return;
+  }
+
+  if (game.langRect && inRect(x, y, game.langRect)) { nextLang(); sfx.tap(); return; }
+
+  if (game.state === 'order') {
+    // 손님이 아직 걸어오는 중이면 못 누른다 — 주문을 보기도 전에 시작되면 안 되니까
+    if (custEnter() < 1) return;
+    if (game.beginRect && inRect(x, y, game.beginRect)) beginMixing();
+    return;
+  }
+  if (game.state === 'catch') { tapCatch(); return; }
+  if (game.state === 'stir')  { tapStir(); return; }
+
+  if (game.state === 'result') {
+    if (resultLocked()) return;                                   // 아직 결과 보는 중 — 조용히 무시
+    if (game.againRect && inRect(x, y, game.againRect)) startGame();
+    return;
+  }
+}
+
+// 키보드는 버튼을 겨냥할 수 없으니 잠금만 걸고 통과시킨다
+function onKey() {
+  if (game.state === 'menu') {
+    if (game.settingsOpen) { game.settingsOpen = false; sfx.tap(); } else startGame();
+    return;
+  }
+  if (game.state === 'order') { if (custEnter() >= 1) beginMixing(); return; }
+  if (game.state === 'result') { if (!resultLocked()) startGame(); return; }
+  onTap(-1, -1);
+}
+
+// ---------- 8. 그림 ----------
+// ---------- 버튼 ----------
+// ⚠️ crayon.js 엔 버튼 그리는 도구가 없다 (낚시·곤충채집도 각자 갖고 있다).
+//    그릴 때 누를 자리를 같이 등록해두고, 탭이 오면 그 목록에서 찾는다.
+//    그래서 **draw 가 한 번은 돌아야** 버튼을 누를 수 있다.
+let hotspots = [];
+
+function button(id, x, y, w, h, label, opt = {}) {
+  const col = opt.color || CRAYON.orange;
+  scribbleFill(rectRows(x, y, w, h, 9),
+    { color: opt.fill || CRAYON.cream, width: 10, seed: opt.seed || (id.length * 37 + (x | 0)), alpha: 0.92 });
+  crayonPath([[x, y], [x + w, y], [x + w, y + h], [x, y + h], [x, y]],
+    { color: col, width: opt.big ? 5 : 3, seed: (opt.seed || (id.length * 37 + (x | 0))) + 1 });
+  fitText(label, x + w / 2, y + h / 2, w - 16, opt.size || (opt.big ? 28 : 18),
+    opt.textColor || CRAYON.darkBrown);
+  hotspots.push({ id, x, y, w, h, data: opt.data });
+  return { id, x, y, w, h };
+}
+
+function hitButton(mx, my) {
+  for (let i = hotspots.length - 1; i >= 0; i--) {
+    const b = hotspots[i];
+    if (mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h) return b;
+  }
+  return null;
+}
+
+// 작업대는 오른쪽. 왼쪽은 손님 자리다 (그전엔 한가운데였고 화면 위쪽이 텅 비었다)
+function palRect(p) {
+  return {
+    x: p.x + p.w * 0.68,
+    y: p.y + p.h * 0.70,
+    rx: Math.min(p.w * 0.155, 175),
+    ry: Math.min(p.h * 0.125, 86),
+  };
+}
+
+// ---------- 손님 ----------
+// 손님 자리 (발끝). 판이 시작되면 왼쪽 밖에서 걸어 들어온다.
+function custSpot(p) { return { x: p.x + p.w * 0.25, y: p.y + p.h * 0.74 }; }
+
+// 0 = 아직 밖 · 1 = 다 들어옴. 첫 방울이 떨어지기 전(예고 시간)에 도착한다.
+function custEnter() {
+  const e = Math.min(1, Math.max(0, (now() - game.orderT) / (LEAD_BEATS * BEAT * 0.75)));
+  return 1 - Math.pow(1 - e, 3);          // 천천히 멈추기
+}
+
+// 손님 몸의 각 부분 위치. 말풍선을 머리 **위**에 띄우려면 머리 꼭대기를 알아야 해서 따로 뺐다.
+//   (처음엔 눈대중으로 올렸다가 말풍선 꼬리가 머리를 뚫고 지나갔다)
+// scribbleFill 에 넘길 가로줄 — 사다리꼴 모양으로 (crayon.js 엔 네모·타원만 있다)
+function trapRows(cx, top, bottom, halfTop, halfBottom, gap) {
+  const rows = [];
+  for (let y = top + gap * 0.5; y < bottom; y += gap) {
+    const half = halfTop + (halfBottom - halfTop) * ((y - top) / (bottom - top));
+    rows.push({ y, x1: cx - half, x2: cx + half });
+  }
+  return rows;
+}
+
+function custMetrics(groundY, s) {
+  const headR = s * 0.145;
+  const legH  = s * 0.23;
+  const bodyH = s * 0.36;
+  const bodyBottom = groundY - legH;
+  const bodyTop = bodyBottom - bodyH;
+  const headY = bodyTop - headR * 1.15;
+  return { headR, legH, bodyH, bodyTop, bodyBottom, headY, headTop: headY - headR * 1.55 };
+}
+
+function drawCustomer(x, groundY, s, cust, mood, bob) {
+  const sd = cust.seed;
+  const m = custMetrics(groundY + bob, s);
+  const bw = s * 0.13;                 // 몸 반너비
+
+  const gy = groundY + bob;
+
+  // 다리 + 신발
+  crayonPath([[x - bw*0.5, m.bodyBottom], [x - bw*0.55, gy]], { color: CRAYON.navy, width: 7, seed: sd });
+  crayonPath([[x + bw*0.5, m.bodyBottom], [x + bw*0.55, gy]], { color: CRAYON.navy, width: 7, seed: sd + 1 });
+  scribbleFill(ellipseRows(x - bw*0.62, gy, bw*0.42, bw*0.22, 5), { color: CRAYON.darkBrown, width: 6, seed: sd + 30, alpha: 0.9 });
+  scribbleFill(ellipseRows(x + bw*0.62, gy, bw*0.42, bw*0.22, 5), { color: CRAYON.darkBrown, width: 6, seed: sd + 31, alpha: 0.9 });
+
+  // 몸 — 어깨가 좁고 아래가 넓은 사다리꼴이라야 사람처럼 보인다.
+  // ⚠️ 색칠도 사다리꼴을 따라가야 한다. 네모로 칠했더니 아래 모서리가 외곽선 밖으로 삐져나왔다.
+  const shoulder = bw * 0.86;
+  const bodyPts = [[x - shoulder, m.bodyTop], [x + shoulder, m.bodyTop],
+                   [x + bw, m.bodyBottom], [x - bw, m.bodyBottom], [x - shoulder, m.bodyTop]];
+  scribbleFill(trapRows(x, m.bodyTop, m.bodyBottom, shoulder, bw, 8),
+    { color: cust.shirt, width: 9, seed: sd + 2, alpha: 0.92, overshoot: 4 });
+  crayonPath(bodyPts, { color: CRAYON.darkBrown, width: 2.5, seed: sd + 3 });
+
+  // 팔 + 손
+  const ay = m.bodyTop + m.bodyH*0.12, hy = m.bodyTop + m.bodyH*0.62, hx = bw*1.9;
+  crayonPath([[x - shoulder, ay], [x - hx, hy]], { color: cust.shirt, width: 7, seed: sd + 4 });
+  crayonPath([[x + shoulder, ay], [x + hx, hy]], { color: cust.shirt, width: 7, seed: sd + 5 });
+  scribbleFill(ellipseRows(x - hx, hy, bw*0.26, bw*0.26, 4), { color: CRAYON.skin, width: 6, seed: sd + 32, alpha: 0.95 });
+  scribbleFill(ellipseRows(x + hx, hy, bw*0.26, bw*0.26, 4), { color: CRAYON.skin, width: 6, seed: sd + 33, alpha: 0.95 });
+
+  // 목
+  crayonPath([[x, m.bodyTop], [x, m.headY + m.headR * 0.9]], { color: CRAYON.skin, width: 8, seed: sd + 6 });
+
+  // 머리
+  scribbleFill(ellipseRows(x, m.headY, m.headR, m.headR * 1.08, 7),
+    { color: CRAYON.skin, width: 8, seed: sd + 7, alpha: 0.96 });
+  crayonPath(ellipsePts(x, m.headY, m.headR, m.headR * 1.08),
+    { color: CRAYON.darkBrown, width: 2.5, seed: sd + 8 });
+
+  // 머리 모양 — 이마를 덮으면 표정이 안 보이므로 전부 꼭대기 위쪽에만 얹는다
+  const R = m.headR;
+  if (cust.style === 'cap') {
+    scribbleFill(ellipseRows(x, m.headY - R*0.62, R*0.98, R*0.52, 6),
+      { color: cust.hair, width: 7, seed: sd + 9, alpha: 0.96 });
+    // 챙 — 얼굴 쪽(왼쪽)으로 나오게
+    scribbleFill(ellipseRows(x - R*0.85, m.headY - R*0.36, R*0.72, R*0.15, 4),
+      { color: cust.hair, width: 6, seed: sd + 34, alpha: 0.96 });
+  } else {
+    scribbleFill(ellipseRows(x, m.headY - R*0.70, R*0.96, R*0.42, 6),
+      { color: cust.hair, width: 7, seed: sd + 9, alpha: 0.95 });
+    if (cust.style === 'long') {   // 양옆으로 흘러내리는 머리
+      scribbleFill(ellipseRows(x - R*0.88, m.headY + R*0.30, R*0.26, R*0.85, 6),
+        { color: cust.hair, width: 7, seed: sd + 35, alpha: 0.95 });
+      scribbleFill(ellipseRows(x + R*0.88, m.headY + R*0.30, R*0.26, R*0.85, 6),
+        { color: cust.hair, width: 7, seed: sd + 36, alpha: 0.95 });
+    }
+  }
+
+  // 얼굴 — 표정이 결과를 알려준다
+  const ex = m.headR * 0.38, ey = m.headY - m.headR * 0.10, r = Math.max(1.8, m.headR * 0.11);
+  if (mood === 'happy') {                       // 눈웃음 ^ ^
+    crayonPath([[x-ex-r*1.8, ey+r], [x-ex, ey-r*1.5], [x-ex+r*1.8, ey+r]], { color: CRAYON.black, width: 2.2, seed: sd + 10 });
+    crayonPath([[x+ex-r*1.8, ey+r], [x+ex, ey-r*1.5], [x+ex+r*1.8, ey+r]], { color: CRAYON.black, width: 2.2, seed: sd + 11 });
+  } else {
+    scribbleFill(ellipseRows(x-ex, ey, r, r*1.15, 4), { color: CRAYON.black, width: 2.6, seed: sd + 10, alpha: 0.9 });
+    scribbleFill(ellipseRows(x+ex, ey, r, r*1.15, 4), { color: CRAYON.black, width: 2.6, seed: sd + 11, alpha: 0.9 });
+  }
+  // 볼 — 있고 없고가 인상을 크게 바꾼다. 너무 크면 눈까지 덮어서 얼굴이 뭉개진다.
+  const by = m.headY + m.headR * 0.34, br = m.headR * 0.15;
+  crayonPath([[x - m.headR*0.66 - br, by], [x - m.headR*0.66 + br, by]],
+    { color: CRAYON.pink, width: 4.5, seed: sd + 37, alpha: 0.5 });
+  crayonPath([[x + m.headR*0.66 - br, by], [x + m.headR*0.66 + br, by]],
+    { color: CRAYON.pink, width: 4.5, seed: sd + 38, alpha: 0.5 });
+
+  const my = m.headY + m.headR * 0.48, mw = ex * 0.7;
+  if (mood === 'happy')    crayonPath([[x-mw, my-r*0.8], [x, my+r*2], [x+mw, my-r*0.8]], { color: CRAYON.black, width: 2.2, seed: sd + 12 });
+  else if (mood === 'sad') crayonPath([[x-mw, my+r*1.3], [x, my-r*0.8], [x+mw, my+r*1.3]], { color: CRAYON.black, width: 2.2, seed: sd + 12 });
+  else                     crayonPath([[x-mw*0.6, my], [x+mw*0.6, my]], { color: CRAYON.black, width: 2.2, seed: sd + 12 });
+
+  return m;
+}
+
+// 말풍선 — 주문 색 견본과 한마디가 들어간다
+function drawBubble(cx, bottomY, w, h, seed) {
+  const x = cx - w / 2, y = bottomY - h;
+  scribbleFill(rectRows(x, y, w, h, 9), { color: CRAYON.cream, width: 10, seed, alpha: 0.96 });
+  crayonPath([[x, y], [x+w, y], [x+w, y+h], [x, y+h], [x, y]],
+    { color: CRAYON.darkBrown, width: 2.5, seed: seed + 1 });
+  crayonPath([[cx - 11, y + h], [cx + 3, y + h + 17], [cx + 11, y + h]],
+    { color: CRAYON.darkBrown, width: 2.5, seed: seed + 2 });
+  return { x, y, w, h };
+}
+
+function drawPalette(pal, color, seed) {
+  scribbleFill(ellipseRows(pal.x, pal.y, pal.rx, pal.ry, 9),
+    { color: CRAYON.cream, width: 10, seed: seed, alpha: 0.95 });
+  crayonPath(ellipsePts(pal.x, pal.y, pal.rx, pal.ry),
+    { color: CRAYON.darkBrown, width: 3.5, seed: seed + 1 });
+  // 팔레트 안에 고인 물감
+  const ir = pal.rx * 0.72, iry = pal.ry * 0.66;
+  scribbleFill(ellipseRows(pal.x, pal.y, ir, iry, 8),
+    { color, width: 10, seed: seed + 2, alpha: 0.92 });
+  crayonPath(ellipsePts(pal.x, pal.y, ir, iry),
+    { color, width: 2.5, seed: seed + 3, alpha: 0.6 });
+}
+
+function drawSwatch(x, y, w, h, color, label, seed) {
+  scribbleFill(rectRows(x, y, w, h, 9), { color, width: 10, seed, alpha: 0.95 });
+  crayonPath([[x,y],[x+w,y],[x+w,y+h],[x,y+h],[x,y]],
+    { color: CRAYON.black, width: 2.5, seed: seed + 1 });
+  if (label) fitText(label, x + w / 2, y - 14, w + 40, 20, CRAYON.darkBrown);
+}
+
+// 물감통 세 개 — 가게라는 걸 그림으로 알려준다
+function drawJars(cx, cy, size) {
+  const gap = size * 2.1;
+  PAINT.forEach((paint, i) => {
+    const x = cx + (i - 1) * gap;
+    scribbleFill(rectRows(x - size * 0.62, cy - size * 0.7, size * 1.24, size * 1.5, 8),
+      { color: CRAYON.cream, width: 9, seed: 700 + i * 5, alpha: 0.9 });
+    scribbleFill(rectRows(x - size * 0.46, cy - size * 0.34, size * 0.92, size * 1.06, 7),
+      { color: paint.hex, width: 8, seed: 710 + i * 5, alpha: 0.95 });
+    crayonPath([[x - size*0.62, cy - size*0.7], [x + size*0.62, cy - size*0.7],
+                [x + size*0.62, cy + size*0.8], [x - size*0.62, cy + size*0.8], [x - size*0.62, cy - size*0.7]],
+      { color: CRAYON.darkBrown, width: 2.5, seed: 720 + i * 5 });
+  });
+}
+
+const SET_ROW_H = 44;
+const SET_H = SET_ROW_H * 3 + 16;    // 언어 · 효과음 · 음량
+
+function drawSettings(x, y, w) {
+  scribbleFill(rectRows(x, y, w, SET_H, 10), { color: CRAYON.cream, width: 11, seed: 610, alpha: 0.95 });
+  crayonPath([[x, y], [x + w, y], [x + w, y + SET_H], [x, y + SET_H], [x, y]],
+    { color: CRAYON.purple, width: 3.5, seed: 611 });
+  const bx = x + 10, bw = w - 20;
+  let row = 0;
+  const nextY = () => y + 8 + SET_ROW_H * row++;
+
+  // 언어는 각 언어를 **그 언어로** 써 둔다 — 어느 나라 사람이든 자기 것을 알아본다 (곤충채집에서 배운 것)
+  const NAMES = { ko: '한국어', en: 'English' };
+  const langs = ['ko', 'en'];
+  const ly = nextY(), lw = (bw - 8) / langs.length;
+  langs.forEach((code, i) => {
+    button('set-lang-' + code, bx + i * (lw + 8), ly, lw, SET_ROW_H - 8,
+      (code === crayonLang() ? '✔ ' : '') + NAMES[code],
+      { size: 16, color: code === crayonLang() ? CRAYON.orange : CRAYON.gray, data: code });
+  });
+  button('set-sfx', bx, nextY(), bw, SET_ROW_H - 8, tr('sfxRow', tr(sfxOn() ? 'on' : 'off')),
+    { size: 17, color: CRAYON.gray });
+  button('set-vol', bx, nextY(), bw, SET_ROW_H - 8, tr('volRow', Math.round(volume() * 100)),
+    { size: 17, color: CRAYON.gray });
+}
+
+function drawMenu(p) {
+  fitText(tr('title'), p.x + p.w/2, p.y + p.h*0.13, p.w*0.9, Math.min(58, p.w*0.075), CRAYON.redDark);
+  fitText(tr('subtitle'), p.x + p.w/2, p.y + p.h*0.13 + 38, p.w*0.8, Math.min(22, p.w*0.03), CRAYON.navy);
+
+  // 버튼을 한 덩어리로 잡는다 — 설정을 펼치면 덩어리가 통째로 위로 올라간다.
+  // (곤충채집에선 설정만 끌어올렸다가 메뉴 버튼과 겹쳤다고 적혀 있다)
+  const bw = Math.min(300, p.w * 0.30), bh = 62;
+  const sw = Math.min(190, p.w * 0.20), sh = 46;
+  const setH = game.settingsOpen ? SET_H + 14 : 0;
+  const blockH = bh + 16 + sh + 16 + setH + 40;
+  const top = Math.min(p.y + p.h * 0.36, p.y + p.h - blockH - 16);
+  const cx = p.x + p.w / 2;
+
+  button('start', cx - bw/2, top, bw, bh, tr('start'), { big: true, size: 30, color: CRAYON.orange });
+  button('settings', cx - sw/2, top + bh + 16, sw, sh, tr('settings'), { size: 17, color: CRAYON.purple });
+
+  if (game.settingsOpen) {
+    drawSettings(cx - Math.min(320, p.w * 0.34) / 2, top + bh + 16 + sh + 14, Math.min(320, p.w * 0.34));
+  } else {
+    if (save.best > 0) fitText(tr('best', pct1(save.best)), cx, top + bh + 16 + sh + 34, p.w*0.5, 22, CRAYON.darkBrown);
+    fitText(tr('howto'), cx, top + bh + 16 + sh + 62, p.w*0.7, 18, CRAYON.gray);
+    drawJars(cx, p.y + p.h * 0.90, Math.min(30, p.w * 0.032));
+  }
+}
+
+function draw(t) {
+  const s = crayonScreen();
+  hotspots = [];                       // 버튼 자리는 매 판 새로 등록한다
+  game.paper = drawSketchbook();
+
+  if (s.portrait) {
+    fitText(tr('rotate'), s.w / 2, s.h / 2, s.w * 0.88, 30, CRAYON.redDark);
+    return;
+  }
+
+  const p = game.paper;
+  const pal = game.pal = palRect(p);
+  const T = now();
+
+  // ---- 메뉴 ---- (메뉴에선 언어를 설정에서 바꾸므로 오른쪽 위 버튼을 안 그린다)
+  if (game.state === 'menu') { game.langRect = null; drawMenu(p); return; }
+
+  // 언어 버튼
+  const bw = 110, bh = 40;
+  game.langRect = { x: p.x + p.w - bw - 14, y: p.y + 12, w: bw, h: bh };
+  const L = game.langRect;
+  scribbleFill(rectRows(L.x, L.y, L.w, L.h, 9), { color: CRAYON.cream, width: 9, seed: 71, alpha: 0.9 });
+  crayonPath([[L.x, L.y], [L.x+L.w, L.y], [L.x+L.w, L.y+L.h], [L.x, L.y+L.h], [L.x, L.y]],
+    { color: CRAYON.black, width: 2.5, seed: 72 });
+  fitText(tr('langBtn'), L.x + L.w / 2, L.y + L.h / 2, L.w - 14, 19, CRAYON.navy);
+
+
+  // ---- 손님 ----
+  // 판이 시작되면 왼쪽 밖에서 걸어 들어와, 도착하면 말풍선으로 주문한다.
+  const spot = custSpot(p);
+  const e = custEnter();
+  const custH = Math.min(p.h * 0.44, 250);
+  const startX = p.x - p.w * 0.18;
+  const cxCust = startX + (spot.x - startX) * e;
+  const mood = game.state !== 'result' ? 'wait'
+             : (game.matchPct >= 90 ? 'happy' : game.matchPct >= 70 ? 'wait' : 'sad');
+  // 걸어올 땐 위아래로 통통, 서 있을 땐 아주 살짝 숨쉬듯
+  const bob = e < 1 ? Math.abs(Math.sin(T / 90)) * -7 : Math.sin(T / 420) * 2.5;
+  const cm = drawCustomer(cxCust, spot.y, custH * game.cust.scale, game.cust, mood, bob);
+
+  if (e >= 1) {
+    const isResult = game.state === 'result';
+    const bw3 = Math.min(230, p.w * 0.24);
+    const bh3 = isResult ? 58 : 104;
+    // 말풍선 바닥은 머리 꼭대기보다 위 — 꼬리(17px)가 머리를 안 뚫도록 여유를 준다
+    const bub = drawBubble(cxCust, cm.headTop - 22, bw3, bh3, 800);
+    if (isResult) {
+      // 결과에선 주문 견본을 오른쪽에서 나란히 비교하므로, 말풍선엔 반응만 담는다
+      const line = game.matchPct >= 90 ? 'reactWow' : game.matchPct >= 70 ? 'reactOk' : 'reactBad';
+      fitText(tr(line), bub.x + bw3 / 2, bub.y + bh3 / 2, bw3 - 18, 18, CRAYON.darkBrown);
+    } else {
+      const swW = bw3 * 0.42, swH = 44;
+      drawSwatch(bub.x + bw3 / 2 - swW / 2, bub.y + 12, swW, swH, game.orderColor, null, 810);
+      fitText(tr(game.askKey), bub.x + bw3 / 2, bub.y + 12 + swH + 24, bw3 - 18, 18, CRAYON.darkBrown);
+    }
+  }
+
+  // ---- 주문 받는 중 ----
+  // 손님을 보고 주문 색을 읽은 뒤, 준비되면 내가 시작한다.
+  if (game.state === 'order') {
+    drawPalette(pal, EMPTY, 60);
+    if (e < 1) {
+      // ⚠️ 반드시 지운다 — 안 지우면 지난 판의 버튼 자리가 남아서
+      //    손님이 걸어오는 중에도 그 자리를 누르면 시작돼 버린다
+      game.beginRect = null;
+      fitText(tr('waiting'), p.x + p.w * 0.68, p.y + p.h * 0.30, p.w * 0.4, 22, CRAYON.gray);
+    } else {
+      const bwO = Math.min(250, p.w * 0.26), bhO = 62;
+      const Bo = game.beginRect = { x: pal.x - bwO/2, y: p.y + p.h * 0.28, w: bwO, h: bhO };
+      scribbleFill(rectRows(Bo.x, Bo.y, Bo.w, Bo.h, 9), { color: CRAYON.yellow, width: 10, seed: 530, alpha: 0.9 });
+      crayonPath([[Bo.x,Bo.y],[Bo.x+Bo.w,Bo.y],[Bo.x+Bo.w,Bo.y+Bo.h],[Bo.x,Bo.y+Bo.h],[Bo.x,Bo.y]],
+        { color: CRAYON.darkBrown, width: 3.5, seed: 531 });
+      fitText(tr('beginMix'), Bo.x + Bo.w/2, Bo.y + Bo.h/2, Bo.w - 20, 26, CRAYON.darkBrown);
+      // 이번에 쓸 원색 두 개를 미리 보여준다 — 무슨 색이 떨어질지 알고 시작하게
+      game.pair.forEach((paint, i) => {
+        const jx = pal.x + (i - 0.5) * 78;
+        scribbleFill(ellipseRows(jx, Bo.y + bhO + 52, 24, 24, 7),
+          { color: paint.hex, width: 9, seed: 540 + i, alpha: 0.95 });
+        crayonPath(ellipsePts(jx, Bo.y + bhO + 52, 24, 24),
+          { color: CRAYON.darkBrown, width: 2.5, seed: 545 + i });
+      });
+    }
+    return;
+  }
+
+  // ---- 1절: 받기 ----
+  if (game.state === 'catch') {
+    const lineY = pal.y - pal.ry * 0.55;
+    // 판정선
+    crayonPath([[pal.x - pal.rx*1.05, lineY], [pal.x + pal.rx*1.05, lineY]],
+      { color: CRAYON.gray, width: 3, seed: 44, alpha: 0.8 });
+
+    const spawnY = p.y + p.h * 0.14;
+    const lead = LEAD_BEATS * BEAT;
+    for (const d of game.drops) {
+      const prog = 1 - (d.targetT - T) / lead;
+      if (prog < 0 || prog > 1.25) continue;
+      const x = pal.x + d.lane * pal.rx * 0.55;
+      const y = spawnY + (lineY - spawnY) * Math.min(prog, 1);
+      const rr = Math.min(20, p.w * 0.022);
+      // 이미 받은 방울은 흐리게 (묽은 반 방울은 더 흐리게)
+      const a = d.rank ? (d.rank === 'perfect' ? 0.25 : d.rank === 'good' ? 0.18 : 0.12) : 0.95;
+      scribbleFill(ellipseRows(x, y, rr, rr * 1.15, 7),
+        { color: d.paint.hex, width: 8, seed: d.seed, alpha: a });
+      if (!d.rank) crayonPath(ellipsePts(x, y, rr, rr * 1.15),
+        { color: CRAYON.black, width: 2, seed: d.seed + 1, alpha: 0.55 });
+    }
+
+    drawPalette(pal, mixDrops(game.pair, game.drops), 60);
+    fitText(tr('phase1'), p.x + p.w/2, p.y + 34, p.w*0.5, 28, CRAYON.redDark);
+    fitText(tr('catchHint'), p.x + p.w/2, pal.y + pal.ry + 34, p.w*0.7, 20, CRAYON.gray);
+  }
+
+  // ---- 2절: 젓기 ----
+  if (game.state === 'stir') {
+    const clar = stirClarity();
+    // 지금까지 저은 만큼 맑아진 색
+    drawPalette(pal, applyClarity(game.baseColor, clar), 60);
+
+    const rr = pal.rx * 0.55, rry = pal.ry * 0.5;
+    // 표식 ▲ (12시)
+    const mx = pal.x, my = pal.y - rry;
+    crayonPath([[mx - 13, my - 20], [mx + 13, my - 20], [mx, my - 3], [mx - 13, my - 20]],
+      { color: CRAYON.redDark, width: 3, seed: 88 });
+
+    // 붓 — spinT0 부터 한 박에 한 바퀴. 12시에서 출발한다.
+    const spin = (T - game.spinT0) / BEAT;
+    const ang = spin * Math.PI * 2 - Math.PI / 2;
+    const bx = pal.x + Math.cos(ang) * rr, by = pal.y + Math.sin(ang) * rry;
+    crayonPath([[pal.x, pal.y - pal.ry * 1.9], [bx, by]],
+      { color: CRAYON.darkBrown, width: 6, seed: 90 });
+    scribbleFill(ellipseRows(bx, by, 13, 13, 7),
+      { color: CRAYON.black, width: 8, seed: 91, alpha: 0.85 });
+
+    // 남은 젓기 횟수
+    const left = game.stirs.filter(b => !b.rank).length;
+    fitText(tr('phase2'), p.x + p.w/2, p.y + 34, p.w*0.5, 28, CRAYON.redDark);
+    fitText(tr('clarity', pct1(clar * 100)), p.x + p.w/2, p.y + 74, p.w*0.5, 24, CRAYON.darkGreen);
+    fitText(tr('stirHint'), p.x + p.w/2, pal.y + pal.ry + 34, p.w*0.7, 20, CRAYON.gray);
+
+    // 남은 박자를 점으로 (예고)
+    for (let i = 0; i < game.stirs.length; i++) {
+      const dx = pal.x - (game.stirs.length - 1) * 11 + i * 22;
+      const dy = pal.y + pal.ry + 62;
+      const b = game.stirs[i];
+      const col = !b.rank ? CRAYON.gray : (b.rank === 'miss' ? CRAYON.gray : CRAYON.darkGreen);
+      scribbleFill(ellipseRows(dx, dy, 7, 7, 6),
+        { color: col, width: 6, seed: 400 + i, alpha: b.rank && b.rank !== 'miss' ? 0.95 : 0.35 });
+    }
+  }
+
+  // ---- 판정 표시 ----
+  if (game.flash > 0 && (game.state === 'catch' || game.state === 'stir')) {
+    const txt = game.flashRank === 'perfect' ? 'PERFECT' : game.flashRank === 'good' ? 'GOOD' : 'MISS';
+    const col = game.flashRank === 'perfect' ? CRAYON.orange
+              : game.flashRank === 'good' ? CRAYON.darkGreen : CRAYON.gray;
+    fitText(txt, pal.x, pal.y - pal.ry - 46, p.w * 0.4, 30, col);
+  }
+
+  // ---- 결과 ----
+  if (game.state === 'result') {
+    // 왼쪽은 손님 자리이므로 결과판은 오른쪽 절반에 놓는다
+    const cx = p.x + p.w * 0.66, halfW = p.w * 0.60;
+    fitText(tr('done'), cx, p.y + p.h*0.13, halfW, Math.min(40, p.w*0.05), CRAYON.redDark);
+    const sw = Math.min(130, p.w * 0.135), sh = sw * 0.72;
+    drawSwatch(cx - sw - 18, p.y + p.h*0.28, sw, sh, game.orderColor, tr('order'), 501);
+    drawSwatch(cx + 18,      p.y + p.h*0.28, sw, sh, game.myColor,    tr('mine'),  511);
+    fitText(tr('match', pct1(game.matchPct)), cx, p.y + p.h*0.56, halfW, 30, CRAYON.navy);
+    fitText(tr('clarity', pct1(game.clarity * 100)), cx, p.y + p.h*0.65, halfW*0.8, 22, CRAYON.darkGreen);
+    fitText(tr('best', pct1(save.best)), cx, p.y + p.h*0.72, halfW*0.7, 20, CRAYON.darkBrown);
+
+    // 「한 번 더」 — 잠금이 풀린 뒤에야 나타난다.
+    // 버튼이 늦게 나타나는 것 자체가 "이제 눌러도 돼" 라는 신호가 된다.
+    const bw2 = Math.min(230, p.w * 0.24), bh2 = 54;
+    const B = game.againRect = { x: cx - bw2 / 2, y: p.y + p.h * 0.82, w: bw2, h: bh2 };
+    if (!resultLocked()) {
+      scribbleFill(rectRows(B.x, B.y, B.w, B.h, 9), { color: CRAYON.yellow, width: 10, seed: 520, alpha: 0.9 });
+      crayonPath([[B.x,B.y],[B.x+B.w,B.y],[B.x+B.w,B.y+B.h],[B.x,B.y+B.h],[B.x,B.y]],
+        { color: CRAYON.darkBrown, width: 3, seed: 521 });
+      fitText(tr('again'), B.x + B.w/2, B.y + B.h/2, B.w - 20, 26, CRAYON.darkBrown);
+      if (!game.againShown) { game.againShown = true; sfx.appear(); }
+    }
+  }
+}
+
+// ---------- 9. 돌리기 ----------
+crayonPointer(cv, onTap);
+crayonKeys({
+  Space:  onKey,
+  Enter:  onKey,
+  Escape: () => {
+    if (game.state !== 'menu') { game.state = 'menu'; game.settingsOpen = false; sfx.tap(); }
+    else if (game.settingsOpen) { game.settingsOpen = false; sfx.tap(); }
+  },
+});
+window.addEventListener('resize', () => crayonFit(cv));
+crayonLoop((t, dt) => { update(t, dt); draw(t); });
+
+// ============================================================
+// 자동 검증 (#test) — 가짜 시계로 함수를 직접 부른다.
+// ⚠️ 헤드리스 가상시간으로는 게임 진행을 못 본다. 반드시 함수를 직접 부를 것.
+// ============================================================
+// ⚠️ 세로(폰) 화면에선 draw 가 "돌려주세요"만 그리고 끝나므로 버튼 자리가 안 잡힌다.
+//    그대로 두면 시험이 조용히 터져서 통과/실패 둘 다 안 나온다. 이유를 적어준다.
+if (TEST_MODE && crayonScreen().portrait) {
+  document.title = '시험 건너뜀 — 가로 화면에서만 (창을 넓게)';
+}
+
+if (TEST_MODE && !crayonScreen().portrait) {
+  const fails = [];
+  const must = (ok, msg) => { if (!ok) fails.push(msg); };
+
+  // ⚠️ 시험이 진짜 저장을 건드리면 안 된다.
+  //    설정 버튼을 눌러보는 시험이 있는데, setSfx/setVolume/setLang 은 곧바로 localStorage 에 쓴다.
+  //    그냥 두면 이 파일을 #test 로 한 번 열 때마다 맞춰둔 효과음·음량·언어가 바뀐다.
+  const _realSet = LS.set;
+  LS.set = () => {};
+
+  must(safe.ok, '받기 판정 구간이 겹침 — GOOD ' + safe.good + ' × 2 > 간격 ' + Math.round(safe.minGap));
+  must(safeStir.ok, '젓기 판정 구간이 겹침 — GOOD ' + safeStir.good + ' × 2 > 간격 ' + Math.round(safeStir.minGap));
+
+  // ---- 젓기는 받기보다 후해야 한다 ----
+  const cw = judgeWindows();
+  must(STIR_JUDGE.perfect > cw.perfect && STIR_JUDGE.good > cw.good, '젓기가 받기보다 후하지 않음');
+  // 받기였다면 good 이었을 어긋남이 젓기에선 perfect 여야 한다
+  const mid = (cw.perfect + STIR_JUDGE.perfect) / 2;                  // 115 ~ 150 사이
+  must(judge(mid, 0).rank === 'good', '받기에서 ' + mid + 'ms 가 good 이 아님');
+  must(judge(mid, 0, STIR_JUDGE).rank === 'perfect', '젓기에서 ' + mid + 'ms 가 perfect 가 아님');
+  // 후해졌다고 해서 miss 가 사라지면 안 된다
+  must(judge(STIR_JUDGE.good + 40, 0, STIR_JUDGE).rank === 'miss', '젓기에서 한참 어긋났는데 miss 가 아님');
+
+  draw(0);
+  must(game.paper && game.paper.w > 0, '종이 영역 없음');
+
+  // ---- 물감 섞기 — 빛 섞기와 결과가 달라야 한다 ----
+  const R = P('red').hex, Y = P('yellow').hex, BL = P('blue').hex;
+  const green = hexRGB(paintMix(Y, BL, 0.5));
+  must(green[1] > green[0] + 25 && green[1] > green[2] + 25,
+       '노랑+파랑이 초록이 아님: ' + paintMix(Y, BL, 0.5));
+  const light = hexRGB(asHex(mixColor(Y, BL, 0.5)));
+  must(!(light[1] > light[0] + 25 && light[1] > light[2] + 25),
+       '비교용 mixColor 가 초록을 냄 — paintMix 가 필요없다는 뜻이니 확인할 것');
+  const purple = hexRGB(paintMix(R, BL, 0.5));
+  must(purple[0] > purple[1] + 20 && purple[2] > purple[1] + 20,
+       '빨강+파랑이 보라가 아님: ' + paintMix(R, BL, 0.5));
+  const orange = hexRGB(paintMix(R, Y, 0.5));
+  must(orange[0] > 200 && orange[2] < 110, '빨강+노랑이 주황이 아님: ' + paintMix(R, Y, 0.5));
+  must(paintMix(R, BL, 0) === R && paintMix(R, BL, 1) === BL, '끝값이 원색이 아님');
+  must(paintMix(R, R, 0.5) === R, '같은 색끼리 섞었는데 안 같음');
+
+  // ---- 완벽하게 연주하면 주문과 100% 가까워야 한다 ----
+  _fake = 10000;
+  startGame();
+  must(game.state === 'order', '시작하면 먼저 주문을 받아야 함: ' + game.state);
+  beginMixing();
+  must(game.state === 'catch', '만들기 시작 후 catch 가 아님: ' + game.state);
+  must(game.drops.length === CATCH_BEATS, '방울 수가 ' + game.drops.length);
+  must(game.orderColor !== EMPTY, '주문 색이 안 만들어짐');
+
+  // 한 판엔 원색이 딱 둘, 각각 최소 두 방울 (셋 다 섞이면 판마다 같은 흙색이 된다)
+  const keys = [...new Set(game.drops.map(d => d.paint.key))];
+  must(keys.length === 2, '한 판의 원색이 ' + keys.length + '개: ' + keys.join(','));
+  for (const k of keys) {
+    const n = game.drops.filter(d => d.paint.key === k).length;
+    must(n >= 2, k + ' 방울이 ' + n + '개뿐');
+  }
+  must(game.drops.every(d => d.lane === -1 || d.lane === 1), '방울 줄이 -1/+1 이 아님');
+
+  for (const d of game.drops) { _fake = d.targetT; tapCatch(); }
+  must(game.drops.every(d => d.rank === 'perfect'), '정확히 눌렀는데 perfect 가 아님');
+
+  _fake = game.catchEnd; update(0, 0.016);
+  must(game.state === 'stir', '1절이 끝났는데 stir 가 아님: ' + game.state);
+
+  for (const b of game.stirs) { _fake = b.targetT; tapStir(); }
+  must(game.stirs.every(b => b.rank === 'perfect'), '정확히 저었는데 perfect 가 아님');
+  must(Math.abs(stirClarity() - 1) < 1e-6, '완벽히 저었는데 맑기가 ' + stirClarity());
+
+  _fake = game.stirEnd; update(0, 0.016);
+  must(game.state === 'result', '2절이 끝났는데 result 가 아님: ' + game.state);
+  must(game.matchPct === 100, '완벽 연주인데 비슷함이 ' + game.matchPct + '%');
+  draw(0);
+
+  // ---- 젓기를 130ms 씩 어긋나게 쳐도 맑기 100% (후해진 판정이 끝까지 통하는지) ----
+  _fake = 210000;
+  startGame(); beginMixing();
+  for (const d of game.drops) { _fake = d.targetT; tapCatch(); }
+  _fake = game.catchEnd; update(0, 0.016);
+  for (const b of game.stirs) { _fake = b.targetT + 130; tapStir(); }
+  must(game.stirs.every(b => b.rank === 'perfect'), '130ms 어긋났는데 perfect 가 아님');
+  _fake = game.stirEnd; update(0, 0.016);
+  must(game.clarity === 1, '130ms 어긋나게 저었는데 맑기가 ' + game.clarity);
+  // 받기에서 같은 130ms 는 여전히 good 이어야 한다 (두 단계가 같이 후해지면 안 됨)
+  must(judge(130, 0).rank === 'good', '받기에서 130ms 가 good 이 아님: ' + judge(130, 0).rank);
+
+  // ---- 하나도 안 하면 탁하게라도 색이 나와야 한다 (실패가 벌이 아니라 숙제) ----
+  _fake = 50000;
+  startGame(); beginMixing();
+  _fake = game.catchEnd + 1; update(0, 0.016);
+  must(game.drops.every(d => d.rank === 'miss'), '안 눌렀는데 miss 가 아님');
+  _fake = game.stirEnd + 1; update(0, 0.016);
+  must(game.state === 'result', '아무것도 안 했는데 result 가 아님: ' + game.state);
+  must(game.clarity === 0, '안 저었는데 맑기가 ' + game.clarity);
+  must(game.myColor && game.myColor !== '#000', '색이 아예 안 나옴: ' + game.myColor);
+  draw(0);
+
+  // ---- 2절이 결과에 실제로 영향을 줘야 한다 ----
+  // ⚠️ 첫 프로토타입에서 여기가 무너졌었다: 맑기 63% 인데 비슷함 95% 가 나와서
+  //    젓기를 하나도 안 해도 점수가 안 깎였다. 원색을 셋 다 쓰면 다시 이렇게 된다.
+  _fake = 130000;
+  startGame(); beginMixing();
+  for (const d of game.drops) { _fake = d.targetT; tapCatch(); }   // 받기는 완벽하게
+  _fake = game.catchEnd; update(0, 0.016);
+  _fake = game.stirEnd;  update(0, 0.016);                          // 젓기는 하나도 안 함
+  must(game.state === 'result', '결과로 안 넘어감: ' + game.state);
+  must(game.clarity === 0, '안 저었는데 맑기가 ' + game.clarity);
+  must(game.matchPct < 70, '젓기를 하나도 안 했는데 비슷함이 ' + game.matchPct + '%');
+
+  // ---- good 은 묽은 반 방울, perfect 는 진한 한 방울 ----
+  _fake = 90000;
+  startGame(); beginMixing();
+  const w = judgeWindows();
+  _fake = game.drops[0].targetT;                      tapCatch();
+  _fake = game.drops[1].targetT + (w.perfect + w.good) / 2; tapCatch();
+  must(game.drops[0].weight === 1,   'perfect 무게가 ' + game.drops[0].weight);
+  must(game.drops[1].rank === 'good', '두 번째가 good 이 아님: ' + game.drops[1].rank);
+  must(game.drops[1].weight === 0.5, 'good 무게가 ' + game.drops[1].weight);
+
+  // ---- 엉뚱한 때 누르면 방울을 잡아먹지 않아야 한다 ----
+  const before = game.drops[2].rank;
+  _fake = game.drops[2].targetT - w.good * 3;  tapCatch();
+  must(game.drops[2].rank === before, '헛손질이 방울을 잡아먹음');
+
+  // ---- 소수점 ----
+  must(pct1(84.73) === '84.7', 'pct1(84.73) = ' + pct1(84.73));
+  must(pct1(100) === '100', '딱 맞췄을 때 100 이 아니라 ' + pct1(100));
+  must(pct1(0) === '0', 'pct1(0) = ' + pct1(0));
+  // ⚠️ 저장을 parseInt 로 읽으면 84.7 이 84 로 잘린다
+  must(parseFloat((84.7).toFixed(1)) === 84.7, '소수 저장이 안 됨');
+  // 리듬을 조금 다르게 치면 소수점 자리가 실제로 달라져야 한다 (정수면 둘 다 같게 보인다)
+  const seen = new Set();
+  for (let k = 0; k < 6; k++) {
+    _fake = 300000 + k * 40000;
+    startGame(); beginMixing();
+    const wj = judgeWindows();
+    game.drops.forEach((d, i) => { _fake = d.targetT + (i <= k ? 0 : (wj.perfect + wj.good) / 2); tapCatch(); });
+    _fake = game.catchEnd; update(0, 0.016);
+    game.stirs.forEach((b, i) => { _fake = b.targetT + (i <= k ? 0 : wj.perfect * 0.9); tapStir(); });
+    _fake = game.stirEnd; update(0, 0.016);
+    seen.add(game.matchPct);
+  }
+  must([...seen].some(v => !Number.isInteger(v)), '소수점 자리가 한 번도 안 나옴: ' + [...seen].join(' '));
+
+  // ---- 손님 ----
+  _fake = 500000;
+  startGame();
+  must(game.cust && game.cust.shirt, '손님이 안 정해짐');
+  must(game.cust.style && game.cust.scale, '손님 머리 모양·키가 없음');
+  must(['ask1','ask2','ask3'].includes(game.askKey), '주문 대사가 이상함: ' + game.askKey);
+  must(custEnter() < 1, '부르자마자 손님이 이미 다 들어와 있음');
+  _fake = game.orderT + LEAD_BEATS * BEAT;
+  must(custEnter() === 1, '손님이 안 들어옴: ' + custEnter());
+  draw(0);                                         // 손님·말풍선 그려도 안 터지는지
+  const custKeys = new Set(), custStyles = new Set();
+  for (let k = 0; k < 24; k++) {
+    _fake = 600000 + k * 30000; startGame();
+    custKeys.add(game.cust.seed); custStyles.add(game.cust.style);
+  }
+  must(custKeys.size >= 3, '손님이 늘 같은 사람임 (' + custKeys.size + '종류)');
+  must(custStyles.size >= 2, '머리 모양이 늘 같음 (' + [...custStyles].join(',') + ')');
+
+  // ---- 주문을 읽고 나서 내가 시작한다 ----
+  _fake = 700000;
+  startGame();
+  must(game.drops.every(d => d.targetT === 0), '아직 시작 안 했는데 박자표가 이미 찍힘');
+  draw(0);
+  must(!game.beginRect, '손님이 걸어오는 중인데 「만들기 시작」이 벌써 나옴');
+  onTap(game.pal.x, game.pal.y);                    // 걸어오는 중엔 눌러도 안 먹힌다
+  must(game.state === 'order', '손님이 오는 중에 시작돼버림: ' + game.state);
+  onKey();
+  must(game.state === 'order', '손님이 오는 중에 스페이스로 시작돼버림');
+
+  _fake = 700000 + LEAD_BEATS * BEAT;               // 손님 도착
+  draw(0);
+  must(game.beginRect, '손님이 왔는데 「만들기 시작」이 안 나옴');
+  onTap(game.paper.x + 20, game.paper.y + 20);      // 버튼 아닌 곳
+  must(game.state === 'order', '버튼 밖을 눌렀는데 시작됨');
+
+  // ⚠️ 여기가 핵심 — 주문을 오래 들여다본 뒤 눌러도 첫 방울은 **누른 시각 기준**이어야 한다.
+  //    박자표를 startGame 때 미리 찍어두면, 늦게 누른 만큼 첫 방울이 이미 지나가 버린다.
+  _fake = 700000 + 30000;                            // 30초나 들여다봄
+  draw(0);
+  onTap(game.beginRect.x + 5, game.beginRect.y + 5);
+  must(game.state === 'catch', '「만들기 시작」을 눌렀는데 ' + game.state);
+  must(game.drops[0].targetT === _fake + LEAD_BEATS * BEAT,
+       '늦게 눌렀더니 첫 방울이 어긋남: ' + (game.drops[0].targetT - _fake) + 'ms 뒤');
+  must(game.drops.every(d => d.targetT > _fake), '이미 지나간 방울이 있음');
+
+  // ---- 결과를 못 보고 넘어가면 안 된다 (실제 플레이에서 나온 문제) ----
+  _fake = 170000;
+  startGame(); beginMixing();
+  _fake = game.catchEnd; update(0, 0.016);
+  _fake = game.stirEnd;  update(0, 0.016);
+  must(game.state === 'result', '결과로 안 넘어감: ' + game.state);
+  draw(0);
+  must(game.againRect, '「한 번 더」 자리가 안 잡힘');
+
+  const rt = game.resultT;
+  _fake = rt + 60;                                       // 결과 뜨자마자 두드림
+  onTap(game.againRect.x + 5, game.againRect.y + 5);
+  must(game.state === 'result', '결과가 뜨자마자 눌렀는데 다시 시작됨');
+  onKey();
+  must(game.state === 'result', '결과가 뜨자마자 스페이스를 눌렀는데 다시 시작됨');
+
+  _fake = rt + LOCK_BEATS * BEAT + 50;  draw(0);         // 잠금 풀린 뒤
+  onTap(game.paper.x + 30, game.paper.y + game.paper.h - 30);   // 버튼 아닌 곳
+  must(game.state === 'result', '버튼 밖을 눌렀는데 다시 시작됨');
+  onTap(game.againRect.x + 5, game.againRect.y + 5);     // 버튼을 겨냥
+  must(game.state === 'order', '「한 번 더」를 눌렀는데 다음 손님이 안 옴: ' + game.state);
+
+  // ---- 언어 (놀이 중 오른쪽 위 버튼) ----
+  draw(0);
+  const lang0 = crayonLang();
+  onTap(game.langRect.x + 2, game.langRect.y + 2);
+  must(crayonLang() !== lang0, '언어가 안 바뀜');
+  draw(0);
+
+  // ---- 메뉴 ----
+  // ⚠️ 버튼은 그릴 때 자리가 등록된다 → 누르기 전에 draw 가 한 번 돌아야 한다
+  game.state = 'menu'; game.settingsOpen = false;
+  draw(0);
+  must(game.langRect === null, '메뉴에 오른쪽 위 언어 버튼이 남아 있음 (설정과 겹침)');
+  const findBtn = id => hotspots.find(b => b.id === id);
+  const tapBtn = id => { const b = findBtn(id); if (b) onTap(b.x + b.w/2, b.y + b.h/2); return !!b; };
+
+  must(findBtn('start'), '메뉴에 시작 버튼이 없음');
+  must(findBtn('settings'), '메뉴에 설정 버튼이 없음');
+  must(!findBtn('set-sfx'), '설정을 안 열었는데 설정 항목이 보임');
+
+  // 설정 열기 → 항목이 나와야 한다
+  tapBtn('settings'); draw(0);
+  must(game.settingsOpen, '설정이 안 열림');
+  must(findBtn('set-sfx') && findBtn('set-vol') && findBtn('set-lang-ko') && findBtn('set-lang-en'),
+       '설정 항목이 다 안 나옴');
+
+  // 효과음 끄기 / 켜기
+  const sfx0 = sfxOn();
+  tapBtn('set-sfx'); draw(0);
+  must(sfxOn() !== sfx0, '효과음이 안 바뀜');
+  tapBtn('set-sfx'); draw(0);
+  must(sfxOn() === sfx0, '효과음이 원래대로 안 돌아옴');
+
+  // 음량은 내려가다가 0에서 다시 100으로
+  setVolume(0.5); draw(0);
+  tapBtn('set-vol');
+  must(Math.abs(volume() - 0.25) < 1e-6, '음량이 0.25로 안 내려감: ' + volume());
+  tapBtn('set-vol');
+  must(volume() === 0, '음량이 0이 안 됨: ' + volume());
+  tapBtn('set-vol');
+  must(volume() === 1, '음량이 0에서 100%로 안 돌아감: ' + volume());
+  setVolume(1);
+
+  // 언어 고르기
+  tapBtn('set-lang-en'); draw(0);
+  must(crayonLang() === 'en', '설정에서 English 를 골랐는데 ' + crayonLang());
+  tapBtn('set-lang-ko'); draw(0);
+  must(crayonLang() === 'ko', '설정에서 한국어를 골랐는데 ' + crayonLang());
+
+  // 설정 바깥을 누르면 닫힌다
+  onTap(game.paper.x + 12, game.paper.y + game.paper.h - 12);
+  must(!game.settingsOpen, '바깥을 눌렀는데 설정이 안 닫힘');
+
+  // 설정이 열려 있으면 스페이스는 게임을 시작하지 말고 설정만 닫아야 한다
+  game.settingsOpen = true; draw(0);
+  onKey();
+  must(game.state === 'menu' && !game.settingsOpen, '설정 열린 채 스페이스 → 게임이 시작돼버림');
+
+  // 시작 버튼
+  draw(0);
+  tapBtn('start');
+  must(game.state === 'order', '시작 버튼을 눌렀는데 ' + game.state);
+
+  game.state = 'menu'; draw(0);
+  onKey();
+  must(game.state === 'order', '메뉴에서 스페이스로 시작이 안 됨: ' + game.state);
+  draw(0);
+
+  document.title = fails.length ? ('실패: ' + fails.join(' | ')) : '전부통과';
+
+  // ---- 화면 찍기 (#test:menu / :catch / :stir / :result) ----
+  if (SHOT) {
+    if (SHOT === 'menu' || SHOT === 'settings') {
+      game.state = 'menu';
+      game.settingsOpen = (SHOT === 'settings');
+      _fake = null;
+    }
+    else if (SHOT === 'order' || SHOT === 'coming') {
+      _fake = 200000;
+      startGame();
+      // :coming = 손님이 아직 걸어오는 중 / :order = 도착해서 주문한 뒤
+      _fake = 200000 + (SHOT === 'coming' ? LEAD_BEATS * BEAT * 0.35 : LEAD_BEATS * BEAT);
+    }
+    else {
+      _fake = 200000;
+      startGame();
+      beginMixing();
+      if (SHOT === 'catch') {
+        _fake = game.drops[0].targetT;  tapCatch();     // 한 방울 받은 직후
+        _fake = game.drops[2].targetT - BEAT * 0.4;     // 방울들이 떨어지는 중
+      } else {
+        for (const d of game.drops) { _fake = d.targetT; tapCatch(); }
+        _fake = game.catchEnd; update(0, 0.016);
+        for (let i = 0; i < 5; i++) { _fake = game.stirs[i].targetT; tapStir(); }
+        if (SHOT === 'stir') { _fake = game.stirs[5].targetT - BEAT * 0.3; }
+        else {
+          _fake = game.stirEnd; update(0, 0.016);
+          // :locked = 아직 두드림이 흘러들어오는 순간 / :result = 버튼이 나타난 뒤
+          _fake = game.resultT + (SHOT === 'locked' ? 200 : LOCK_BEATS * BEAT + 100);
+        }
+      }
+    }
+    draw(0);
+  } else {
+    _fake = null;
+  }
+
+  LS.set = _realSet;   // 저장 되돌리기
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,1469 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>좀비 마당 (가제)</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    overflow: hidden;
+    background: #87b8e0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', sans-serif;
+    cursor: default;
+    user-select: none;
+  }
+  canvas { display: block; }
+
+  /* ===== 조준점 (화면 정중앙 십자) ===== */
+  #crosshair {
+    position: fixed; left: 50%; top: 50%;
+    width: 22px; height: 22px;
+    transform: translate(-50%, -50%);
+    display: none;
+    pointer-events: none;
+    transition: transform .06s;
+  }
+  #crosshair::before, #crosshair::after {
+    content: ''; position: absolute; background: #fff;
+    box-shadow: 0 0 2px rgba(0,0,0,.9);
+  }
+  #crosshair::before { left: 50%; top: 0; width: 2px; height: 100%; margin-left: -1px; }
+  #crosshair::after  { top: 50%; left: 0; height: 2px; width: 100%; margin-top: -1px; }
+  #crosshair.hit { transform: translate(-50%, -50%) scale(1.6) rotate(45deg); }
+  #crosshair.hit::before, #crosshair.hit::after { background: #ff5252; }
+  #crosshair.head::before, #crosshair.head::after { background: #ffd23f; }
+
+  /* ===== HUD (화면에 붙은 정보들) ===== */
+  #hud {
+    position: fixed; inset: 0;
+    pointer-events: none;
+    display: none;
+    color: #fff;
+    text-shadow: 0 2px 6px rgba(0,0,0,.7);
+  }
+  #hud.on { display: block; }
+
+  /* 체력바 — 왼쪽 아래 */
+  #hp-wrap {
+    position: absolute; left: 24px; bottom: 24px;
+    width: 240px;
+  }
+  #hp-label { font-size: 13px; font-weight: 700; letter-spacing: 1px; opacity: .9; margin-bottom: 5px; }
+  #hp-bar {
+    height: 18px; border-radius: 9px;
+    background: rgba(0,0,0,.45);
+    border: 2px solid rgba(255,255,255,.75);
+    overflow: hidden;
+  }
+  #hp-fill {
+    height: 100%; width: 100%;
+    background: linear-gradient(90deg, #ff6b6b, #ff3b3b);
+    transition: width .18s;
+  }
+
+  /* 탄약 — 오른쪽 아래 */
+  #ammo {
+    position: absolute; right: 28px; bottom: 22px;
+    font-size: 44px; font-weight: 800;
+    letter-spacing: 1px;
+  }
+  #ammo .mag { font-size: 26px; opacity: .75; font-weight: 600; }
+  #ammo.empty { color: #ff8080; }
+  #reload-hint {
+    position: absolute; right: 28px; bottom: 6px;
+    font-size: 14px; font-weight: 700; color: #ffd76b;
+    display: none;
+  }
+  #reload-hint.on { display: block; animation: blink .7s infinite; }
+  @keyframes blink { 50% { opacity: .25; } }
+
+  /* 웨이브 / 점수 — 위쪽 */
+  #topbar {
+    position: absolute; top: 18px; left: 0; right: 0;
+    text-align: center;
+  }
+  #wave-num { font-size: 26px; font-weight: 800; }
+  #left-num { font-size: 15px; opacity: .9; margin-top: 3px; }
+  #score {
+    position: absolute; top: 20px; right: 28px;
+    font-size: 20px; font-weight: 700;
+    text-align: right;
+  }
+  #score .best { display: block; font-size: 13px; opacity: .75; font-weight: 500; }
+
+  /* 콤보 — 연속으로 잡으면 화면 왼쪽에 뜬다 */
+  #combo {
+    position: absolute; left: 50%; top: 26%;
+    transform: translateX(-50%);
+    font-size: 34px; font-weight: 900;
+    color: #ffd23f;
+    opacity: 0;
+    letter-spacing: 1px;
+  }
+  #combo.on { animation: comboPop .55s ease-out; }
+  @keyframes comboPop {
+    0%   { opacity: 0; transform: translateX(-50%) scale(.5) rotate(-6deg); }
+    30%  { opacity: 1; transform: translateX(-50%) scale(1.15) rotate(3deg); }
+    55%  { transform: translateX(-50%) scale(1); }
+    100% { opacity: 0; transform: translateX(-50%) scale(1); }
+  }
+
+  /* 알림 (보급 상자 획득 등) — 화면 아래 가운데 */
+  #toasts {
+    position: absolute; left: 50%; bottom: 130px;
+    transform: translateX(-50%);
+    display: flex; flex-direction: column-reverse;
+    align-items: center; gap: 6px;
+  }
+  #toasts div {
+    font-size: 19px; font-weight: 800;
+    animation: toastUp 1.5s ease-out forwards;
+  }
+  @keyframes toastUp {
+    0%   { opacity: 0; transform: translateY(14px); }
+    15%  { opacity: 1; transform: translateY(0); }
+    70%  { opacity: 1; }
+    100% { opacity: 0; transform: translateY(-16px); }
+  }
+
+  /* 웨이브 시작 큰 글씨 */
+  #wave-msg {
+    position: fixed; left: 50%; top: 38%;
+    transform: translate(-50%, -50%);
+    font-size: 58px; font-weight: 900;
+    color: #fff;
+    text-shadow: 0 4px 18px rgba(0,0,0,.65);
+    opacity: 0;
+    pointer-events: none;
+    letter-spacing: 2px;
+  }
+  #wave-msg.show { animation: waveIn 2.2s ease-out; }
+  @keyframes waveIn {
+    0%   { opacity: 0; transform: translate(-50%,-50%) scale(.6); }
+    18%  { opacity: 1; transform: translate(-50%,-50%) scale(1.06); }
+    28%  { transform: translate(-50%,-50%) scale(1); }
+    75%  { opacity: 1; }
+    100% { opacity: 0; }
+  }
+
+  /* 맞았을 때 화면 빨갛게 */
+  #hurt {
+    position: fixed; inset: 0;
+    background: radial-gradient(ellipse at center, transparent 35%, rgba(200,0,0,.75) 100%);
+    opacity: 0; pointer-events: none;
+    transition: opacity .35s;
+  }
+  #hurt.on { opacity: 1; transition: opacity .06s; }
+
+  /* ===== 시작 화면 ===== */
+  #overlay {
+    position: fixed; inset: 0;
+    background: linear-gradient(160deg, #1d2b3a 0%, #2f4a3a 100%);
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    color: #fff; cursor: pointer;
+    z-index: 10;
+    text-align: center;
+    padding: 20px;
+  }
+  #overlay h1 {
+    font-size: 54px; font-weight: 900; letter-spacing: 2px;
+    margin-bottom: 10px;
+    text-shadow: 0 4px 16px rgba(0,0,0,.5);
+  }
+  #overlay .sub { font-size: 17px; opacity: .8; margin-bottom: 34px; }
+  #overlay .keys {
+    display: grid; grid-template-columns: auto auto;
+    gap: 10px 18px; font-size: 16px;
+    background: rgba(0,0,0,.28);
+    padding: 22px 30px; border-radius: 14px;
+    margin-bottom: 32px;
+  }
+  #overlay .keys b {
+    background: rgba(255,255,255,.16);
+    padding: 3px 11px; border-radius: 6px;
+    font-family: ui-monospace, monospace; font-size: 14px;
+    text-align: center;
+  }
+  #overlay .keys span { text-align: left; opacity: .92; }
+  #overlay .tip {
+    font-size: 15px; line-height: 1.8; opacity: .85;
+    margin-bottom: 30px; max-width: 520px;
+  }
+  #overlay .tip b { font-weight: 800; }
+  #overlay .start {
+    font-size: 21px; font-weight: 800;
+    background: #4caf50; color: #fff;
+    padding: 15px 46px; border-radius: 40px;
+    box-shadow: 0 6px 20px rgba(0,0,0,.4);
+    animation: pulse 1.6s infinite;
+  }
+  @keyframes pulse { 50% { transform: scale(1.05); } }
+
+  /* ===== 게임 오버 ===== */
+  #gameover {
+    position: fixed; inset: 0;
+    background: rgba(20,5,5,.88);
+    display: none; flex-direction: column;
+    align-items: center; justify-content: center;
+    color: #fff; z-index: 11; text-align: center;
+  }
+  #gameover.on { display: flex; }
+  #gameover h2 { font-size: 60px; font-weight: 900; color: #ff5b5b; margin-bottom: 16px; }
+  #gameover .stat { font-size: 22px; margin-bottom: 8px; }
+  #gameover .stat b { font-size: 30px; color: #ffd76b; }
+  #gameover .again {
+    margin-top: 30px; font-size: 19px; font-weight: 700;
+    background: #4caf50; padding: 14px 40px; border-radius: 40px;
+    cursor: pointer;
+  }
+
+  /* ===== 인터넷 안 될 때 ===== */
+  #error-screen {
+    position: fixed; inset: 0;
+    background: #2a2a35; color: #fff;
+    display: none; flex-direction: column;
+    align-items: center; justify-content: center;
+    text-align: center; padding: 30px; z-index: 20;
+  }
+  #error-screen h2 { font-size: 30px; margin-bottom: 14px; }
+  #error-screen p { font-size: 17px; opacity: .85; line-height: 1.7; }
+</style>
+</head>
+<body>
+
+<div id="crosshair"></div>
+
+<div id="hud">
+  <div id="topbar">
+    <div id="wave-num">웨이브 1</div>
+    <div id="left-num">남은 좀비 0</div>
+  </div>
+  <div id="score">0점<span class="best">최고 0점</span></div>
+  <div id="hp-wrap">
+    <div id="hp-label">체력</div>
+    <div id="hp-bar"><div id="hp-fill"></div></div>
+  </div>
+  <div id="ammo">12<span class="mag"> / 60</span></div>
+  <div id="reload-hint">R — 재장전!</div>
+  <div id="combo"></div>
+  <div id="toasts"></div>
+</div>
+
+<div id="wave-msg"></div>
+<div id="hurt"></div>
+
+<div id="overlay">
+  <h1>좀비 마당</h1>
+  <div class="sub">몰려오는 좀비를 막아내고 최대한 오래 버티기</div>
+  <div class="keys">
+    <b>W A S D</b><span>걷기</span>
+    <b>마우스</b><span>둘러보기 / 조준</span>
+    <b>왼쪽 클릭</b><span>사격 (머리를 맞히면 한 방!)</span>
+    <b>R</b><span>재장전</span>
+    <b>Shift</b><span>달리기</span>
+    <b>Space</b><span>점프</span>
+    <b>ESC</b><span>잠깐 멈추기</span>
+  </div>
+  <div class="tip">
+    총알은 <b>한정</b>이에요 — 오른쪽 아래 <b>작은 숫자</b>가 남은 예비 총알.<br>
+    좀비를 잡으면 가끔 <b style="color:#7fb8ff">파란 상자(총알)</b>·<b style="color:#ff8080">빨간 상자(체력)</b>가 떨어져요. 밟으면 주워집니다.
+  </div>
+  <div class="start">화면을 클릭해서 시작</div>
+</div>
+
+<div id="gameover">
+  <h2>당했다!</h2>
+  <div class="stat">버틴 웨이브 <b id="go-wave">1</b></div>
+  <div class="stat">쓰러뜨린 좀비 <b id="go-kills">0</b>마리</div>
+  <div class="stat">점수 <b id="go-score">0</b></div>
+  <div class="again">클릭해서 다시 하기</div>
+</div>
+
+<div id="error-screen">
+  <h2>인터넷 연결이 필요해요</h2>
+  <p>이 게임은 3D 라이브러리(Three.js)를 인터넷에서 받아옵니다.<br>
+     와이파이를 확인하고 새로고침(F5) 해주세요.</p>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+// ===== Three.js 불러오기 (인터넷 필요) =====
+let THREE, PointerLockControls;
+try {
+  THREE = await import('three');
+  ({ PointerLockControls } = await import('three/addons/controls/PointerLockControls.js'));
+} catch (e) {
+  document.getElementById('overlay').style.display = 'none';
+  document.getElementById('error-screen').style.display = 'flex';
+  throw e;
+}
+
+// ===================================================================
+//  설정값 — 게임 밸런스를 바꾸고 싶으면 여기 숫자만 만지면 된다
+// ===================================================================
+const YARD = 18;          // 마당 반지름 (실제 크기는 36 x 36)
+const EYE_HEIGHT = 1.65;  // 플레이어 눈높이 (미터)
+const WALK_SPEED = 5.4;   // 걷기 속도
+const RUN_SPEED  = 8.4;   // 달리기 속도 (Shift)
+const JUMP_POWER = 5.0;   // 점프 힘
+const GRAVITY    = 16;    // 중력
+
+const MAG_SIZE   = 12;    // 탄창 한 개에 든 총알 수
+const START_RESERVE = 60; // 시작할 때 가진 예비 총알
+const WAVE_AMMO_BONUS = 30; // 웨이브를 깰 때마다 받는 예비 총알
+const FIRE_DELAY = 0.16;  // 총 쏘는 간격 (초)
+const RELOAD_TIME = 1.1;  // 재장전에 걸리는 시간 (초)
+const GUN_RANGE  = 60;    // 총알이 닿는 거리
+
+const ZOMBIE_HP    = 2;   // 좀비 체력 (몸통 1발 = 1, 머리 = 2 → 헤드샷 한 방!)
+const ZOMBIE_SPEED = 1.8; // 좀비 기본 속도 (웨이브마다 조금씩 빨라짐)
+const ZOMBIE_DMG   = 10;  // 좀비에게 맞았을 때 깎이는 체력
+const ZOMBIE_HIT_COOLDOWN = 1.0; // 좀비가 다시 때리기까지 기다리는 시간
+
+const DROP_CHANCE = 0.22;  // 좀비를 잡았을 때 보급 상자가 떨어질 확률
+const AMMO_PICKUP = 24;    // 탄약 상자에 든 총알
+const HP_PICKUP   = 30;    // 구급 상자로 회복하는 체력
+const COMBO_TIME  = 2.5;   // 이 시간 안에 또 잡으면 콤보가 이어진다
+
+const PLAYER_MAX_HP = 100;
+
+// 헤드리스(자동) 테스트 모드 — 주소 끝에 #test 를 붙이면 마우스 잠금 없이 게임이 돌아간다
+// 예: zombie-fps.html#test:180:6:0.6   (프레임수 : 좀비수 : 좌우 시선각)
+const TEST_MODE = location.hash.startsWith('#test');
+
+// ===== 장면 =====
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x8fc4e8);        // 밝은 하늘색
+scene.fog = new THREE.Fog(0x8fc4e8, 30, 68);         // 멀리 갈수록 하늘색으로 흐려짐
+
+const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 200);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ===== 빛 =====
+// 하늘빛(위는 하늘색, 아래는 땅 반사색) — 그림자 속도 너무 어둡지 않게
+scene.add(new THREE.HemisphereLight(0xbfe0ff, 0x6b8a4a, 1.1));
+
+const sun = new THREE.DirectionalLight(0xfff2d8, 1.5);
+sun.position.set(18, 30, 12);
+sun.castShadow = true;
+sun.shadow.mapSize.set(1024, 1024);
+sun.shadow.camera.left = -YARD - 6;
+sun.shadow.camera.right = YARD + 6;
+sun.shadow.camera.top = YARD + 6;
+sun.shadow.camera.bottom = -YARD - 6;
+sun.shadow.camera.far = 80;
+scene.add(sun);
+
+// ===================================================================
+//  맵 만들기 — 잔디 마당 + 판자 울타리 + 나무 상자 + 나무
+// ===================================================================
+const solids = [];   // 플레이어와 좀비가 통과할 수 없는 물체들 (원기둥으로 취급)
+
+// --- 잔디 바닥 ---
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(YARD * 2, YARD * 2),
+  new THREE.MeshLambertMaterial({ color: 0x6ca34a })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// 잔디에 색이 살짝 다른 얼룩을 뿌려서 밋밋함을 줄인다
+for (let i = 0; i < 40; i++) {
+  const patch = new THREE.Mesh(
+    new THREE.CircleGeometry(1 + Math.random() * 2.5, 8),
+    new THREE.MeshLambertMaterial({ color: Math.random() < .5 ? 0x77b054 : 0x5f9440 })
+  );
+  patch.rotation.x = -Math.PI / 2;
+  patch.position.set((Math.random() - .5) * YARD * 1.9, 0.01, (Math.random() - .5) * YARD * 1.9);
+  patch.receiveShadow = true;
+  scene.add(patch);
+}
+
+// --- 판자 울타리 (마당 네 변) ---
+const fenceMat = new THREE.MeshLambertMaterial({ color: 0xa9773f });
+const fenceDarkMat = new THREE.MeshLambertMaterial({ color: 0x8a5f31 });
+function buildFence() {
+  const postGeo = new THREE.BoxGeometry(0.22, 2.0, 0.22);
+  const plankGeo = new THREE.BoxGeometry(1.5, 0.32, 0.1);
+  for (const side of [0, 1, 2, 3]) {
+    for (let t = -YARD; t <= YARD; t += 1.6) {
+      // side 0,1 = z축 벽(앞뒤) / 2,3 = x축 벽(좌우)
+      const along = t;
+      const off = (side % 2 === 0) ? -YARD : YARD;
+      const x = side < 2 ? along : off;
+      const z = side < 2 ? off : along;
+
+      const post = new THREE.Mesh(postGeo, fenceDarkMat);
+      post.position.set(x, 1.0, z);
+      post.castShadow = true;
+      scene.add(post);
+
+      for (const h of [0.65, 1.35]) {
+        const plank = new THREE.Mesh(plankGeo, fenceMat);
+        plank.position.set(x + (side < 2 ? 0.8 : 0), h, z + (side < 2 ? 0 : 0.8));
+        if (side >= 2) plank.rotation.y = Math.PI / 2;
+        plank.castShadow = true;
+        scene.add(plank);
+      }
+    }
+  }
+}
+buildFence();
+
+// --- 나무 상자 (엄폐물) ---
+const crateMat = new THREE.MeshLambertMaterial({ color: 0xc08b4a });
+const crateEdgeMat = new THREE.MeshLambertMaterial({ color: 0x94663a });
+function addCrate(x, z, size = 1.2, stack = 1) {
+  for (let i = 0; i < stack; i++) {
+    const s = size * (1 - i * 0.12);
+    const box = new THREE.Mesh(
+      new THREE.BoxGeometry(s, s, s),
+      i % 2 === 0 ? crateMat : crateEdgeMat
+    );
+    box.position.set(x, s / 2 + i * size * 0.95, z);
+    box.rotation.y = Math.random() * 0.5;
+    box.castShadow = true;
+    box.receiveShadow = true;
+    scene.add(box);
+  }
+  solids.push({ x, z, r: size * 0.72, h: size * stack });
+}
+
+// 마당 곳곳에 상자 배치 (숨어서 재장전할 자리)
+const CRATE_SPOTS = [
+  [-9, -7, 1.3, 2], [8, -10, 1.2, 1], [12, 4, 1.4, 2], [-13, 6, 1.2, 1],
+  [3, 9, 1.3, 1], [-5, 13, 1.2, 2], [15, -3, 1.2, 1], [-14, -12, 1.3, 1],
+  [6, -2, 1.1, 1], [-3, -14, 1.2, 1], [14, 12, 1.3, 2], [-11, -2, 1.1, 1],
+];
+for (const [x, z, s, st] of CRATE_SPOTS) addCrate(x, z, s, st);
+
+// --- 나무 ---
+function addTree(x, z) {
+  const trunk = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.24, 0.32, 3, 6),
+    new THREE.MeshLambertMaterial({ color: 0x7a5433 })
+  );
+  trunk.position.set(x, 1.5, z);
+  trunk.castShadow = true;
+  scene.add(trunk);
+
+  for (let i = 0; i < 3; i++) {
+    const leaf = new THREE.Mesh(
+      new THREE.IcosahedronGeometry(1.5 - i * 0.28, 0),
+      new THREE.MeshLambertMaterial({ color: i === 0 ? 0x4f8f3a : 0x5da046 })
+    );
+    leaf.position.set(x + (Math.random() - .5) * .7, 3.1 + i * 0.85, z + (Math.random() - .5) * .7);
+    leaf.castShadow = true;
+    scene.add(leaf);
+  }
+  solids.push({ x, z, r: 0.5, h: 3 });
+}
+for (const [x, z] of [[-15, 14], [15, -14], [-15, -15], [13, 15], [0, -16]]) addTree(x, z);
+
+// ===================================================================
+//  플레이어
+// ===================================================================
+const controls = new PointerLockControls(camera, document.body);
+camera.position.set(0, EYE_HEIGHT, 0);
+
+const player = {
+  hp: PLAYER_MAX_HP,
+  vy: 0,          // 위아래 속도 (점프·중력용)
+  onGround: true,
+  alive: true,
+};
+
+const keys = {};
+addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (e.code === 'KeyR') startReload();
+  if (e.code === 'Space') e.preventDefault();
+});
+addEventListener('keyup', e => { keys[e.code] = false; });
+
+// ===================================================================
+//  총 (카메라에 붙여서 항상 화면 오른쪽 아래에 보이게)
+// ===================================================================
+const gun = new THREE.Group();
+{
+  const bodyMat = new THREE.MeshLambertMaterial({ color: 0x3a3f46 });
+  const darkMat = new THREE.MeshLambertMaterial({ color: 0x24272c });
+  const handMat = new THREE.MeshLambertMaterial({ color: 0xe0b088 });
+
+  const slide = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.11, 0.42), bodyMat);
+  slide.position.set(0, 0, -0.1);
+  gun.add(slide);
+
+  // 총열은 밝은 회색 — 검은 몸체와 구분돼야 "총구가 앞을 향한" 게 보인다
+  const barrel = new THREE.Mesh(
+    new THREE.BoxGeometry(0.06, 0.06, 0.2),
+    new THREE.MeshLambertMaterial({ color: 0x8b939c })
+  );
+  barrel.position.set(0, -0.005, -0.38);
+  gun.add(barrel);
+
+  // 가늠쇠 (총 위에 붙은 작은 돌기) — 이게 있으면 한눈에 총으로 보인다
+  const sight = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.04, 0.03), darkMat);
+  sight.position.set(0, 0.075, -0.28);
+  gun.add(sight);
+
+  const grip = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.24, 0.12), darkMat);
+  grip.position.set(0, -0.16, 0.04);
+  grip.rotation.x = -0.22;
+  gun.add(grip);
+
+  const hand = new THREE.Mesh(new THREE.BoxGeometry(0.115, 0.14, 0.13), handMat);
+  hand.position.set(0, -0.15, 0.05);
+  gun.add(hand);
+
+  // 총구 화염 (쏠 때만 잠깐 보임)
+  const flash = new THREE.Mesh(
+    new THREE.SphereGeometry(0.11, 6, 5),
+    new THREE.MeshBasicMaterial({ color: 0xffe066, transparent: true, opacity: 0.95 })
+  );
+  flash.position.set(0, 0, -0.48);
+  flash.scale.set(1, 0.8, 1.5);
+  flash.visible = false;
+  gun.add(flash);
+  gun.userData.flash = flash;
+
+  const flashLight = new THREE.PointLight(0xffcc55, 0, 6);
+  flashLight.position.set(0, 0, -0.5);
+  gun.add(flashLight);
+  gun.userData.flashLight = flashLight;
+}
+// 총이 화면을 너무 가리지 않게 — 작게 줄이고, 더 멀리·더 아래로 둔다
+gun.scale.setScalar(0.62);
+gun.position.set(0.29, -0.32, -0.78);
+gun.rotation.y = 0.1;   // 살짝 틀어서 총의 옆모습이 보이게 (정면이면 검은 덩어리로 보인다)
+camera.add(gun);
+scene.add(camera);
+
+const gunHome = gun.position.clone();  // 총의 원래 자리 (반동 후 돌아올 곳)
+let gunRecoil = 0;                     // 지금 얼마나 밀려 있는지
+let gunBob = 0;                        // 걸을 때 총이 흔들리는 정도
+let kick = 0;                          // 쏠 때 화면이 위로 들리는 양
+let appliedKick = 0;                   // 지금 카메라에 더해둔 들림 (다음 프레임에 빼야 함)
+
+// ===================================================================
+//  소리 (WebAudio로 직접 만든다 — 음원 파일 없이)
+// ===================================================================
+let audioCtx = null;
+function initAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+function noiseBurst(dur, freq, gainVal, type = 'lowpass') {
+  if (!audioCtx) return;
+  const len = Math.floor(audioCtx.sampleRate * dur);
+  const buf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / len);
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  const filt = audioCtx.createBiquadFilter();
+  filt.type = type;
+  filt.frequency.value = freq;
+  const g = audioCtx.createGain();
+  g.gain.setValueAtTime(gainVal, audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+  src.connect(filt); filt.connect(g); g.connect(audioCtx.destination);
+  src.start();
+}
+function tone(freq, dur, gainVal, type = 'square', slideTo = null) {
+  if (!audioCtx) return;
+  const osc = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+  if (slideTo) osc.frequency.exponentialRampToValueAtTime(slideTo, audioCtx.currentTime + dur);
+  g.gain.setValueAtTime(gainVal, audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+  osc.connect(g); g.connect(audioCtx.destination);
+  osc.start(); osc.stop(audioCtx.currentTime + dur);
+}
+const sfx = {
+  shoot:  () => { noiseBurst(0.13, 1800, 0.35); tone(180, 0.09, 0.18, 'square', 60); },
+  empty:  () => tone(150, 0.05, 0.12, 'square'),
+  hit:    () => tone(700, 0.06, 0.12, 'square', 400),
+  pop:    () => { noiseBurst(0.16, 900, 0.28); tone(320, 0.14, 0.16, 'sawtooth', 90); },
+  head:   () => { noiseBurst(0.18, 1400, 0.32); tone(880, 0.16, 0.2, 'square', 160); },
+  reload: () => { noiseBurst(0.05, 3000, 0.2, 'highpass');
+                  setTimeout(() => noiseBurst(0.06, 2200, 0.22, 'highpass'), 520); },
+  hurt:   () => { tone(120, 0.22, 0.25, 'sawtooth', 55); },
+  wave:   () => { tone(440, 0.12, 0.16, 'triangle');
+                  setTimeout(() => tone(660, 0.2, 0.16, 'triangle'), 130); },
+  over:   () => { tone(300, 0.5, 0.25, 'sawtooth', 60); },
+};
+
+// ===================================================================
+//  좀비 만들기 — 네모 블록을 쌓아 만든 귀여운(?) 좀비
+// ===================================================================
+const SKIN = [0x8fc46a, 0x7fb85c, 0xa3cf7d];   // 좀비 피부색 (초록 계열)
+const SHIRT = [0x6a7fb0, 0xb06a7f, 0x7fb06a, 0xa88a5c, 0x8a6ab0];
+
+function makeZombie(speedBonus) {
+  const g = new THREE.Group();
+  const skin = new THREE.MeshLambertMaterial({ color: SKIN[(Math.random() * SKIN.length) | 0] });
+  const shirt = new THREE.MeshLambertMaterial({ color: SHIRT[(Math.random() * SHIRT.length) | 0] });
+  const pants = new THREE.MeshLambertMaterial({ color: 0x4a4a58 });
+
+  // 몸통
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.78, 0.34), shirt);
+  torso.position.y = 1.02;
+  torso.castShadow = true;
+  torso.userData.part = 'body';
+  g.add(torso);
+
+  // 머리 — 여기를 맞히면 한 방!
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.44, 0.42), skin);
+  head.position.y = 1.63;
+  head.castShadow = true;
+  head.userData.part = 'head';
+  g.add(head);
+
+  // 눈 (크고 동그랗게 = 안 무섭게)
+  // ⚠️ 얼굴은 +z 쪽에 만든다 — lookAt()이 물체의 +z를 바라볼 대상 쪽으로 돌리기 때문.
+  //    -z에 만들면 좀비가 등을 보이고 걸어온다.
+  const eyeW = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  const eyeB = new THREE.MeshBasicMaterial({ color: 0x1a1a1a });
+  for (const sx of [-0.11, 0.11]) {
+    const white = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.13, 0.04), eyeW);
+    white.position.set(sx, 1.66, 0.215);
+    white.userData.part = 'head';
+    g.add(white);
+    const pupil = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.03), eyeB);
+    pupil.position.set(sx + (Math.random() - .5) * 0.03, 1.65, 0.235);
+    pupil.userData.part = 'head';
+    g.add(pupil);
+  }
+  // 입 (헤벌쭉)
+  const mouth = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.07, 0.04), eyeB);
+  mouth.position.set(0, 1.5, 0.215);
+  mouth.userData.part = 'head';
+  g.add(mouth);
+
+  // 팔 — 앞으로 쭉 뻗은 좀비 자세 (앞 = +z)
+  const arms = [];
+  for (const sx of [-0.33, 0.33]) {
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.17, 0.62), skin);
+    arm.position.set(sx, 1.25, 0.28);
+    arm.castShadow = true;
+    arm.userData.part = 'body';
+    g.add(arm);
+    arms.push(arm);
+  }
+
+  // 다리 (걸을 때 흔들린다)
+  const legs = [];
+  for (const sx of [-0.17, 0.17]) {
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.19, 0.66, 0.2), pants);
+    leg.position.set(sx, 0.33, 0);
+    leg.castShadow = true;
+    leg.userData.part = 'body';
+    g.add(leg);
+    legs.push(leg);
+  }
+
+  g.userData = {
+    hp: ZOMBIE_HP,
+    speed: ZOMBIE_SPEED + speedBonus + Math.random() * 0.35,
+    walkPhase: Math.random() * Math.PI * 2,
+    hitCooldown: 0,
+    legs, arms, torso, head,
+    flashTimer: 0,
+  };
+  return g;
+}
+
+const zombies = [];
+const debris = [];    // 터진 조각들
+const popups = [];    // 공중에 떠오르는 숫자·글자
+const pickups = [];   // 바닥에 떨어진 보급 상자
+
+// ===== 3D 공간에 글자를 띄운다 (데미지 숫자, HEADSHOT! 등) =====
+// 캔버스에 글자를 그려서 그림(텍스처)으로 만든 뒤, 항상 카메라를 향하는 Sprite에 붙인다
+function popText(pos, text, color, size = 0.55) {
+  const cv = document.createElement('canvas');
+  cv.width = 256; cv.height = 128;
+  const ctx = cv.getContext('2d');
+  ctx.font = 'bold 78px -apple-system, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineWidth = 12;
+  ctx.strokeStyle = 'rgba(0,0,0,.8)';
+  ctx.strokeText(text, 128, 64);
+  ctx.fillStyle = color;
+  ctx.fillText(text, 128, 64);
+
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: new THREE.CanvasTexture(cv),
+    transparent: true,
+    depthTest: false,     // 좀비 몸에 가려지지 않게
+  }));
+  sprite.position.copy(pos);
+  sprite.position.x += (Math.random() - .5) * 1.2;   // 여럿 겹쳐도 읽히게 좌우로 흩뿌린다
+  sprite.position.z += (Math.random() - .5) * 0.4;
+  sprite.scale.set(size * 2, size, 1);
+  scene.add(sprite);
+  popups.push({ sprite, life: 0.95, maxLife: 0.95, vy: 1.5 });
+}
+
+function updatePopups(dt) {
+  for (let i = popups.length - 1; i >= 0; i--) {
+    const p = popups[i];
+    p.sprite.position.y += p.vy * dt;
+    p.vy *= 0.94;                                   // 점점 천천히 떠오르다가
+    p.life -= dt;
+    const t = p.life / p.maxLife;
+    p.sprite.material.opacity = Math.min(1, t * 2.2);  // 끝에서 서서히 사라짐
+    if (p.life <= 0) {
+      p.sprite.material.map.dispose();
+      p.sprite.material.dispose();
+      scene.remove(p.sprite);
+      popups.splice(i, 1);
+    }
+  }
+}
+
+// ===== 화면 아래 알림 =====
+const toastsEl = document.getElementById('toasts');
+function toast(text, color = '#fff') {
+  const el = document.createElement('div');
+  el.textContent = text;
+  el.style.color = color;
+  toastsEl.appendChild(el);
+  setTimeout(() => el.remove(), 1500);
+}
+
+// ===== 콤보 =====
+const comboEl = document.getElementById('combo');
+function addCombo() {
+  combo++;
+  comboTimer = COMBO_TIME;
+  if (combo >= 2) {
+    comboEl.textContent = `${combo} 연속!`;
+    comboEl.classList.remove('on');
+    void comboEl.offsetWidth;
+    comboEl.classList.add('on');
+    tone(500 + combo * 60, 0.1, 0.14, 'triangle');  // 콤보가 쌓일수록 높은 소리
+  }
+}
+
+// ===== 좀비가 터지는 연출 =====
+function explodeZombie(z, headshot) {
+  const pos = z.position;
+  // 좀비를 이루던 블록들을 그대로 떼어내서 사방으로 날린다
+  for (const child of [...z.children]) {
+    z.remove(child);
+    child.position.add(pos);          // 그룹 기준 좌표 → 월드 좌표로
+    scene.add(child);
+    debris.push({
+      mesh: child,
+      vx: (Math.random() - .5) * 7,
+      vy: 3 + Math.random() * 5.5,
+      vz: (Math.random() - .5) * 7,
+      rx: (Math.random() - .5) * 12,
+      ry: (Math.random() - .5) * 12,
+      life: 1.6,
+    });
+  }
+  // 초록 반짝이 조각 추가 (팡! 하는 느낌)
+  const sparkMat = new THREE.MeshBasicMaterial({ color: 0x9ee06a });
+  for (let i = 0; i < 12; i++) {
+    const bit = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.11, 0.11), sparkMat);
+    bit.position.set(pos.x, pos.y + 1.1, pos.z);
+    scene.add(bit);
+    debris.push({
+      mesh: bit,
+      vx: (Math.random() - .5) * 10,
+      vy: 2 + Math.random() * 7,
+      vz: (Math.random() - .5) * 10,
+      rx: (Math.random() - .5) * 16,
+      ry: (Math.random() - .5) * 16,
+      life: 1.2,
+    });
+  }
+  scene.remove(z);
+  headshot ? sfx.head() : sfx.pop();
+}
+
+// ===================================================================
+//  보급 상자 — 좀비를 잡으면 가끔 떨어진다 (한자리에 숨지 말고 움직이게 하는 장치)
+// ===================================================================
+function makePickupMesh(type) {
+  const g = new THREE.Group();
+  const isAmmo = type === 'ammo';
+  const box = new THREE.Mesh(
+    new THREE.BoxGeometry(0.42, 0.34, 0.42),
+    new THREE.MeshLambertMaterial({ color: isAmmo ? 0x3a6fd8 : 0xd83a3a })
+  );
+  box.castShadow = true;
+  g.add(box);
+
+  // 상자 위의 흰 표시 — 탄약은 가로줄, 구급상자는 십자
+  const markMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  const bar1 = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.07, 0.09), markMat);
+  bar1.position.y = 0.18;
+  g.add(bar1);
+  if (!isAmmo) {
+    const bar2 = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.07, 0.28), markMat);
+    bar2.position.y = 0.18;
+    g.add(bar2);
+  }
+  return g;
+}
+
+function spawnPickup(x, z, type) {
+  const mesh = makePickupMesh(type);
+  mesh.position.set(x, 0.5, z);
+  scene.add(mesh);
+  pickups.push({ mesh, type, bob: Math.random() * 6.28, life: 22 });
+}
+
+function maybeDropPickup(pos) {
+  if (Math.random() > DROP_CHANCE) return;
+  // 체력이 적으면 구급상자가 나올 확률을 높여준다 (너무 억울하지 않게)
+  const wantHeal = player.hp < 55 ? 0.6 : 0.35;
+  spawnPickup(pos.x, pos.z, Math.random() < wantHeal ? 'heal' : 'ammo');
+}
+
+function updatePickups(dt) {
+  for (let i = pickups.length - 1; i >= 0; i--) {
+    const p = pickups[i];
+    p.bob += dt * 3;
+    p.mesh.position.y = 0.5 + Math.sin(p.bob) * 0.12;   // 둥둥 떠 있게
+    p.mesh.rotation.y += dt * 1.6;                       // 빙글빙글
+
+    p.life -= dt;
+    if (p.life < 4) p.mesh.visible = Math.floor(p.life * 6) % 2 === 0;  // 사라지기 전 깜빡
+
+    // 가까이 가면 자동으로 줍는다
+    const d = Math.hypot(camera.position.x - p.mesh.position.x,
+                         camera.position.z - p.mesh.position.z);
+    if (d < 1.3) {
+      if (p.type === 'ammo') {
+        reserve += AMMO_PICKUP;
+        toast(`탄약 +${AMMO_PICKUP}`, '#7fb8ff');
+        tone(600, 0.09, 0.16, 'triangle', 900);
+      } else {
+        player.hp = Math.min(PLAYER_MAX_HP, player.hp + HP_PICKUP);
+        toast(`체력 +${HP_PICKUP}`, '#ff8080');
+        tone(520, 0.12, 0.16, 'sine', 780);
+      }
+      scene.remove(p.mesh);
+      pickups.splice(i, 1);
+      updateHUD();
+      continue;
+    }
+
+    if (p.life <= 0) {
+      scene.remove(p.mesh);
+      pickups.splice(i, 1);
+    }
+  }
+}
+
+// ===================================================================
+//  총 쏘기
+// ===================================================================
+const raycaster = new THREE.Raycaster();
+raycaster.far = GUN_RANGE;
+
+let ammo = MAG_SIZE;          // 지금 탄창에 든 총알
+let reserve = START_RESERVE;  // 주머니에 남은 예비 총알 (0이면 재장전 못 함!)
+let reloading = false;
+let reloadTimer = 0;
+let fireTimer = 0;
+let score = 0;
+let kills = 0;
+let combo = 0;
+let comboTimer = 0;
+let best = Number(localStorage.getItem('zombie-fps-best') || 0);
+
+const crosshairEl = document.getElementById('crosshair');
+
+function shoot() {
+  if (reloading || fireTimer > 0 || !player.alive) return;
+  // 탄창이 비었는데 쏘려고 하면 알아서 재장전을 시작한다 (매번 R을 안 눌러도 되게)
+  if (ammo <= 0) { sfx.empty(); flashReloadHint(); startReload(); return; }
+
+  ammo--;
+  fireTimer = FIRE_DELAY;
+  gunRecoil = 1;
+  kick = Math.min(0.035, kick + 0.016);   // 연사할수록 조금씩 더 들린다
+  sfx.shoot();
+  updateHUD();
+
+  // 총구 화염 잠깐 켜기
+  const flash = gun.userData.flash, fl = gun.userData.flashLight;
+  flash.visible = true;
+  flash.rotation.z = Math.random() * 3;
+  fl.intensity = 3;
+  setTimeout(() => { flash.visible = false; fl.intensity = 0; }, 45);
+
+  // 화면 정중앙에서 레이저를 쏘듯 검사 → 뭐가 맞았나?
+  raycaster.setFromCamera({ x: 0, y: 0 }, camera);
+  const hits = raycaster.intersectObjects(zombies, true);
+
+  if (hits.length > 0) {
+    const hit = hits[0];
+    const zombie = hit.object.parent;          // 맞은 블록의 주인 좀비
+    const part = hit.object.userData.part;
+    const dmg = part === 'head' ? 2 : 1;
+
+    zombie.userData.hp -= dmg;
+    zombie.userData.flashTimer = 0.09;         // 맞으면 잠깐 하얗게
+    bloodPuff(hit.point);
+
+    const headshot = part === 'head';
+    crosshairEl.classList.add('hit');
+    crosshairEl.classList.toggle('head', headshot);   // 헤드샷이면 조준점이 금색
+    setTimeout(() => crosshairEl.classList.remove('hit', 'head'), 110);
+
+    if (zombie.userData.hp <= 0) {
+      const idx = zombies.indexOf(zombie);
+      if (idx >= 0) zombies.splice(idx, 1);
+      explodeZombie(zombie, headshot);
+      kills++;
+
+      addCombo();
+      const base = headshot ? 150 : 100;
+      const bonus = (combo - 1) * 25;           // 연속으로 잡을수록 보너스
+      score += base + bonus;
+
+      // 공중에 점수가 떠오른다
+      const at = zombie.position.clone();
+      at.y += 1.5;
+      popText(at, `+${base + bonus}`, headshot ? '#ffd23f' : '#ffffff', headshot ? 0.7 : 0.55);
+      if (headshot) {
+        const up = at.clone();
+        up.y += 0.95;
+        popText(up, '헤드샷!', '#ff9f1c', 0.48);
+      }
+
+      maybeDropPickup(zombie.position);
+      updateHUD();
+    } else {
+      sfx.hit();
+    }
+  }
+
+  if (ammo === 0) flashReloadHint();
+}
+
+// 맞은 자리에 초록 물감이 튀는 효과
+function bloodPuff(point) {
+  const mat = new THREE.MeshBasicMaterial({ color: 0x8ede5e });
+  for (let i = 0; i < 5; i++) {
+    const bit = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.07, 0.07), mat);
+    bit.position.copy(point);
+    scene.add(bit);
+    debris.push({
+      mesh: bit,
+      vx: (Math.random() - .5) * 4,
+      vy: 1 + Math.random() * 3,
+      vz: (Math.random() - .5) * 4,
+      rx: (Math.random() - .5) * 10,
+      ry: (Math.random() - .5) * 10,
+      life: 0.6,
+    });
+  }
+}
+
+function startReload() {
+  if (reloading || ammo === MAG_SIZE || !player.alive) return;
+  if (!controls.isLocked && !TEST_MODE) return;
+  if (reserve <= 0) { sfx.empty(); return; }   // 예비 총알이 없으면 재장전 불가
+  reloading = true;
+  reloadTimer = RELOAD_TIME;
+  sfx.reload();
+  document.getElementById('reload-hint').classList.remove('on');
+}
+
+function flashReloadHint() {
+  document.getElementById('reload-hint').classList.add('on');
+}
+
+addEventListener('mousedown', e => {
+  if (e.button === 0 && controls.isLocked) shoot();
+});
+
+// ===================================================================
+//  웨이브 (좀비가 몰려오는 차례)
+// ===================================================================
+let wave = 0;
+let spawnQueue = 0;      // 아직 등장하지 않은 좀비 수
+let spawnTimer = 0;
+let restTimer = 0;       // 웨이브 사이 쉬는 시간
+let waveActive = false;
+
+function startWave(n) {
+  wave = n;
+  spawnQueue = 3 + n * 2;             // 웨이브가 갈수록 좀비가 많아진다
+  spawnTimer = 0;
+  waveActive = true;
+  showWaveMsg(`웨이브 ${n}`);
+  sfx.wave();
+  updateHUD();
+}
+
+function spawnZombie() {
+  const z = makeZombie(Math.min(wave * 0.1, 1.6));  // 웨이브마다 조금씩 빨라짐 (최대치 있음)
+  // 마당 가장자리 랜덤한 곳에서 등장
+  const angle = Math.random() * Math.PI * 2;
+  const dist = YARD - 1.5;
+  z.position.set(Math.cos(angle) * dist, 0, Math.sin(angle) * dist);
+  scene.add(z);
+  zombies.push(z);
+}
+
+const waveMsgEl = document.getElementById('wave-msg');
+function showWaveMsg(text) {
+  waveMsgEl.textContent = text;
+  waveMsgEl.classList.remove('show');
+  void waveMsgEl.offsetWidth;     // 애니메이션 다시 트리거하는 방법
+  waveMsgEl.classList.add('show');
+}
+
+// ===================================================================
+//  HUD 갱신
+// ===================================================================
+const hpFill = document.getElementById('hp-fill');
+const ammoEl = document.getElementById('ammo');
+const waveNumEl = document.getElementById('wave-num');
+const leftNumEl = document.getElementById('left-num');
+const scoreEl = document.getElementById('score');
+
+function updateHUD() {
+  hpFill.style.width = Math.max(0, player.hp) / PLAYER_MAX_HP * 100 + '%';
+  // 큰 숫자 = 탄창에 든 총알, 작은 숫자 = 주머니에 남은 예비 총알
+  ammoEl.innerHTML = `${reloading ? '…' : ammo}<span class="mag"> / ${reserve}</span>`;
+  ammoEl.classList.toggle('empty', ammo === 0 && !reloading);
+  waveNumEl.textContent = waveActive ? `웨이브 ${wave}` : (wave ? '다음 웨이브 준비…' : '웨이브 1');
+  leftNumEl.textContent = `남은 좀비 ${zombies.length + spawnQueue}`;
+  scoreEl.innerHTML = `${score}점<span class="best">최고 ${Math.max(best, score)}점</span>`;
+}
+
+// ===================================================================
+//  플레이어가 맞았을 때
+// ===================================================================
+const hurtEl = document.getElementById('hurt');
+function damagePlayer(amount) {
+  if (!player.alive) return;
+  player.hp -= amount;
+  sfx.hurt();
+  hurtEl.classList.add('on');
+  setTimeout(() => hurtEl.classList.remove('on'), 120);
+  updateHUD();
+  if (player.hp <= 0) gameOver();
+}
+
+function gameOver() {
+  player.alive = false;
+  sfx.over();
+  best = Math.max(best, score);
+  localStorage.setItem('zombie-fps-best', String(best));
+  document.getElementById('go-wave').textContent = wave;
+  document.getElementById('go-kills').textContent = kills;
+  document.getElementById('go-score').textContent = score;
+  document.getElementById('gameover').classList.add('on');
+  controls.unlock();
+}
+
+function restart() {
+  // 남은 좀비·조각·보급상자·떠 있는 글자 정리
+  for (const z of zombies) scene.remove(z);
+  zombies.length = 0;
+  for (const d of debris) scene.remove(d.mesh);
+  debris.length = 0;
+  for (const p of pickups) scene.remove(p.mesh);
+  pickups.length = 0;
+  for (const p of popups) {
+    p.sprite.material.map.dispose();
+    p.sprite.material.dispose();
+    scene.remove(p.sprite);
+  }
+  popups.length = 0;
+
+  player.hp = PLAYER_MAX_HP;
+  player.alive = true;
+  player.vy = 0;
+  camera.position.set(0, EYE_HEIGHT, 0);
+  ammo = MAG_SIZE;
+  reserve = START_RESERVE;
+  reloading = false;
+  score = 0; kills = 0;
+  combo = 0; comboTimer = 0;
+  kick = 0; appliedKick = 0;
+  wave = 0; spawnQueue = 0; waveActive = false; restTimer = 2.0;
+
+  document.getElementById('gameover').classList.remove('on');
+  updateHUD();
+  controls.lock();
+}
+
+document.getElementById('gameover').addEventListener('click', restart);
+
+// ===================================================================
+//  시작 / 일시정지
+// ===================================================================
+const overlay = document.getElementById('overlay');
+const hud = document.getElementById('hud');
+let started = false;
+
+overlay.addEventListener('click', () => { initAudio(); controls.lock(); });
+renderer.domElement.addEventListener('click', () => {
+  if (!controls.isLocked && player.alive) controls.lock();
+});
+
+controls.addEventListener('lock', () => {
+  overlay.style.display = 'none';
+  crosshairEl.style.display = 'block';
+  hud.classList.add('on');
+  if (!started) {
+    started = true;
+    restTimer = 2.0;      // 시작하고 2초 뒤 첫 웨이브
+    updateHUD();
+  }
+});
+controls.addEventListener('unlock', () => {
+  if (!player.alive) return;             // 게임오버 화면이 이미 떠 있음
+  overlay.style.display = 'flex';
+  crosshairEl.style.display = 'none';
+  hud.classList.remove('on');
+});
+
+// ===================================================================
+//  물체와 부딪히지 않게 밀어내기 (상자·나무는 원기둥이라고 생각한다)
+// ===================================================================
+function pushOutOfSolids(pos, radius) {
+  for (const s of solids) {
+    const dx = pos.x - s.x, dz = pos.z - s.z;
+    const d = Math.hypot(dx, dz);
+    const minD = s.r + radius;
+    if (d < minD && d > 0.0001) {
+      // 상자 위에 올라간 상태면 통과시키지 않고 옆으로 밀어낸다
+      const push = (minD - d);
+      pos.x += dx / d * push;
+      pos.z += dz / d * push;
+    }
+  }
+  // 울타리 밖으로 못 나가게
+  const lim = YARD - 0.7;
+  pos.x = Math.max(-lim, Math.min(lim, pos.x));
+  pos.z = Math.max(-lim, Math.min(lim, pos.z));
+}
+
+// ===================================================================
+//  매 순간 반복되는 게임 루프
+// ===================================================================
+const clock = new THREE.Clock();
+const whiteMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+
+// 게임 시간을 dt초만큼 흘려보낸다 (그리기는 안 함)
+function stepGame(dt) {
+  if ((controls.isLocked || TEST_MODE) && player.alive) {
+    updatePlayer(dt);
+    updateWaves(dt);
+    updateZombies(dt);
+    updatePickups(dt);
+    // 콤보는 시간이 지나면 끊긴다
+    if (comboTimer > 0) {
+      comboTimer -= dt;
+      if (comboTimer <= 0) combo = 0;
+    }
+  }
+  updateDebris(dt);      // 조각은 멈춰 있어도 계속 떨어지게
+  updatePopups(dt);
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);   // 프레임이 튀어도 0.05초까지만
+  stepGame(dt);
+  renderer.render(scene, camera);
+}
+
+function updatePlayer(dt) {
+  // --- 이동 ---
+  const forward = (keys.KeyW ? 1 : 0) - (keys.KeyS ? 1 : 0);
+  const right   = (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0);
+  const running = keys.ShiftLeft || keys.ShiftRight;
+  const speed = running ? RUN_SPEED : WALK_SPEED;
+
+  // 대각선으로 갈 때 더 빨라지지 않도록 나눠준다
+  const norm = (forward && right) ? 0.7071 : 1;
+  if (forward) controls.moveForward(forward * speed * norm * dt);
+  if (right)   controls.moveRight(right * speed * norm * dt);
+
+  // --- 점프 & 중력 ---
+  if (keys.Space && player.onGround) {
+    player.vy = JUMP_POWER;
+    player.onGround = false;
+  }
+  player.vy -= GRAVITY * dt;
+  camera.position.y += player.vy * dt;
+  if (camera.position.y <= EYE_HEIGHT) {
+    camera.position.y = EYE_HEIGHT;
+    player.vy = 0;
+    player.onGround = true;
+  }
+
+  pushOutOfSolids(camera.position, 0.4);
+
+  // --- 총 흔들림(걸을 때) & 반동 ---
+  const moving = (forward || right) && player.onGround;
+  gunBob += dt * (running ? 13 : 9);
+  const bobX = moving ? Math.sin(gunBob) * 0.012 : 0;
+  const bobY = moving ? Math.abs(Math.cos(gunBob)) * 0.012 : 0;
+
+  // 쏠 때 화면이 살짝 위로 들렸다가 내려온다
+  // (지난 프레임에 더해둔 만큼 먼저 빼야 마우스 조준과 어긋나지 않는다)
+  camera.rotation.x -= appliedKick;
+  kick = Math.max(0, kick - dt * 5.5);
+  appliedKick = kick;
+  camera.rotation.x += appliedKick;
+
+  gunRecoil = Math.max(0, gunRecoil - dt * 9);
+  gun.position.set(
+    gunHome.x + bobX,
+    gunHome.y + bobY - gunRecoil * 0.012,
+    gunHome.z + gunRecoil * 0.07
+  );
+  gun.rotation.x = gunRecoil * 0.22;
+
+  // --- 사격 간격 / 재장전 ---
+  if (fireTimer > 0) fireTimer -= dt;
+  if (reloading) {
+    reloadTimer -= dt;
+    // 재장전 중엔 총이 아래로 내려갔다 올라온다
+    const t = 1 - Math.abs(reloadTimer / RELOAD_TIME - 0.5) * 2;
+    gun.position.y -= t * 0.18;
+    gun.rotation.z = t * 0.5;
+    if (reloadTimer <= 0) {
+      reloading = false;
+      // 예비 총알에서 탄창에 채울 만큼만 꺼내온다
+      const need = MAG_SIZE - ammo;
+      const take = Math.min(need, reserve);
+      ammo += take;
+      reserve -= take;
+      gun.rotation.z = 0;
+      updateHUD();
+    }
+  }
+}
+
+function updateWaves(dt) {
+  if (!waveActive) {
+    // 쉬는 시간 → 다음 웨이브
+    restTimer -= dt;
+    if (restTimer <= 0) startWave(wave + 1);
+    return;
+  }
+
+  // 좀비를 한 마리씩 차례로 등장시킨다 (한꺼번에 나오면 정신없음)
+  if (spawnQueue > 0) {
+    spawnTimer -= dt;
+    if (spawnTimer <= 0) {
+      spawnZombie();
+      spawnQueue--;
+      spawnTimer = Math.max(0.45, 1.2 - wave * 0.05);
+      updateHUD();
+    }
+  } else if (zombies.length === 0) {
+    // 이번 웨이브 좀비를 다 잡았다
+    waveActive = false;
+    restTimer = 4.5;
+    score += wave * 50;                    // 웨이브 클리어 보너스
+    showWaveMsg(`웨이브 ${wave} 클리어!`);
+    ammo = MAG_SIZE;                       // 다음 웨이브 전에 탄창을 채워주고
+    reserve += WAVE_AMMO_BONUS;            // 예비 총알도 보급해준다
+    reloading = false;
+    toast(`탄약 보급 +${WAVE_AMMO_BONUS}`, '#9ad8ff');
+    updateHUD();
+  }
+}
+
+function updateZombies(dt) {
+  for (const z of zombies) {
+    const d = z.userData;
+
+    // --- 플레이어 쪽으로 걸어온다 ---
+    const dx = camera.position.x - z.position.x;
+    const dz = camera.position.z - z.position.z;
+    const dist = Math.hypot(dx, dz);
+
+    if (dist > 0.85) {
+      z.position.x += dx / dist * d.speed * dt;
+      z.position.z += dz / dist * d.speed * dt;
+      // 걷는 다리 애니메이션
+      d.walkPhase += dt * d.speed * 4.5;
+      d.legs[0].rotation.x = Math.sin(d.walkPhase) * 0.7;
+      d.legs[1].rotation.x = -Math.sin(d.walkPhase) * 0.7;
+      d.torso.rotation.z = Math.sin(d.walkPhase * 0.5) * 0.06;
+    } else {
+      // --- 닿았다! 때린다 ---
+      d.hitCooldown -= dt;
+      if (d.hitCooldown <= 0) {
+        d.hitCooldown = ZOMBIE_HIT_COOLDOWN;
+        damagePlayer(ZOMBIE_DMG);
+        // 때리는 동작: 팔을 확 뻗었다가
+        for (const a of d.arms) a.position.z = 0.5;
+        setTimeout(() => { for (const a of d.arms) a.position.z = 0.28; }, 180);
+      }
+    }
+
+    // --- 좀비끼리 겹치지 않게 서로 밀어낸다 ---
+    for (const o of zombies) {
+      if (o === z) continue;
+      const ox = z.position.x - o.position.x, oz = z.position.z - o.position.z;
+      const od = Math.hypot(ox, oz);
+      if (od < 0.75 && od > 0.001) {
+        z.position.x += ox / od * (0.75 - od) * 0.5;
+        z.position.z += oz / od * (0.75 - od) * 0.5;
+      }
+    }
+
+    pushOutOfSolids(z.position, 0.35);
+
+    // --- 항상 플레이어를 바라본다 ---
+    z.lookAt(camera.position.x, z.position.y, camera.position.z);
+
+    // --- 맞았을 때 하얗게 번쩍 ---
+    if (d.flashTimer > 0) {
+      d.flashTimer -= dt;
+      if (!d.flashed) {
+        d.flashed = true;
+        d.origMats = z.children.map(c => c.material);
+        for (const c of z.children) c.material = whiteMat;
+      }
+      if (d.flashTimer <= 0 && d.flashed) {
+        z.children.forEach((c, i) => { if (d.origMats[i]) c.material = d.origMats[i]; });
+        d.flashed = false;
+      }
+    }
+  }
+}
+
+function updateDebris(dt) {
+  for (let i = debris.length - 1; i >= 0; i--) {
+    const p = debris[i];
+    p.vy -= 18 * dt;                       // 조각에도 중력
+    p.mesh.position.x += p.vx * dt;
+    p.mesh.position.y += p.vy * dt;
+    p.mesh.position.z += p.vz * dt;
+    p.mesh.rotation.x += p.rx * dt;
+    p.mesh.rotation.y += p.ry * dt;
+
+    // 바닥에 닿으면 통통 튀다가 멈춤
+    if (p.mesh.position.y < 0.06) {
+      p.mesh.position.y = 0.06;
+      p.vy *= -0.35;
+      p.vx *= 0.7; p.vz *= 0.7;
+    }
+
+    p.life -= dt;
+    if (p.life <= 0) {
+      scene.remove(p.mesh);
+      debris.splice(i, 1);
+    }
+  }
+}
+
+// 헤드리스(자동) 테스트용 — 콘솔에서 게임 상태를 볼 수 있게 열어둔다
+window.__game = {
+  get state() {
+    return { wave, ammo, reserve, hp: player.hp, zombies: zombies.length, score, kills, combo,
+             alive: player.alive, debris: debris.length, popups: popups.length, pickups: pickups.length,
+             camera: [+camera.position.x.toFixed(2), +camera.position.y.toFixed(2), +camera.position.z.toFixed(2)] };
+  },
+  spawnZombie, startWave, shoot, stepGame, spawnPickup,
+  zombies, debris, pickups, popups,
+};
+
+updateHUD();
+
+// ===== 헤드리스 테스트: 마우스 잠금 없이 정해진 프레임만큼 게임을 진행시킨다 =====
+// 헤드리스 크롬에서는 requestAnimationFrame 시간이 제대로 흐르지 않으므로
+// 가짜 시계(1/60초 고정)로 stepGame을 직접 반복 호출한다.
+if (TEST_MODE) {
+  // #test : 프레임수 : 좀비수 : 정면배치할까(1/0) : 몇프레임마다쏠까(0=안쏨) : 보급상자테스트(1/0)
+  const [, framesStr, zombieStr, frontStr, shootStr, pickupStr] = location.hash.split(':');
+  const frames = Number(framesStr) || 120;
+  const zombieCount = zombieStr !== undefined ? Number(zombieStr) : 5;
+  const front = frontStr !== undefined ? Number(frontStr) : 0;
+  const shootEvery = shootStr !== undefined ? Number(shootStr) : 0;
+  const pickupTest = pickupStr !== undefined ? Number(pickupStr) : 0;
+
+  overlay.style.display = 'none';
+  crosshairEl.style.display = 'block';
+  hud.classList.add('on');
+  started = true;
+
+  wave = 1;
+  waveActive = true;
+
+  if (front) {
+    // front=1: 부채꼴로 펼쳐 세움 / front=2: 조준선에 일렬로 세움(콤보 확인용)
+    for (let i = 0; i < zombieCount; i++) {
+      const z = makeZombie(0);
+      if (front === 2) z.position.set(0, 0, -7 - i * 2.5);
+      else             z.position.set((i - (zombieCount - 1) / 2) * 2.6, 0, -11 - i * 0.8);
+      scene.add(z);
+      zombies.push(z);
+    }
+  } else {
+    for (let i = 0; i < zombieCount; i++) spawnZombie();
+  }
+
+  if (pickupTest) {
+    // 앞쪽에 보급 상자를 놓고, W를 누른 채로 걸어가서 줍는지 확인한다
+    spawnPickup(0, -3.5, 'ammo');
+    spawnPickup(0, -6.5, 'heal');
+    player.hp = 40;                 // 회복이 되는지 보려고 체력을 깎아둔다
+    reserve = 5;
+    keys.KeyW = true;
+  }
+  updateHUD();
+
+  const FIXED_DT = 1 / 60;
+  for (let i = 0; i < frames; i++) {
+    // 실제 게임에선 renderer.render()가 매 프레임 월드 좌표를 갱신해준다.
+    // 테스트는 그리지 않고 돌리므로 직접 갱신해야 사격 판정이 제자리를 본다.
+    scene.updateMatrixWorld(true);
+    if (shootEvery && i % shootEvery === 0) shoot();
+    stepGame(FIXED_DT);
+  }
+
+  renderer.render(scene, camera);
+  console.log('TEST_STATE ' + JSON.stringify(window.__game.state));
+}
+
+animate();
+</script>
+</body>
+</html>

@@ -169,6 +169,23 @@
 //    손그림이 살아 움직이는 느낌
 // ============================================================
 
+// ⚠️ roundRect는 2023년에 나온 새 기능이라 사파리 16.4 미만(업데이트가 끊긴 구형 아이패드 등)엔
+// 없다. 게임을 켜는 첫 단계에서 쓰기 때문에, 없으면 거기서 스크립트가 죽어 게임이 아예 안 켜진다.
+// 없을 때만 직접 만들어 끼운다.
+if (typeof CanvasRenderingContext2D !== 'undefined' && !CanvasRenderingContext2D.prototype.roundRect) {
+  CanvasRenderingContext2D.prototype.roundRect = function (x, y, w, h, r) {
+    if (Array.isArray(r)) r = r[0];
+    r = Math.min(r || 0, Math.abs(w) / 2, Math.abs(h) / 2);
+    this.moveTo(x + r, y);
+    this.arcTo(x + w, y, x + w, y + h, r);
+    this.arcTo(x + w, y + h, x, y + h, r);
+    this.arcTo(x, y + h, x, y, r);
+    this.arcTo(x, y, x + w, y, r);
+    this.closePath();
+    return this;
+  };
+}
+
 const canvas = document.getElementById('c');
 const screenCtx = canvas.getContext('2d');
 // 배경(스케치북+풍경)은 무거워서 미리 딴 캔버스에 그려두고(캐시),
@@ -1157,7 +1174,7 @@ const CIRCLE_DUR = [1300, 1100, 900, 800, 700];  // (옛 방식 — 리듬이 �
 //   버튼은 스페이스/클릭 하나 — 리듬은 '언제 누르는가'로만 표현된다
 //   ※ 길이는 물고기의 circles(연속 클릭 수)와 반드시 같아야 한다
 // ============================================================
-// 난이도 (2026-07-26 아드님 피드백 "너무 빠르고 어렵다" → 패턴 자체를 느리게)
+// 난이도 (2026-07-26 플레이 피드백 "너무 빠르고 어렵다" → 패턴 자체를 느리게)
 //   ※ 판정(맞았다고 쳐주는 폭)은 그대로 두고, 원이 줄어드는 속도와 연타 간격만 늦춘다
 //   한 박 1000 → 1350ms · 반 박 0.5 → 0.7박 (제일 빠른 연타 340ms → 643ms)
 const BASE_BEAT = 1350;   // 한 박의 기본 길이(ms) — 물고기 speed로 조절된다
@@ -2000,7 +2017,7 @@ function rarityOf(f) {
   return 1;
 }
 
-// 미끼 효과 (2026-07-26 아드님 결정: 황금 미끼는 "전설 사냥용"으로 확실하게)
+// 미끼 효과 (2026-07-26 결정: 황금 미끼는 "전설 사냥용"으로 확실하게)
 //  예전 황금 미끼는 전설 배수가 고래·이무기에만 걸려서 정작 호수의 낙서용엔 효과가 없었다.
 //  → 전설 전체에 40배. 호수 전설 확률 0.32% → 약 11%
 function baitMul(f) {
@@ -2175,7 +2192,7 @@ function circleRadius(c, t) {
 }
 
 // 성격별 판정 폭 (깐깐이 70% · 전설 80% · 부끄럼 85% · 잽싸이는 오히려 넉넉 110%)
-// ※ 판정은 손대지 않는다 (2026-07-26 아드님: "판정 말고 난이도를 고쳐라")
+// ※ 판정은 손대지 않는다 (2026-07-26 방침: "판정 말고 난이도를 고쳐라")
 function judgeMul() {
   const tr2 = game.fish && game.fish.trait;
   if (tr2 === 'picky') return 0.7;
@@ -5627,7 +5644,7 @@ function tick(t) {
   // 라인 보일: 0.7초마다 배경을 살짝 다르게 다시 그림 (메뉴에서 끌 수 있음)
   // ⚠️ 배경 다시 그리기는 무겁다 (측정: DPR1 18ms · DPR2 13ms — 한 프레임 예산 16.7ms를 통째로 먹는다).
   //    타이밍 원이 도는 동안 이게 돌면 0.7초마다 화면이 뚝뚝 끊긴다 → 리듬 게임엔 치명적.
-  //    그래서 미니게임(원이 움직일 때)과 첫판 안내 중엔 배경을 멈춰 둔다. (2026-07-26 아드님 피드백)
+  //    그래서 미니게임(원이 움직일 때)과 첫판 안내 중엔 배경을 멈춰 둔다. (2026-07-26 플레이 피드백)
   const boilOK = game.state !== 'minigame' && !game.tutoAt;
   const f = Math.floor(t / 700) % 3;
   if (BOIL && boilOK && f !== lastBoil) {
